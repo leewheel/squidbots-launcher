@@ -80,8 +80,11 @@ async function buildReport({ summary, gameRoot, serverRoot }) {
     for (const file of await newest(path.join(gameRoot, 'Logs'), 5, /\.(log|txt)$/i)) await add(file, `client/Logs/${path.basename(file)}`);
   }
   if (serverRoot) {
+    //By leewheel 2026-11-02 日志目录按布局取（发布版是 logs，官方整合包是 Core/Logs），压缩包里保持同样的相对路径
+    const logsRel = String(require('./layout.cjs').serverLayout(serverRoot).logs);
+    const logsDir = path.join(serverRoot, ...logsRel.split('/'));
     for (const file of await newest(path.join(serverRoot, 'logs'), 12, /^launcher-.*\.log$/i)) await add(file, `server/launcher/${path.basename(file)}`);
-    for (const name of ['Errors.log', 'Server.log', 'Auth.log', 'world-console.log', 'supervisor.log', 'CoaBots.log']) await add(path.join(serverRoot, 'Core', 'Logs', name), `server/Core/Logs/${name}`);
+    for (const name of ['Errors.log', 'Server.log', 'Auth.log', 'world-console.log', 'supervisor.log', 'CoaBots.log']) await add(path.join(logsDir, name), `server/${logsRel}/${name}`);
     await add(path.join(serverRoot, 'mysql', 'logs', 'mysql-error.log'), 'server/mysql/mysql-error.log');
   }
   return zip(entries);

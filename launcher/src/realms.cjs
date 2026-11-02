@@ -74,8 +74,16 @@ const FILE_ID = /^[A-Za-z0-9_.-]{1,60}\.conf$/;
 const BOT_COUNT = ['AiPlayerbot.MinRandomBots', 'AiPlayerbot.MaxRandomBots'];
 
 const dirOf = (root, key) => path.join(root, 'Royaumes', key);
-const BOTS_CONFIGS = root => path.join(root, 'CoA-Bots', 'Core', 'configs');
-const worldExe = root => path.join(root, 'CoA-Bots', 'Core', 'worldserver.exe');
+//By leewheel 2026-11-02 布局适配：发布版的世界程序与配置都在服务器根目录
+const { serverLayout } = require('./layout.cjs');
+const worldExe = root => {
+  const layout = serverLayout(root);
+  return path.join(root, ...String(layout.world || 'worldserver.exe').split('/'));
+};
+const BOTS_CONFIGS = root => {
+  const layout = serverLayout(root);
+  return path.join(root, ...String(layout.botsConfigs || 'Core/configs').split('/'));
+};
 // Where a settings file of the page is, inside configs\ of a realm.
 const relOf = fileId => (/^(worldserver|authserver)\.conf$/.test(fileId) ? fileId : `modules/${fileId}`);
 
@@ -180,6 +188,8 @@ function imposed(key, saved) {
 // The repack's update tool refuses a mysql\data with databases it does not know (code 15): a realm is only offered when
 // the installed CoA Bots tools list the realm databases, so a realm can never block an update of CoA.
 function updaterKnows(root, key) {
+  //By leewheel 2026-11-02 发布版没有 Python 更新工具：国度数据库由启动器自己建，直接算作支持
+  if (serverLayout(root).kind === 'flat') return true;
   try { return fs.readFileSync(path.join(root, 'CoA-Bots', 'coa_common.py'), 'utf8').includes(`acore_characters_${key}`); } catch { return false; }
 }
 
@@ -187,6 +197,12 @@ function updaterKnows(root, key) {
 // the realm options on a server we have not validated for them.
 const REALMS_FROM = [2, 6];
 function botsVersion(root) {
+  //By leewheel 2026-11-02 发布版：以 Settings/repack.json 里的 coreVersion 表示核心版本（缺省按已就绪处理）
+  const layout = serverLayout(root);
+  if (layout.kind === 'flat') {
+    const settings = require('./layout.cjs').readJson(path.join(root, 'Settings', 'repack.json')) || {};
+    return String(settings.coreVersion || '9.9');
+  }
   try { return String(JSON.parse(fs.readFileSync(path.join(root, 'CoA-Bots', 'release.json'), 'utf8').replace(/^﻿/, '')).version || ''); } catch { return ''; }
 }
 function versionReady(version) {
@@ -252,6 +268,9 @@ async function writeConfigs(root, key, saved) {
   if (chars.split(';').length < 5) throw new Error('CharacterDatabaseInfo cannot be read in worldserver.conf.');
   const prefix = chars.split(';').slice(0, 4).join(';');
   add('worldserver.conf', { CharacterDatabaseInfo: `"${prefix};acore_characters_${key}"`, LogsDir: `"${path.join(dir, 'Logs').replace(/\\/g, '/')}"` });
+  //By leewheel 2026-11-02 发布版的数据目录是共享的 ClientData：国度世界在 Royaumes\<key> 里启动，必须写绝对路径
+  const layout = serverLayout(root);
+  if (layout.kind === 'flat') add('worldserver.conf', { DataDir: `"${path.join(root, ...String(layout.data).split('/')).replace(/\\/g, '/')}"` });
   add('playerbots.conf', { PlayerbotsDatabaseInfo: `"${prefix};acore_playerbots_${key}"` });
   for (const [fileId, keys] of edits) {
     if (!FILE_ID.test(fileId)) continue;

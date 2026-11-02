@@ -132,13 +132,17 @@ function withRealms(stats, list) {
 
 function botsTarget(root) {
   try {
-    const conf = fs.readFileSync(path.join(root, 'CoA-Bots', 'Core', 'configs', 'modules', 'playerbots.conf'), 'utf8');
+    //By leewheel 2026-11-02 机器人配置位置按布局取（发布版是 configs/modules）
+    const layout = require('./layout.cjs').serverLayout(root);
+    const conf = fs.readFileSync(path.join(root, ...`${layout.botsConfigs}/modules/playerbots.conf`.split('/')), 'utf8');
     return Number(/^[ \t]*AiPlayerbot\.MaxRandomBots[ \t]*=[ \t]*(\d+)/m.exec(conf)?.[1]) || null;
   } catch { return null; }
 }
 
 function botsInGame(root) {
-  const status = readJson(path.join(root, 'Core', 'Logs', 'bot-status.json'));
+  //By leewheel 2026-11-02 状态文件也按布局取（发布版是 logs/bot-status.json）
+  const layout = require('./layout.cjs').serverLayout(root);
+  const status = readJson(path.join(root, ...`${layout.logs}/bot-status.json`.split('/')));
   if (!status || !Array.isArray(status.bots)) return null;
   // The world writes it every 5 s: older than a minute, it is the one of a world that stopped (not shown).
   const fresh = !status.at || Date.now() / 1000 - Number(status.at) < 60;

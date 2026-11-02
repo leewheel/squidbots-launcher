@@ -12,7 +12,8 @@ const path = require('node:path');
 const { portOpen } = require('./server-control.cjs');
 
 const SCRIPT = path.join(__dirname, 'data', 'Migrate-Accounts.py');
-const REQUIRED = ['Settings/repack.json', 'Core/worldserver.exe', 'mysql/bin/mysqld.exe'];
+//By leewheel 2026-11-02 布局适配：必须有的文件由 layout 判断（官方整合包 Core/… 与发布版 worldserver.exe 都认）
+const { serverLayout } = require('./layout.cjs');
 
 function readJsonFile(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^﻿/, '')); } catch { return null; }
@@ -21,21 +22,35 @@ function readJsonFile(file) {
 // What a folder holds: is it a repack, which release, with or without CoA Bots, ever started.
 function inspect(folder) {
   const root = path.resolve(String(folder || ''));
-  const missing = REQUIRED.filter(relative => !fs.existsSync(path.join(root, relative)));
+  const layout = serverLayout(root);
+  const hasFile = relative => !!relative && fs.existsSync(path.join(root, ...String(relative).split('/')));
+  //By leewheel 2026-11-02 “完整服务器”的判定：世界程序 + MySQL 客户端程序（两种布局各自的位置）
+  const missing = [];
+  if (!layout.kind) missing.push('worldserver.exe');
+  else {
+    if (!hasFile(layout.world)) missing.push(layout.world);
+    if (!hasFile('mysql/bin/mysqld.exe')) missing.push('mysql/bin/mysqld.exe');
+  }
   const release = readJsonFile(path.join(root, 'RELEASE.json')) || {};
-  const bots = readJsonFile(path.join(root, 'CoA-Bots/release.json'));
+  const bots = layout.kind === 'flat' ? readJsonFile(path.join(root, 'release.json')) : readJsonFile(path.join(root, 'CoA-Bots/release.json'));
   const settings = readJsonFile(path.join(root, 'Settings/repack.json')) || {};
   const state = readJsonFile(path.join(root, '.coa-launcher/server/state.json'));
   return {
     path: root,
     repack: missing.length === 0,
+    kind: layout.kind,
     missing,
     release: String(release.releaseId || state?.version || ''),
     releaseDate: String(release.releaseDate || ''),
     bots: bots ? { version: String(bots.version || ''), release: String(bots.release || '') } : null,
-    started: fs.existsSync(path.join(root, 'mysql/admin-client.ini')),
-    hasData: fs.existsSync(path.join(root, 'mysql/data/acore_characters')),
-    ports: { mysql: Number(settings.mysqlPort) || 0, auth: Number(settings.authPort) || 0, world: Number(settings.worldPort) || 0 },
+    started: hasFile('mysql/admin-client.ini'),
+    hasData: fs.existsSync(path.join(root, 'mysql', 'data', 'acore_characters')) || fs.existsSync(path.join(root, 'mysql', 'Data', 'acore_characters')),
+    ports: {
+      mysql: Number(settings.mysqlPort) || Number(layout.ports.mysql) || 0,
+      auth: Number(settings.authPort) || Number(layout.ports.auth) || 0,
+      world: Number(settings.worldPort) || Number(layout.ports.world) || 0,
+    },
+    ra: Number(settings.raPort) || Number(layout.ports.ra) || 0,
   };
 }
 

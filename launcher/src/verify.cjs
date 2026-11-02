@@ -9,6 +9,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { isNewer } = require('./updates.cjs');
 const { repackChecks } = require('./repack-checks.cjs');
+//By leewheel 2026-11-02 布局适配：日志、崩溃报告与核心程序的位置由 layout 提供
+const { serverLayout } = require('./layout.cjs');
 
 const DAY = 24 * 3600 * 1000;
 
@@ -35,8 +37,9 @@ async function tail(file, bytes = 4 * 1024 * 1024) {
 
 // What the last start of the worldserver did with the database updates.
 async function databaseUpdates(root) {
-  for (const file of ['Core/Logs/Server.log', 'CoA-Bots/Core/Logs/Server.log']) {
-    const log = await tail(path.join(root, file));
+  const layout = serverLayout(root);
+  for (const file of [`${layout.logs}/Server.log`, 'Core/Logs/Server.log', 'CoA-Bots/Core/Logs/Server.log']) {
+    const log = await tail(path.join(root, ...file.split('/')));
     if (!log) continue;
     const lines = log.text.split(/\r?\n/);
     let start = -1;
@@ -129,7 +132,7 @@ async function runChecks({ root, inspect, control, backup, repack, botsPackage, 
       // The bot worldserver is built from one exact core: the core's own worldserver must be that one.
       const release = await readJson(path.join(root, botsPackage.bots.folder, 'release.json'));
       const expected = String(release?.originalWorldserverSha256 || '').toLowerCase();
-      const coreExe = path.join(root, 'Core/worldserver.exe');
+      const coreExe = path.join(root, ...serverLayout(root).world.split('/'));
       if (!expected) add('bots', 'bots.match', 'info', {});
       else if (!fs.existsSync(coreExe)) add('bots', 'bots.match', 'bad', {}, 'repair');
       else add('bots', 'bots.match', (await sha256(coreExe)) === expected ? 'ok' : 'bad', { release: String(release.release || '') }, 'bots-install');

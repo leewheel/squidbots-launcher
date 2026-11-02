@@ -164,8 +164,11 @@ function addonCard() {
   if (!a || a.state === 'none') return '';
   const r = a.realmlist;
   const realmBad = a.client && r && r.state !== 'ok';
+  //By leewheel 2026-11-02 发布版没有单独的插件源（插件已随客户端提供）：卡片只报告游戏目录与 realmlist 状态
+  const noAddon = !(a.addons || []).length;
   const text = a.state === 'noclient' ? t('addon.cardPick', 'Choose your game folder')
     : realmBad ? t('game.cardRealm', 'Realmlist to fix')
+    : noAddon ? t('game.cardReady', 'Game found: ready to play')
     : a.state === 'missing' ? t('addon.cardMissing', 'Not in your game yet: install it')
     : a.state === 'outdated' ? t('addon.cardOutdated', 'Version {version} to install', { version: a.version })
     : t('game.cardOk', 'Addon {version} · realmlist OK', { version: a.installedVersion || a.version });
@@ -187,15 +190,16 @@ async function refreshAddon(auto = false) {
 function showAddon() {
   const a = App.state.addon || {};
   const r = a.realmlist;
+  const noAddon = !(a.addons || []).length;
   const rows = (a.addons || []).map(addon => `<li><strong>${esc(addon.name)}</strong> · ${esc(addon.installed ? t('addon.installedIn', 'in your game: {version}', { version: addon.installed }) : t('addon.notInGame', 'not in your game'))} · ${esc(t('addon.inRepack', 'in the server: {version}', { version: addon.available }))}</li>`).join('');
   const realm = !r ? '' : `<h3>${esc(t('game.realmTitle', 'Realmlist'))}</h3>
     ${r.files.length ? `<ul class="notes">${r.files.map(item => `<li><code>${esc(item.file)}</code> · <strong>${esc(item.value)}</strong></li>`).join('')}</ul>` : `<p class="muted">${esc(t('game.realmNone', 'No realmlist found in this game.'))}</p>`}
     <div class="line-action">${icon(r.state === 'ok' ? 'check' : 'warning')}<span>${esc(r.state === 'ok' ? t('game.realmOk', 'Your game points at this server.') : t('game.realmWrong', 'Your game does not point at this server: it should use {expected}. The launcher can set it (game closed); the replaced files are kept.', { expected: r.expected }))}</span><button class="button ${r.state === 'ok' ? 'ghost' : 'primary'} small" data-action="addon-realmlist">${esc(t('game.realmSet', 'Set the realmlist'))}</button></div>`;
   dialog.open(`${dialog.header(t('game.cardTitle', 'Your game'), a.client || '')}<div class="dialog-content">
-    <h3>${esc(t('addon.cardTitle', 'SquidBots addon'))}</h3>
+    ${noAddon ? `<p>${esc(t('game.noAddon', 'The bots addon (SquidBots Lite) ships with this client: nothing to copy.'))}</p>` : `<h3>${esc(t('addon.cardTitle', 'SquidBots addon'))}</h3>
     <p>${esc(t('addon.what', 'The addon to command your bots in game. The launcher copies it into your game and updates it by itself when the server brings a new version (never while the game is open). What it saved in the game is kept.'))}</p>
-    <ul class="notes">${rows}</ul>${realm}</div>
-    <footer class="dialog-foot"><button class="button ghost" data-action="addon-change">${icon('folder')}${esc(t('addon.change', 'Another game folder'))}</button>${a.client ? `<button class="button primary" data-action="addon-install">${icon('download')}${esc(a.state === 'current' ? t('addon.reinstall', 'Install again') : t('addon.install', 'Install in my game'))}</button>` : ''}</footer>`);
+    <ul class="notes">${rows}</ul>`}${realm}</div>
+    <footer class="dialog-foot"><button class="button ghost" data-action="addon-change">${icon('folder')}${esc(t('addon.change', 'Another game folder'))}</button>${a.client && !noAddon ? `<button class="button primary" data-action="addon-install">${icon('download')}${esc(a.state === 'current' ? t('addon.reinstall', 'Install again') : t('addon.install', 'Install in my game'))}</button>` : ''}</footer>`);
 }
 
 async function addonDone(call, button) {

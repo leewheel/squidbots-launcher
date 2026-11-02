@@ -119,6 +119,32 @@ const gameDataPath = () => [settings.installPaths.game, settings.installPaths.ad
 const serverPath = () => settings.installPaths.server || '';
 const realmlist = () => settings.realmlist || config.game.realmlists[0].address;
 
+//By leewheel 2026-11-02 发布版目录布局：启动器 exe 与 Client\、Server\ 两个目录同级。
+// 便携版 exe（单文件）运行在临时目录，真正的所在目录由 PORTABLE_EXECUTABLE_DIR 给出。
+function launcherRootFolder() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) return path.resolve(process.env.PORTABLE_EXECUTABLE_DIR);
+  return app.isPackaged ? path.dirname(app.getPath('exe')) : path.join(__dirname, '..');
+}
+const publishedFolders = () => {
+  const root = launcherRootFolder();
+  return { game: path.join(root, 'Client'), addon: path.join(root, 'Client'), server: path.join(root, 'Server') };
+};
+const isPublishedFolder = folder => !!folder && Object.values(publishedFolders()).some(item => path.resolve(item).toLowerCase() === path.resolve(folder).toLowerCase());
+// 首次运行时，把同级的 Client、Server 自动填进设置（玩家已经手动选过的不覆盖）。
+async function detectPublishedFolders() {
+  const wanted = publishedFolders();
+  const paths = { ...settings.installPaths };
+  let changed = false;
+  for (const area of ['game', 'addon', 'server']) {
+    if (paths[area] || !fs_exists(wanted[area])) continue;
+    paths[area] = path.normalize(wanted[area]);
+    changed = true;
+  }
+  if (!changed) return false;
+  await persist({ ...settings, installPaths: paths }).catch(() => {});
+  return true;
+}
+
 function upgradeNotify(update) {
   if (update.line !== undefined) { upgradeState.log.push(update.line); if (upgradeState.log.length > 400) upgradeState.log.shift(); }
   if (update.step) upgradeState.step = update.step;
@@ -253,6 +279,8 @@ async function serverInfo() {
     mmapsRestart: folder ? mmapsNeedRestart(folder, assembler.state(folder)) : false,
     driveBus: folder ? await driveBus(folder) : '',
     bots: bots ? { name: config.server.bots.name, description: config.server.bots.description, ...(await bots.info(folder)) } : null,
+    //By leewheel 2026-11-02 发布版：机器人模块直接编译在核心里（没有单独的 CoA Bots 包），页面显示“核心已内置”
+    botsBuiltIn: !!folder && !config.server.bots && fs_exists(path.join(folder, 'configs', 'modules', 'playerbots.conf')),
     canPurgeBots: !!config.server.commands.purgeBots,
     // The extra realms whose world runs or starts: the home page counts the server as running with them alone.
     realmsOn: folder ? (await realms.status(folder, { live: false }).catch(() => ({ realms: [] }))).realms.filter(realm => ['running', 'starting'].includes(realm.state)).map(realm => ({ key: realm.key, state: realm.state })) : [],
@@ -262,6 +290,8 @@ async function serverInfo() {
 // The launcher, system folders and the user's own folders are never valid game or server folders.
 function assertFolder(folder) {
   const target = path.resolve(folder).toLowerCase();
+  //By leewheel 2026-11-02 发布版自带的 Client\、Server\ 就在启动器目录内，必须放行
+  if (isPublishedFolder(folder)) return;
   const launcherRoot = path.resolve(app.isPackaged ? path.dirname(app.getPath('exe')) : path.join(__dirname, '..')).toLowerCase();
   const forbidden = [path.parse(target).root, app.getPath('home'), app.getPath('desktop'), app.getPath('documents'), process.env.WINDIR, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], app.getPath('userData')]
     .filter(Boolean).map(item => path.resolve(item).toLowerCase());
@@ -281,12 +311,19 @@ async function assertLocalDrive(folder) {
 }
 
 // The bus of the server's disk (USB for an external drive, where MySQL can freeze): read once per drive letter.
+//By leewheel 2026-11-02 改成不阻塞：第一次查询在后台进行（PowerShell 要几秒），期间返回空值，首页不会为空等它
 const driveBuses = new Map();
-async function driveBus(folder) {
+function driveBus(folder) {
   const letter = /^[A-Za-z]:/.test(path.resolve(folder)) ? path.resolve(folder)[0].toUpperCase() : '';
-  if (!letter) return '';
-  if (!driveBuses.has(letter)) driveBuses.set(letter, new Promise(resolve => require('node:child_process').execFile('powershell.exe', ['-NoProfile', '-Command', `(Get-Partition -DriveLetter ${letter} | Get-Disk).BusType`], { windowsHide: true, timeout: 15000 }, (error, out) => resolve(error ? '' : String(out).trim()))));
-  return driveBuses.get(letter);
+  if (!letter) return Promise.resolve('');
+  const known = driveBuses.get(letter);
+  if (known?.value !== undefined) return Promise.resolve(known.value);
+  if (!known) {
+    const entry = { value: undefined };
+    driveBuses.set(letter, entry);
+    require('node:child_process').execFile('powershell.exe', ['-NoProfile', '-Command', `(Get-Partition -DriveLetter ${letter} | Get-Disk).BusType`], { windowsHide: true, timeout: 15000 }, (error, out) => { entry.value = error ? '' : String(out).trim(); });
+  }
+  return Promise.resolve('');
 }
 
 // With the bots comes their in-game addon (SquidBots Lite): installed once per game folder, when both the
@@ -400,7 +437,7 @@ function registerIpc() {
   // ---- the game ----
   handle('client:info', clientInfo);
   handle('client:locate', async () => {
-    const result = smokeDir && process.env.COA_SMOKE_GAME_DIR ? { filePaths: [process.env.COA_SMOKE_GAME_DIR] } : await dialog.showOpenDialog(window, { title: `Locate your game folder (contains ${config.game.clientExecutable})`, properties: ['openDirectory'], defaultPath: gamePath() || undefined });
+    const result = smokeDir && process.env.COA_SMOKE_GAME_DIR ? { filePaths: [process.env.COA_SMOKE_GAME_DIR] } : await dialog.showOpenDialog(window, { title: `定位你的游戏目录（内含 ${config.game.clientExecutable}）`, properties: ['openDirectory'], defaultPath: gamePath() || undefined });
     if (result.canceled || !result.filePaths[0]) return null;
     const folder = path.resolve(result.filePaths[0]);
     assertFolder(folder);
@@ -411,7 +448,7 @@ function registerIpc() {
   });
   handle('client:chooseInstall', async () => {
     if (config.game.updatesOnly) throw new Error('This launcher only updates an existing game: download the game first, then show its folder.');
-    const result = await dialog.showOpenDialog(window, { title: 'Choose where to install the game', properties: ['openDirectory', 'createDirectory'], defaultPath: gamePath() || 'C:\\' });
+    const result = await dialog.showOpenDialog(window, { title: '选择游戏安装目录', properties: ['openDirectory', 'createDirectory'], defaultPath: gamePath() || 'C:\\' });
     if (result.canceled || !result.filePaths[0]) return null;
     const folder = path.resolve(result.filePaths[0]);
     assertFolder(folder);
@@ -557,11 +594,11 @@ function registerIpc() {
     const core = await read('RELEASE.json');
     const botsRelease = await read('CoA-Bots/release.json');
     const lines = [
-      `Launcher: ${config.appName} ${app.getVersion()}`,
-      `Core: ${core?.releaseId || info.release || '?'}${core?.releaseDate ? ` (${core.releaseDate})` : ''}`,
-      `Core files: ${repackUpdater ? (await repackUpdater.installedVersion(serverPath())) || 'not installed by the launcher' : '-'}`,
-      botsRelease ? `CoA Bots: ${botsRelease.version} for ${botsRelease.release}${botsRelease.built ? ` (built ${botsRelease.built})` : ''}` : 'CoA Bots: not installed',
-      `Channel: ${settings.channel}`,
+      `启动器：${config.appName} ${app.getVersion()}`,
+      `核心：${core?.releaseId || info.release || '?'}${core?.releaseDate ? `（${core.releaseDate}）` : ''}`,
+      `核心文件：${repackUpdater ? (await repackUpdater.installedVersion(serverPath())) || '非启动器安装' : '-'}`,
+      botsRelease ? `CoA Bots：${botsRelease.version}，适用于 ${botsRelease.release}${botsRelease.built ? `（构建于 ${botsRelease.built}）` : ''}` : 'CoA Bots：未安装（核心已内置机器人模块）',
+      `通道：${settings.channel}`,
     ];
     clipboard.writeText(lines.join('\n'));
     return lines.join('\n');
@@ -601,7 +638,7 @@ function registerIpc() {
   handle('repack:choose', async () => {
     requireServer();
     const result = smokeDir && process.env.COA_SMOKE_SERVER_DIR ? { filePaths: [process.env.COA_SMOKE_SERVER_DIR] }
-      : await dialog.showOpenDialog(window, { title: 'Choose the folder of your server (repack)', properties: ['openDirectory', 'createDirectory'], defaultPath: serverPath() || 'C:\\' });
+      : await dialog.showOpenDialog(window, { title: '选择你的服务器目录', properties: ['openDirectory', 'createDirectory'], defaultPath: serverPath() || 'C:\\' });
     if (result.canceled || !result.filePaths[0]) return null;
     let folder = path.resolve(result.filePaths[0]);
     // The folder the zip was unpacked into often holds the repack one level down (CoA-Repack-Bots-2.0\…).
@@ -637,7 +674,7 @@ function registerIpc() {
   handle('instance:create', async options => {
     requireServer();
     if (busyFiles || upgradeState.running) throw new Error('Another operation is running.');
-    const result = await dialog.showOpenDialog(window, { title: 'Choose an EMPTY folder for the new server', properties: ['openDirectory', 'createDirectory'], defaultPath: serverPath() ? path.dirname(serverPath()) : 'C:\\' });
+    const result = await dialog.showOpenDialog(window, { title: '为新服务器选择一个空文件夹', properties: ['openDirectory', 'createDirectory'], defaultPath: serverPath() ? path.dirname(serverPath()) : 'C:\\' });
     if (result.canceled || !result.filePaths[0]) return null;
     const folder = path.resolve(result.filePaths[0]);
     assertFolder(folder);
@@ -710,7 +747,7 @@ function registerIpc() {
     // This server comes without game data: it is prepared from the game, so the game folder comes first.
     if (!gameDataPath()) throw new Error('Choose your game folder first: the server takes its game data from it.');
     if (busyFiles || upgradeState.running || update.busy) throw new Error('Another operation is running.');
-    const result = smokeDir && process.env.COA_SMOKE_IMPORT_DIR ? { filePaths: [process.env.COA_SMOKE_IMPORT_DIR] } : await dialog.showOpenDialog(window, { title: 'Choose an EMPTY folder for the server', properties: ['openDirectory', 'createDirectory'], defaultPath: 'C:\\' });
+    const result = smokeDir && process.env.COA_SMOKE_IMPORT_DIR ? { filePaths: [process.env.COA_SMOKE_IMPORT_DIR] } : await dialog.showOpenDialog(window, { title: '为服务器选择一个空文件夹', properties: ['openDirectory', 'createDirectory'], defaultPath: 'C:\\' });
     if (result.canceled || !result.filePaths[0]) return null;
     const target = path.resolve(result.filePaths[0]);
     assertFolder(target);
@@ -1004,7 +1041,7 @@ function registerIpc() {
   // The game client where the SquidBots addon goes (Interface\AddOns): chosen once, remembered. Choosing
   // Interface or AddOns by mistake is understood (the folder above is taken).
   async function pickClient() {
-    const result = await dialog.showOpenDialog(window, { title: 'Choose your game client folder (the one with Ascension.exe or Wow.exe)', properties: ['openDirectory'], defaultPath: settings.installPaths.addon || undefined });
+    const result = await dialog.showOpenDialog(window, { title: '选择你的游戏客户端目录（内有 Ascension.exe 或 Wow.exe）', properties: ['openDirectory'], defaultPath: settings.installPaths.addon || undefined });
     let folder = result.filePaths?.[0];
     if (!folder) return null;
     for (let up = 0; up < 2 && !addonSync.isClient(folder); up++) folder = path.dirname(folder);
@@ -1069,7 +1106,14 @@ function registerIpc() {
   };
   const addonStatus = async () => {
     // The game folder chosen for the server stands for the addon's game until one is chosen for the addon itself.
-    const status = addonSync.status(serverPath(), settings.installPaths.addon || gamePath());
+    const chosen = settings.installPaths.addon || gamePath();
+    const status = addonSync.status(serverPath(), chosen);
+    //By leewheel 2026-11-02 发布版：服务器里没有 CoA-Bots\Client 的插件源，游戏目录本身就算“已知客户端”，
+    // 这样“开始游戏”和 realmlist 修复不需要玩家再单独选一次目录。
+    if (!status.client && addonSync.isClient(chosen)) {
+      status.client = chosen;
+      if (status.state === 'none') status.state = 'current';
+    }
     const outdated = status.client && feed?.clientRequires?.length ? await clientMissing(status.client).catch(() => '') : '';
     const tooNew = status.client && feed?.clientIncompatible?.length ? await clientTooNew(status.client).catch(() => null) : null;
     return { ...status, realmlist: await clientRealmlist(status.client), clientOutdated: outdated, clientTooNew: tooNew };
@@ -1354,7 +1398,7 @@ function registerIpc() {
   // The CoA realm (the repack's own world) beside the extra ones, for the Realms page.
   const coaRealm = async () => {
     const world = (await requireControl().status()).find(service => /world/i.test(service.id));
-    const conf = await fs.readFile(path.join(serverPath(), 'CoA-Bots', 'Core', 'configs', 'modules', 'playerbots.conf'), 'utf8').catch(() => '');
+    const conf = await fs.readFile(path.join(serverPath(), ...`${require('./layout.cjs').serverLayout(serverPath()).botsConfigs}/modules/playerbots.conf`.split('/')), 'utf8').catch(() => '');
     const bots = Number(/^[ \t]*AiPlayerbot\.MaxRandomBots[ \t]*=[ \t]*(\d+)/m.exec(conf)?.[1]);
     const info = world?.state === 'running' ? await live.raCommand(serverPath(), 'server info', 6000).then(live.parseInfo).catch(() => null) : null;
     return { id: 1, state: world?.state || 'stopped', worldPort: world?.port, bots: Number.isFinite(bots) ? bots : null, players: info?.players ?? null, autostart: await realms.coaAutostart(serverPath()) };
@@ -1474,7 +1518,8 @@ function registerIpc() {
   const pdumpFolder = () => path.join(serverPath(), 'Characters');
   const worldFolder = () => {
     try { const exe = JSON.parse(require('node:fs').readFileSync(path.join(serverPath(), '.state', 'world.json'), 'utf8')).exe; if (exe && String(exe).toLowerCase().startsWith(serverPath().toLowerCase())) return path.dirname(exe); } catch {}
-    return path.join(serverPath(), 'Core');
+    //By leewheel 2026-11-02 发布版的世界程序就在服务器根目录
+    return require('./layout.cjs').serverLayout(serverPath()).kind === 'flat' ? serverPath() : path.join(serverPath(), 'Core');
   };
   // The players' characters and accounts (random bots left out), to pick from instead of typing.
   handle('chars:list', async () => {
@@ -1507,7 +1552,7 @@ function registerIpc() {
     const [known] = await serverTools().backup.query(`SELECT id FROM acore_auth.account WHERE username = '${login.toUpperCase()}'`);
     if (!Number(known)) throw new Error(`No game account named ${login} on this server.`);
     await fs.mkdir(pdumpFolder(), { recursive: true });
-    const result = await dialog.showOpenDialog(window, { title: 'Choose the character file (.sql)', properties: ['openFile'], filters: [{ name: 'Character (sql)', extensions: ['sql'] }], defaultPath: pdumpFolder() });
+    const result = await dialog.showOpenDialog(window, { title: '选择角色文件（.sql）', properties: ['openFile'], filters: [{ name: '角色数据（sql）', extensions: ['sql'] }], defaultPath: pdumpFolder() });
     if (result.canceled || !result.filePaths[0]) return null;
     const bare = `squidbots-import-${Date.now()}.sql`;
     const copy = path.join(worldFolder(), bare);
@@ -1518,12 +1563,37 @@ function registerIpc() {
       return { answer };
     } finally { await fs.unlink(copy).catch(() => {}); }
   });
-  handle('repack:account', (name, password, gm) => requireControl().createAccount(text(name, 20), text(password, 20), gm === true));
+  //By leewheel 2026-11-02 建号后若选了 GM：用随包的 mysql 客户端补 account_access 表的一行。
+  //（上游核心的 "account set gmlevel" 在本服上只打印成功、不落表，所以这里直接写库补齐。）
+  //世界控制台是异步处理的：账号可能还没建好，所以重试几次直到表里出现这个账号。
+  handle('repack:account', async (name, password, gm) => {
+    const login = String(text(name, 20)).replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+    const result = await requireControl().createAccount(text(name, 20), text(password, 20), gm === true);
+    if (gm === true && login) {
+      const sql = `INSERT INTO acore_auth.account_access (id, gmlevel, RealmID, comment) SELECT id, 3, -1, 'launcher' FROM acore_auth.account WHERE UPPER(username) = '${login}' ON DUPLICATE KEY UPDATE gmlevel = 3`;
+      let lastError = '';
+      //世界控制台在满载（500 个机器人）时可能十几秒才处理完 account create：最多等 45 秒
+      for (let attempt = 0; attempt < 45; attempt++) {
+        try {
+          await serverTools().backup.query(sql);
+          const rows = await serverTools().backup.query(`SELECT COUNT(*) FROM acore_auth.account_access WHERE gmlevel = 3 AND id IN (SELECT id FROM acore_auth.account WHERE UPPER(username) = '${login}')`);
+          if (Number(String(rows[0] ?? '').trim()) > 0) return result;
+          lastError = `count=${JSON.stringify(rows)}`;
+        } catch (error) { lastError = error.message; }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      //By leewheel 2026-11-02 失败时留下证据，方便排查（写到启动器日志目录）
+      await fs.mkdir(path.join(app.getPath('userData'), 'logs'), { recursive: true }).catch(() => {});
+      await fs.appendFile(path.join(app.getPath('userData'), 'logs', 'account.log'), `${new Date().toISOString()} gm ${login} failed: ${lastError}\n`).catch(() => {});
+      send('repack:notice', { key: 'account.gmFailed', text: 'GM 等级未能写入 account_access 表：请稍后在服务器设置里重试。' });
+    }
+    return result;
+  });
   handle('repack:accountPassword', (name, password) => requireControl().createAccount(text(name, 20), text(password, 20), false, { change: true }));
   // The server's logs (CoreLogs): the console scrolls too fast, the files keep everything.
   handle('repack:openLogs', async () => {
     if (!serverPath()) throw new Error('Choose the server folder first.');
-    const error = await shell.openPath(path.join(serverPath(), 'Core', 'Logs'));
+    const error = await shell.openPath(path.join(serverPath(), ...require('./layout.cjs').serverLayout(serverPath()).logs.split('/')));
     if (error) throw new Error(error);
   });
   handle('repack:openFolder', async () => {
@@ -1581,7 +1651,7 @@ function registerIpc() {
     const settingsList = await serverTools().config.profile();
     const current = await network.readNetwork(serverPath()).catch(() => null);
     const day = new Date().toISOString().slice(0, 10);
-    const result = await dialog.showSaveDialog(window, { title: 'Save the settings profile', defaultPath: path.join(app.getPath('documents'), `squidbots-profile-${day}.json`), filters: [{ name: 'SquidBots profile', extensions: ['json'] }] });
+    const result = await dialog.showSaveDialog(window, { title: '保存设置配置档', defaultPath: path.join(app.getPath('documents'), `squidbots-profile-${day}.json`), filters: [{ name: 'SquidBots 配置档', extensions: ['json'] }] });
     if (result.canceled || !result.filePath) return null;
     const bots = inspectRepack(serverPath()).bots;
     await fs.writeFile(result.filePath, JSON.stringify({ format: 'squidbots-profile', version: 1, createdAt: new Date().toISOString(), launcher: app.getVersion(), bots: bots?.version || '', settings: settingsList, network: current?.chosen ? { mode: current.mode, address: current.address, name: current.name } : null }, null, 2));
@@ -1589,7 +1659,7 @@ function registerIpc() {
   });
   handle('srvconf:importProfile', async () => {
     requireServer();
-    const result = await dialog.showOpenDialog(window, { title: 'Open a settings profile', properties: ['openFile'], filters: [{ name: 'SquidBots profile', extensions: ['json'] }] });
+    const result = await dialog.showOpenDialog(window, { title: '打开设置配置档', properties: ['openFile'], filters: [{ name: 'SquidBots 配置档', extensions: ['json'] }] });
     if (result.canceled || !result.filePaths[0]) return null;
     let data = null;
     try { data = JSON.parse((await fs.readFile(result.filePaths[0], 'utf8')).replace(/^\uFEFF/, '')); } catch {}
@@ -1706,7 +1776,7 @@ function registerIpc() {
   });
   handle('upgrade:chooseFolder', async purpose => {
     const result = await dialog.showOpenDialog(window, {
-      title: purpose === 'old' ? 'Choose the folder of the old repack' : 'Choose an empty folder for the new version',
+      title: purpose === 'old' ? '选择旧整合包目录' : '为新版本选择一个空文件夹',
       properties: purpose === 'old' ? ['openDirectory'] : ['openDirectory', 'createDirectory'],
       defaultPath: serverPath() ? path.dirname(serverPath()) : 'C:\\',
     });
@@ -2008,14 +2078,14 @@ function registerIpc() {
       `Realm address: ${client.realmlist}`,
       `Game update state: ${client.progress.phase} ${client.progress.message || ''}`,
       '',
-      server ? `Server folder: ${server.path || '-'}` : 'No local server configured.',
-      server?.details ? `Repack: ${server.details.release || '?'} (launcher release ${server.version || '-'})` : '',
-      server?.bots ? `Bots: ${server.bots.installed ? `${server.bots.version} for ${server.bots.builtFor}` : 'not installed'}` : '',
-      server ? `Services: ${server.services.map(service => `${service.name} ${service.state}`).join(', ')}` : '',
+      server ? `服务器目录：${server.path || '-'}` : '未配置本地服务器。',
+      server?.details ? `整合包：${server.details.release || '?'}（启动器识别版本 ${server.version || '-'}）` : '',
+      server?.bots ? `机器人：${server.bots.installed ? `${server.bots.version}，适用于 ${server.bots.builtFor}` : '未安装'}` : '',
+      server ? `服务：${server.services.map(service => `${service.name} ${service.state}`).join('、')}` : '',
     ].filter(line => line !== undefined).join('\n');
     const zip = await support.buildReport({ summary, gameRoot: client.installed ? client.path : '', serverRoot: server?.path || '' });
     const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '');
-    const result = await dialog.showSaveDialog(window, { title: 'Save the support report', defaultPath: path.join(app.getPath('desktop'), `support-${stamp}.zip`), filters: [{ name: 'Zip', extensions: ['zip'] }] });
+    const result = await dialog.showSaveDialog(window, { title: '保存支持报告', defaultPath: path.join(app.getPath('desktop'), `support-${stamp}.zip`), filters: [{ name: '压缩包', extensions: ['zip'] }] });
     if (result.canceled || !result.filePath) return null;
     await fs.writeFile(result.filePath, zip);
     shell.showItemInFolder(result.filePath);
@@ -2031,7 +2101,7 @@ function registerIpc() {
   handle('verify:cleanLogs', async () => {
     if (!serverPath()) throw new Error('Choose the server folder first.');
     const root = serverPath();
-    const folders = ['Core/Logs', 'CoA-Bots/Core/Logs', ...(await fs.readdir(path.join(root, 'Royaumes')).catch(() => [])).map(key => `Royaumes/${key}/Logs`)];
+    const folders = [require('./layout.cjs').serverLayout(root).logs, 'Core/Logs', 'CoA-Bots/Core/Logs', ...(await fs.readdir(path.join(root, 'Royaumes')).catch(() => [])).map(key => `Royaumes/${key}/Logs`)];
     const worldOn = (await requireControl().status()).some(service => /world/i.test(service.id) && service.state !== 'stopped')
       || (await realms.status(root, { live: false }).catch(() => ({ realms: [] }))).realms.some(realm => ['running', 'starting', 'stopping'].includes(realm.state));
     let deleted = 0;
@@ -2083,6 +2153,14 @@ async function runSmoke() {
   let index = 0;
   for (const page of pages) {
     log(`step ${page}`);
+    //By leewheel 2026-11-02 巡检支持 eval:<表达式>：把页面里任意表达式的结果写进日志，方便核对状态
+    //（表达式里带逗号时用 eval64:<base64>，因为步骤列表本身按逗号分隔）
+    if (page.startsWith('eval:') || page.startsWith('eval64:')) {
+      const code = page.startsWith('eval64:') ? Buffer.from(page.slice(7), 'base64').toString('utf8') : page.slice(5);
+      const value = await window.webContents.executeJavaScript(code).catch(error => `error: ${error.message}`);
+      await log(`eval: ${typeof value === 'string' ? value.slice(0, 4000) : JSON.stringify(value)?.slice(0, 4000)}`);
+      continue;
+    }
     const until = /^until:(.+):(\d+)$/.exec(page);
     if (until) {
       const deadline = Date.now() + Number(until[2]) * 1000;
@@ -2097,6 +2175,9 @@ async function runSmoke() {
     const image = await window.webContents.capturePage();
     index++;
     await fs.writeFile(path.join(smokeDir, `${String(index).padStart(2, '0')}-${page.replace(/[^a-z0-9-]/gi, '_').slice(0, 60)}.png`), image.toPNG());
+    //By leewheel 2026-11-02 每次巡检把页面可见文字写进日志：便于核对汉化是否到位
+    const seen = await window.webContents.executeJavaScript('(document.body.innerText || "").replace(/\\s+/g, " ").slice(0, 4000)').catch(() => '');
+    await log(`text: ${seen}`);
   }
   app.quit();
 }
@@ -2294,7 +2375,7 @@ function localNote(body) {
 let dashboardWindow = null;
 function openDashboardWindow(url) {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) { dashboardWindow.loadURL(url); dashboardWindow.show(); dashboardWindow.focus(); return; }
-  dashboardWindow = new BrowserWindow({ width: 1320, height: 860, minWidth: 900, minHeight: 600, title: 'SquidBots Dashboard', backgroundColor: '#04121c', autoHideMenuBar: true,
+  dashboardWindow = new BrowserWindow({ width: 1320, height: 860, minWidth: 900, minHeight: 600, title: 'SquidBots 控制面板', backgroundColor: '#04121c', autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   dashboardWindow.removeMenu();
   const local = target => /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(target);
@@ -2314,7 +2395,7 @@ const NOTE_TEXT = {
   en: { update: ['New version {version}', 'An update of the server is ready to install in the launcher.'], ready: ['Server ready', 'The world is up: you can play.'], crash: ['The world stopped', 'The worldserver crashed. A crash report was written (Verification).'], restarted: ['The world is starting again', 'The worldserver crashed and is being started again.'], open: 'Open the launcher', quit: 'Close the launcher (the server keeps running)' },
   fr: { update: ['Nouvelle version {version}', 'Une mise à jour du serveur est prête à installer dans le launcher.'], ready: ['Serveur prêt', 'Le monde est lancé : vous pouvez jouer.'], crash: ['Le monde s\'est arrêté', 'Le worldserver a planté. Un rapport de crash a été écrit (Vérification).'], restarted: ['Le monde redémarre', 'Le worldserver a planté et redémarre.'], open: 'Ouvrir le launcher', quit: 'Fermer le launcher (le serveur continue)' },
   ru: { update: ['Новая версия {version}', 'Обновление сервера готово к установке в лаунчере.'], ready: ['Сервер готов', 'Мир запущен: можно играть.'], crash: ['Мир остановился', 'Worldserver упал. Записан отчёт о сбое (Проверка).'], restarted: ['Мир перезапускается', 'Worldserver упал и запускается снова.'], open: 'Открыть лаунчер', quit: 'Закрыть лаунчер (сервер продолжает работать)' },
-  zh: { update: ['新版本 {version}', '服务器更新已就绪，可在启动器中安装。'], ready: ['服务器就绪', '世界已启动：可以开始游戏了。'], crash: ['世界已停止', 'worldserver 崩溃了。已写入崩溃报告（检查）。'], restarted: ['世界正在重新启动', 'worldserver 崩溃了，正在重新启动。'], open: '打开启动器', quit: '关闭启动器（服务器继续运行）' },
+  zh: { update: ['新版本 {version}', '服务器更新已就绪，可在启动器中安装。'], ready: ['服务器就绪', '世界已启动：可以开始游戏了。'], crash: ['世界已停止', 'worldserver 崩溃了。已写入崩溃报告（检查）。'], restarted: ['世界正在重新启动', 'worldserver 崩溃了，正在重新启动。'], open: '打开启动器', quit: '关闭启动器并停止服务器' },
 };
 const noteWords = () => NOTE_TEXT[settings?.language] || NOTE_TEXT.en;
 function showWindow() { if (!window) return; if (window.isMinimized()) window.restore(); window.show(); window.focus(); }
@@ -2348,11 +2429,28 @@ async function createTray() {
   tray.setContextMenu(menu());
   tray.on('right-click', () => tray.setContextMenu(menu()));
 }
+//By leewheel 2026-11-02 中文发射版：关闭拦截与启动失败的系统对话框文案（中文优先，保留英文回退）
+const BOX_TEXT = {
+  zh: {
+    updateBusy: ['更新进行中', '服务器正在更新。现在关闭会中断更新：请等它显示完成。'],
+    filesApplying: ['更新进行中', '正在安装文件。请等几秒再关闭。'],
+    serverBusy: ['服务器操作进行中', '服务器正在启动、停止或更新。请等它完成后再关闭。'],
+    launchFailed: ['启动器无法启动'],
+  },
+  en: {
+    updateBusy: ['Update in progress', 'The server is being updated. Closing now would cut the update: please wait until it says it is done.'],
+    filesApplying: ['Update in progress', 'Files are being installed. Please wait a few seconds before closing.'],
+    serverBusy: ['Server operation in progress', 'The server is starting, stopping or being updated. Please wait until it is done before closing.'],
+    launchFailed: ['The launcher could not start'],
+  },
+};
+const boxText = key => ((BOX_TEXT[settings?.language] || BOX_TEXT.zh)[key]);
 const CLOSE_TEXT = {
   en: { title: 'The server keeps running', message: 'Warning: this closes only the launcher, the server keeps running.', detail: 'Open the launcher again to stop it (Stop all on the home page).', close: 'Close the launcher', cancel: 'Cancel', again: 'Do not show this again' },
   fr: { title: 'Le serveur continue de tourner', message: 'Attention : ceci ferme seulement le launcher, le serveur continue de tourner.', detail: "Rouvrez le launcher pour l'arrêter (Tout arrêter sur l'accueil).", close: 'Fermer le launcher', cancel: 'Annuler', again: 'Ne plus afficher' },
   ru: { title: 'Сервер продолжает работать', message: 'Внимание: закрывается только лаунчер, сервер продолжает работать.', detail: 'Откройте лаунчер снова, чтобы остановить его (Остановить всё на главной).', close: 'Закрыть лаунчер', cancel: 'Отмена', again: 'Больше не показывать' },
-  zh: { title: '服务器继续运行', message: '注意：这只会关闭启动器，服务器会继续运行。', detail: '重新打开启动器即可停止它（主页上的“全部停止”）。', close: '关闭启动器', cancel: '取消', again: '不再显示' },
+  //By leewheel 2026-11-02 本发布版的服务由启动器直接拉起（没有独立管理器），关闭启动器就要优雅停止服务器
+  zh: { title: '关闭启动器会停止服务器', message: '关闭启动器会先保存并停止服务器（MySQL、登录服、世界服），然后退出。', detail: '确认后请稍等几秒，等世界服务器把角色数据保存完成。', close: '关闭并停止服务器', cancel: '取消', again: '不再显示' },
 };
 async function closeWithNotice() {
   // Kept in the notification area: the window only hides.
@@ -2363,6 +2461,8 @@ async function closeWithNotice() {
     const answer = await dialog.showMessageBox(window, { type: 'info', title: words.title, message: words.message, detail: words.detail, buttons: [words.close, words.cancel], defaultId: 0, cancelId: 1, checkboxLabel: words.again, noLink: true });
     if (answer.response !== 0) return;
     if (answer.checkboxChecked) await persist({ ...settings, hideCloseNotice: true }).catch(() => {});
+    //By leewheel 2026-11-02 关闭前先优雅停止（世界服保存角色数据），再退出
+    await serverControl()?.stopAll().catch(() => {});
   }
   closing = true;
   window?.close();
@@ -2392,12 +2492,14 @@ async function main() {
   firstRunOfLauncher = firstRun;
   if (firstRun) settings.lastSeenVersion = app.getVersion();
   if (firstRun) {
-    const locale = app.getLocale().toLowerCase();
-    settings.language = locale.startsWith('fr') ? 'fr' : locale.startsWith('ru') ? 'ru' : locale.startsWith('zh') ? 'zh' : 'en';
+    //By leewheel 2026-11-02 中文发射版：首次启动一律使用简体中文界面（系统语言不再决定界面语言）
+    settings.language = 'zh';
     await writeSettings(settingsFile, settings).catch(() => {});
   }
   // Windows shows notifications only for an app with its own id (the installer's appId; the exe itself when run from the sources).
   if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? (config.edition === 'server' ? 'org.squidbots.server' : 'org.coa.launcher-lite') : process.execPath);
+  //By leewheel 2026-11-02 同级的 Client\ 与 Server\ 自动识别，玩家不需要再手动指目录
+  await detectPublishedFolders();
   createUpdaters();
   launcherUpdates = createLauncherUpdates(app, { feedUrl: config.launcherUpdateUrl, key: config.launcherUpdateKey, fetchImpl: netFetch }, status => send('launcher:update', status), async () => {
     if (busyFiles || updater?.busy) throw new Error('Wait for the current operation to finish.');
@@ -2425,18 +2527,18 @@ async function main() {
   window.on('close', event => {
     if (update.busy) {
       event.preventDefault();
-      dialog.showMessageBox(window, { type: 'warning', title: 'Update in progress', message: 'The server is being updated. Closing now would cut the update: please wait until it says it is done.' });
+      dialog.showMessageBox(window, { type: 'warning', title: boxText('updateBusy')[0], message: boxText('updateBusy')[1] });
       return;
     }
     if (updater?.status.phase === 'applying' || repackUpdater?.status.phase === 'applying') {
       event.preventDefault();
-      dialog.showMessageBox(window, { type: 'info', title: 'Update in progress', message: 'Files are being installed. Please wait a few seconds before closing.' });
+      dialog.showMessageBox(window, { type: 'info', title: boxText('filesApplying')[0], message: boxText('filesApplying')[1] });
       return;
     }
     // Closing would cut the repack's own start/stop script half-way and leave services behind.
     if (control?.states.size || bots?.child || upgradeState.running) {
       event.preventDefault();
-      dialog.showMessageBox(window, { type: 'info', title: 'Server operation in progress', message: 'The server is starting, stopping or being updated. Please wait until it is done before closing.' });
+      dialog.showMessageBox(window, { type: 'info', title: boxText('serverBusy')[0], message: boxText('serverBusy')[1] });
       return;
     }
     if (closing || smokeDir) return;
@@ -2450,7 +2552,19 @@ async function main() {
     const found = serverControl();
     if (window && window.isVisible() && !window.isMinimized() && found) send('repack:services', await found.status().catch(() => []));
   }, 5000).unref();
-  app.on('before-quit', () => { closing = true; dashboard.stop(); if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.destroy(); });
+  //By leewheel 2026-11-02 退出（托盘/系统关机/窗口关闭）前先优雅停止服务器，避免世界服来不及保存角色数据
+  let quittingServer = false;
+  app.on('before-quit', event => {
+    closing = true;
+    dashboard.stop();
+    if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.destroy();
+    const found = serverControl();
+    const busy = !!found && (found.children.size > 0 || found.states.size > 0);
+    if (quittingServer || smokeDir || !busy) return;
+    event.preventDefault();
+    quittingServer = true;
+    found.stopAll().catch(() => {}).finally(() => app.exit(0));
+  });
   setTimeout(() => launcherUpdates.check(), 1500).unref();
   if (config.edition === 'server' && !smokeDir) createTray().catch(() => {});
   // The server watched every 20 seconds, window shown or not: ready, crash (and restart), the daily backup.
@@ -2471,6 +2585,6 @@ async function main() {
 if (!smokeDir && !app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => showWindow());
-  app.whenReady().then(main).catch(error => { dialog.showErrorBox('The launcher could not start', error.message); app.quit(); });
+  app.whenReady().then(main).catch(error => { dialog.showErrorBox(boxText('launchFailed')[0], error.message); app.quit(); });
   app.on('window-all-closed', () => app.quit());
 }

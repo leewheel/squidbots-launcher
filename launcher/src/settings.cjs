@@ -9,7 +9,8 @@ const PAGES = new Set(['play', 'server']);
 const THEMES = new Set(['classic', 'abyss']);
 const CHANNELS = new Set(['stable', 'test']);
 const defaults = Object.freeze({
-  language: 'fr', theme: 'abyss', channel: 'stable', startPage: 'play', realmlist: '', minimizeOnLaunch: true, reduceMotion: false,
+  //By leewheel 2026-11-02 中文发射版：默认界面语言改为简体中文
+  language: 'zh', theme: 'abyss', channel: 'stable', startPage: 'play', realmlist: '', minimizeOnLaunch: true, reduceMotion: false,
   autoCheckAddons: true, betaUpdates: false, hideCloseNotice: false, trayOnClose: false, notifications: true, startWithWindows: false, startServerOnOpen: false, restartWorldOnCrash: false, dailyBackup: true, lastSeenVersion: '', installPaths: {}, components: {}, instances: [], modules: { squidbots: true },
 });
 

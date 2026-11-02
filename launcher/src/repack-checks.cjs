@@ -10,6 +10,8 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const exec = promisify(execFile);
+//By leewheel 2026-11-02 目录布局适配：发布版（平铺布局）与官方整合包布局都用 layout 提供的路径
+const { serverLayout } = require('./layout.cjs');
 const read = file => fsp.readFile(file, 'utf8').catch(() => null);
 const confValue = (text, key) => {
   const match = text?.match(new RegExp(`^[ \\t]*${key.replace(/\./g, '\\.')}[ \\t]*=[ \\t]*"?([^"\\r\\n]*)"?[ \\t]*$`, 'mi'));
@@ -18,7 +20,9 @@ const confValue = (text, key) => {
 // A key glued to the line above by a lone \r (launchers before 0.3.51 on CRLF files): the server no longer sees it.
 const GLUED = /\r(?!\n)(?=[ \t]*[A-Za-z][\w.]*[ \t]*=)/g;
 async function gluedConfs(root) {
-  const folders = ['Core/configs', 'Core/configs/modules', 'CoA-Bots/Core/configs/modules', 'Settings'];
+  const L = serverLayout(root);
+  //By leewheel 2026-11-02 配置文件目录按布局取（发布版是 configs 与 configs/modules）
+  const folders = [L.configs, L.modules, 'CoA-Bots/Core/configs/modules', 'Settings'];
   for (const realm of await fsp.readdir(path.join(root, 'Royaumes'), { withFileTypes: true }).catch(() => [])) {
     if (realm.isDirectory()) folders.push(`Royaumes/${realm.name}/configs`, `Royaumes/${realm.name}/configs/modules`);
   }
@@ -44,7 +48,7 @@ async function tailText(file, bytes = 2 * 1024 * 1024) {
     return buffer.toString('utf8');
   } finally { await handle.close(); }
 }
-const EXPECTED_DATA =new Set(['acore_auth', 'acore_characters', 'acore_world', 'acore_playerbots', 'mysql', 'performance_schema', 'sys']);
+const EXPECTED_DATA =new Set(['acore_auth', 'acore_characters', 'acore_world', 'acore_playerbots', 'mysql', 'performance_schema', 'sys', 'logs', 'uploads', 'backups']);
 // The databases of the launcher's extra realms (Realms tab): Wildcard, Reborn and any later one.
 const REALM_DATA = /^acore_(characters|playerbots)_[a-z]+$/i;
 const OLD_LFG_UPDATE = 'CoA-Bots/Database/world/updates/rev_20260925_50_lfg_wing_final_bosses.sql';
@@ -59,6 +63,9 @@ async function processes() {
 
 async function repackChecks({ root, add, mysqlQuery, services }) {
   const inside = file => path.resolve(file).toLowerCase().startsWith(path.resolve(root).toLowerCase() + path.sep);
+  //By leewheel 2026-11-02 先识别布局：官方整合包（Core/…，含目录还没装齐的旧目录）或本项目的发布版（worldserver.exe 在根目录）
+  const L = serverLayout(root);
+  const standard = L.kind !== 'flat';
 
   // ---- where the repack lives
   const lower = root.toLowerCase();
@@ -68,18 +75,20 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
   // ---- what the server needs on disk
   const missingData = [];
   for (const folder of ['maps', 'vmaps', 'mmaps', 'dbc']) {
-    const entries = await fsp.readdir(path.join(root, 'Data', folder)).catch(() => []);
+    const entries = await fsp.readdir(path.join(root, ...`${L.data}/${folder}`.split('/'))).catch(() => []);
     if (!entries.length) missingData.push(folder);
   }
   // A server assembled from the client builds its mmaps in the background: the world starts without them (bots then
   // walk in straight lines), so that is a warning, not a fault.
   const building = missingData.length === 1 && missingData[0] === 'mmaps' && fs.existsSync(path.join(root, 'Assembler', 'coa_assemble.py'));
   add('setup', 'data.maps', building ? 'warn' : missingData.length ? 'bad' : 'ok', { missing: missingData.join(', ') });
-  add('setup', 'runtime.python', fs.existsSync(path.join(root, 'Runtime/python/python.exe')) ? 'ok' : 'bad');
+  // 发布版没有 Runtime/python（不靠 Python 脚本管理服务），只要求世界程序与配置文件在位
+  if (standard) add('setup', 'runtime.python', fs.existsSync(path.join(root, 'Runtime/python/python.exe')) ? 'ok' : 'bad');
+  else add('setup', 'core.binaries', fs.existsSync(path.join(root, ...L.world.split('/'))) && fs.existsSync(path.join(root, ...L.configs.split('/'))) ? 'ok' : 'bad');
 
   // ---- settings (the templates are the source; the .conf files are written from them at every start)
-  const worldTemplate = await read(path.join(root, 'Settings/worldserver.conf.template'));
-  const manage = await read(path.join(root, 'Scripts/manage.py'));
+  const worldTemplate = standard ? await read(path.join(root, 'Settings/worldserver.conf.template')) : null;
+  const manage = standard ? await read(path.join(root, 'Scripts/manage.py')) : null;
   if (worldTemplate && fs.existsSync(path.join(root, 'Source/sql-tree'))) {
     const enable = confValue(worldTemplate, 'Updates.EnableDatabases');
     const source = confValue(worldTemplate, 'SourceDirectory');
@@ -87,18 +96,21 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
     add('settings', 'conf.updates', ok ? 'ok' : 'bad', { value: enable ?? '?' }, !ok && manage?.includes('@SOURCE@') ? 'fix:updates' : '');
   }
   const confDist = [];
-  for (const folder of ['Core/configs/modules', 'CoA-Bots/Core/configs/modules']) {
-    const entries = await fsp.readdir(path.join(root, folder)).catch(() => []);
+  for (const folder of [L.modules, 'CoA-Bots/Core/configs/modules']) {
+    const entries = await fsp.readdir(path.join(root, ...folder.split('/'))).catch(() => []);
     for (const name of entries) if (name.endsWith('.conf.dist') && !entries.includes(name.slice(0, -5))) confDist.push(`${folder}/${name.slice(0, -5)}`);
   }
   add('settings', 'conf.dist', confDist.length ? 'bad' : 'ok', { files: confDist.slice(0, 6).join(', '), count: confDist.length }, confDist.length ? 'fix:conf-dist' : '');
   const glued = await gluedConfs(root);
   add('settings', 'conf.glued', glued.length ? 'bad' : 'ok', { files: glued.slice(0, 6).join(', '), count: glued.length }, glued.length ? 'fix:conf-glued' : '');
 
-  const botsConf = await read(path.join(root, 'CoA-Bots/Core/configs/modules/playerbots.conf'));
+  //By leewheel 2026-11-02 机器人配置在两种布局下的位置（发布版就是 configs/modules）
+  const botsConfFile = path.join(root, ...`${L.botsConfigs}/modules/playerbots.conf`.split('/'));
+  const botsConf = await read(botsConfFile);
   if (botsConf) {
     const updates = confValue(botsConf, 'Playerbots.Updates.EnableDatabases');
-    add('settings', 'bots.dbupdates', updates && updates !== '0' ? 'bad' : 'ok', { value: updates ?? '0' }, updates && updates !== '0' ? 'fix:bots-updates' : '');
+    //By leewheel 2026-11-02 发布版由 worldserver 自己执行 Playerbots 库更新（没有 Python 安装器），这条检查不适用
+    if (standard) add('settings', 'bots.dbupdates', updates && updates !== '0' ? 'bad' : 'ok', { value: updates ?? '0' }, updates && updates !== '0' ? 'fix:bots-updates' : '');
     const placeholders = /<MYSQL_PORT>|<APP_PASSWORD>/.test(botsConf);
     add('settings', 'bots.conf', placeholders ? 'bad' : 'ok', {}, placeholders ? 'bots-install' : '');
     const whisper = confValue(botsConf, 'AiPlayerbot.BotsWhisperPublic');
@@ -112,10 +124,10 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
     }
   }
   // S13: with the bots, the worldserver reads CoA-Bots\Core\configs\modules\playerbots.conf, never the repack's.
-  const repackBotsConf = await read(path.join(root, 'Core/configs/modules/playerbots.conf'));
+  const repackBotsConf = standard ? await read(path.join(root, 'Core/configs/modules/playerbots.conf')) : null;
   if (botsConf && repackBotsConf && repackBotsConf !== botsConf) add('settings', 'bots.which', 'warn', {});
   // S14: the installer keeps the old playerbots.conf, so the keys of a newer version stay at their defaults.
-  const botsDist = await read(path.join(root, 'CoA-Bots/Core/configs/modules/playerbots.conf.dist'));
+  const botsDist = await read(`${botsConfFile}.dist`);
   if (botsConf && botsDist) {
     const keys = text => new Set([...text.matchAll(/^[ \t]*([A-Za-z][\w.]*)[ \t]*=/gm)].map(match => match[1]));
     const have = keys(botsConf);
@@ -123,24 +135,27 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
     add('settings', 'bots.missingkeys', missing.length ? 'warn' : 'ok', { count: missing.length, keys: missing.slice(0, 5).join(', ') }, missing.length ? 'fix:bots-keys' : '');
   }
   // S6: the Ascension filter lets only this PC in.
-  const coaConf = await read(path.join(root, 'Core/configs/modules/coa.conf'));
+  const coaConf = await read(path.join(root, ...`${L.modules}/coa.conf`.split('/')));
   if (confValue(coaConf, 'CoA.AllowRemoteClients') === '0') add('settings', 'coa.remote', 'info', {});
   // S7: giant logs, and the verbosity that makes them.
   const big = [];
-  for (const folder of ['Core/Logs', 'CoA-Bots/Core/Logs']) {
-    for (const name of await fsp.readdir(path.join(root, folder)).catch(() => [])) {
-      const stat = await fsp.stat(path.join(root, folder, name)).catch(() => null);
+  //By leewheel 2026-11-02 日志目录按布局取（发布版是 logs）
+  for (const folder of [L.logs, 'CoA-Bots/Core/Logs']) {
+    for (const name of await fsp.readdir(path.join(root, ...folder.split('/'))).catch(() => [])) {
+      const stat = await fsp.stat(path.join(root, ...folder.split('/'), name)).catch(() => null);
       // An old log set aside by the start (world-console.log.1) is named as such: it can simply be deleted.
       if (stat?.isFile() && stat.size > 500 * 1024 ** 2) big.push(`${name} (${Math.round(stat.size / 1024 ** 2)} MB${/\.\d+$/.test(name) ? ', old' : ''})`);
     }
   }
   // The level that counts is the one of the bot server's own config (generated from the template, level lowered there).
-  const playerbotsLogger = confValue(await read(path.join(root, 'CoA-Bots/Core/configs/worldserver.conf')), 'Logger.playerbots') || confValue(worldTemplate, 'Logger.playerbots');
+  const playerbotsLogger = confValue(await read(path.join(root, ...`${L.botsConfigs}/worldserver.conf`.split('/'))), 'Logger.playerbots') || confValue(worldTemplate, 'Logger.playerbots');
   add('health', 'logs.size', big.length ? 'warn' : 'ok', { files: big.join(', '), level: playerbotsLogger || '' }, big.length ? 'logs-clean' : '');
   // S7 / entry 12: "Missing property" lines at the last start, the known harmless ones named as such.
   // Server.log keeps every start: only what follows the last one counts (an older core's lines are history).
   const sinceLastStart = text => { const at = text.lastIndexOf('AzerothCore rev.'); return at < 0 ? text : text.slice(at); };
-  const logText = sinceLastStart((await tailText(path.join(root, 'Core/Logs/world-console.log'))) || '') + sinceLastStart((await tailText(path.join(root, 'Core/Logs/Server.log'))) || '');
+  const logFiles = [`${L.logs}/world-console.log`, `${L.logs}/Server.log`, `${L.logs}/launcher-world.log`];
+  let logText = '';
+  for (const relative of logFiles) logText += sinceLastStart((await tailText(path.join(root, ...relative.split('/')))) || '');
   const missingProps = [...new Set([...logText.matchAll(/Missing property ([\w.]+)/g)].map(match => match[1]))];
   if (missingProps.length) {
     const harmless = missingProps.filter(key => /^(Spellbook\.Enable|DestinyWeaver\.|EtherealBazaar\.Enable|Dynamic\.XP\.)/.test(key));
@@ -148,8 +163,8 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
     // the defaults the server itself suggests.
     const repeats = Math.max(...missingProps.map(key => logText.split(`Missing property ${key} `).length - 1));
     // The fix applies when module .conf.dist files of the repack are not where the server reads them.
-    const shipped = (await fsp.readdir(path.join(root, 'CoA-Bots/Core/configs/modules')).catch(() => [])).filter(name => name.endsWith('.conf.dist') && !name.startsWith('playerbots'));
-    const copyable = shipped.filter(name => !fs.existsSync(path.join(root, 'Core/configs/modules', name.slice(0, -5))));
+    const shipped = standard ? (await fsp.readdir(path.join(root, 'CoA-Bots/Core/configs/modules')).catch(() => [])).filter(name => name.endsWith('.conf.dist') && !name.startsWith('playerbots')) : [];
+    const copyable = shipped.filter(name => !fs.existsSync(path.join(root, ...`${L.modules}/${name.slice(0, -5)}`.split('/'))));
     add('settings', 'conf.missing', repeats > 500 ? 'warn' : 'info', { count: missingProps.length, keys: missingProps.slice(0, 5).join(', '), harmless: harmless.length, repeats, copyable: copyable.length }, copyable.length ? 'fix:missing-props' : '');
   }
   // A 1.6 extracted over a 1.5 leaves a world update the installer then trips over ("Replace ... oldValue").
@@ -163,7 +178,7 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
   }
 
   // ---- MySQL's own files
-  const dataEntries = await fsp.readdir(path.join(root, 'mysql/data'), { withFileTypes: true }).catch(() => []);
+  const dataEntries = await fsp.readdir(path.join(root, 'mysql', fs.existsSync(path.join(root, 'mysql', 'data')) ? 'data' : 'Data'), { withFileTypes: true }).catch(() => []);
   const strangers = dataEntries.filter(entry => entry.isDirectory() && !entry.name.startsWith('#') && !EXPECTED_DATA.has(entry.name.toLowerCase()) && !REALM_DATA.test(entry.name)).map(entry => entry.name);
   add('database', 'mysql.folders', strangers.length ? 'bad' : 'ok', { folders: strangers.slice(0, 5).join(', ') });
   let tablespace = false;
@@ -180,7 +195,7 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
   const foreignMysql = running.find(item => item.name.toLowerCase() === 'mysqld.exe' && item.file && !inside(item.file));
   if (foreignMysql) add('services', 'mysql.foreign', 'warn', { file: foreignMysql.file });
   const world = running.find(item => item.name.toLowerCase() === 'worldserver.exe' && inside(item.file));
-  if (world && fs.existsSync(path.join(root, 'CoA-Bots/Core/worldserver.exe'))) {
+  if (world && standard && fs.existsSync(path.join(root, 'CoA-Bots/Core/worldserver.exe'))) {
     const withBots = world.file.toLowerCase().includes('\\coa-bots\\core\\');
     add('services', 'world.bots', withBots ? 'ok' : 'info', {});
   }
@@ -256,11 +271,12 @@ const FIXES = {
   },
   // 11: a module without its .conf: the .conf.dist is copied (nothing overwritten).
   'conf-dist': async ({ root }) => {
-    for (const folder of ['Core/configs/modules', 'CoA-Bots/Core/configs/modules']) {
-      const entries = await fsp.readdir(path.join(root, folder)).catch(() => []);
+    const L = serverLayout(root);
+    for (const folder of [L.modules, 'CoA-Bots/Core/configs/modules']) {
+      const entries = await fsp.readdir(path.join(root, ...folder.split('/'))).catch(() => []);
       for (const name of entries) {
         if (!name.endsWith('.conf.dist') || entries.includes(name.slice(0, -5))) continue;
-        await fsp.copyFile(path.join(root, folder, name), path.join(root, folder, name.slice(0, -5)), fs.constants.COPYFILE_EXCL);
+        await fsp.copyFile(path.join(root, ...folder.split('/'), name), path.join(root, ...folder.split('/'), name.slice(0, -5)), fs.constants.COPYFILE_EXCL);
       }
     }
   },
@@ -277,12 +293,12 @@ const FIXES = {
     }
   },
   // 8: the bots database is updated by the installer, never by the worldserver.
-  'bots-updates': ({ root }) => setConf(path.join(root, 'CoA-Bots/Core/configs/modules/playerbots.conf'), 'Playerbots.Updates.EnableDatabases', '0'),
+  'bots-updates': ({ root }) => setConf(path.join(root, ...`${serverLayout(root).botsConfigs}/modules/playerbots.conf`.split('/')), 'Playerbots.Updates.EnableDatabases', '0'),
   // 10: bots no longer whisper every quest step.
-  whisper: ({ root }) => setConf(path.join(root, 'CoA-Bots/Core/configs/modules/playerbots.conf'), 'AiPlayerbot.BotsWhisperPublic', '0'),
+  whisper: ({ root }) => setConf(path.join(root, ...`${serverLayout(root).botsConfigs}/modules/playerbots.conf`.split('/')), 'AiPlayerbot.BotsWhisperPublic', '0'),
   // S14: the keys a newer bots version added, with their .dist defaults, appended to playerbots.conf.
   'bots-keys': async ({ root }) => {
-    const file = path.join(root, 'CoA-Bots/Core/configs/modules/playerbots.conf');
+    const file = path.join(root, ...`${serverLayout(root).botsConfigs}/modules/playerbots.conf`.split('/'));
     const conf = await fsp.readFile(file, 'utf8');
     const dist = await fsp.readFile(`${file}.dist`, 'utf8');
     const have = new Set([...conf.matchAll(/^[ \t]*([A-Za-z][\w.]*)[ \t]*=/gm)].map(match => match[1]));
@@ -297,7 +313,7 @@ const FIXES = {
   // .conf made from it. Nothing is overwritten; playerbots.conf stays where the bots read it.
   'missing-props': async ({ root }) => {
     const from = path.join(root, 'CoA-Bots/Core/configs/modules');
-    const to = path.join(root, 'Core/configs/modules');
+    const to = path.join(root, ...serverLayout(root).modules.split('/'));
     await fsp.mkdir(to, { recursive: true });
     for (const name of await fsp.readdir(from).catch(() => [])) {
       if (!name.endsWith('.conf.dist') || name.startsWith('playerbots')) continue;

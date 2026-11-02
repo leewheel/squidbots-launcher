@@ -22,9 +22,35 @@ function t(key, fallback, vars) {
 
 // Errors come in English from the realm service and the launcher engine; a locale translates
 // them with "err:<English message>" keys, anything unknown is shown as is.
+//By leewheel 2026-11-02 中文发射版：支持带变量的报错文案模板（err:Port {port} is already used…）
+//模板键里用 {name} 占位，译文里同样用 {name} 取同一个值，顺序可以与原文不同。
+let errCache = { lang: '', list: [] };
+function errTemplates() {
+  if (errCache.lang === I18N.lang) return errCache.list;
+  const list = [];
+  for (const [key, text] of Object.entries(I18N.dict)) {
+    if (!key.startsWith('err:') || !key.includes('{')) continue;
+    const names = [];
+    const parts = key.slice(4).split(/\{(\w+)\}/g);
+    // split 的偶数位是字面量、奇数位是占位名
+    const source = parts.map((part, index) => (index % 2 ? (names.push(part), '(.+?)') : part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).join('');
+    try { list.push({ names, text, pattern: new RegExp(`^${source}$`) }); } catch { /* 不合法的模板直接忽略 */ }
+  }
+  errCache = { lang: I18N.lang, list };
+  return list;
+}
 function translateError(message) {
   const key = `err:${message}`;
-  return Object.hasOwn(I18N.dict, key) ? I18N.dict[key] : message;
+  if (Object.hasOwn(I18N.dict, key)) return I18N.dict[key];
+  const text = String(message ?? '');
+  if (!text) return text;
+  for (const template of errTemplates()) {
+    const found = template.pattern.exec(text);
+    if (!found) continue;
+    const values = Object.fromEntries(template.names.map((name, index) => [name, found[index + 1]]));
+    return template.text.replace(/\{(\w+)\}/g, (_m, name) => (values[name] ?? `{${name}}`));
+  }
+  return text;
 }
 
 function formatNumber(value) { return Number.isFinite(Number(value)) ? new Intl.NumberFormat(I18N.lang).format(Number(value)) : '—'; }

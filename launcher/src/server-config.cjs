@@ -16,6 +16,8 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { atomicJson, readJson } = require('./release-format.cjs');
 const CATALOG = require('./data/server-settings.json');
+//By leewheel 2026-11-02 布局适配：设置文件的位置（官方整合包 Core/configs、发布版 configs）
+const { serverLayout } = require('./layout.cjs');
 
 const KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/;
 const LINE = /^([ \t]*)([A-Za-z][A-Za-z0-9_.-]*)([ \t]*=[ \t]*)([^\r\n]*?)([ \t]*)$/;
@@ -123,7 +125,8 @@ class ServerConfig {
 
   resolve(relative) {
     const file = path.resolve(this.root, relative);
-    if (!file.startsWith(this.root + path.sep)) throw new Error('Path outside the repack folder.');
+    //By leewheel 2026-11-02 根目录本身也算合法（与 server-control 保持一致）
+    if (file !== this.root && !file.startsWith(this.root + path.sep)) throw new Error('Path outside the repack folder.');
     return file;
   }
 
@@ -132,21 +135,24 @@ class ServerConfig {
   // Every editable .conf, with the file its defaults and documentation come from.
   async files() {
     const found = [];
+    const layout = serverLayout(this.root);
+    const configs = layout.configs;
+    const modules = layout.modules;
     const add = (id, relative, dist, scope) => {
       if (!this.exists(relative) || found.some(file => file.id === id)) return;
       found.push({ id, name: id, path: relative, dist: dist && this.exists(dist) ? dist : '', scope, template: relative.startsWith('Settings/') });
     };
-    for (const name of TEMPLATED) add(name, `Settings/${name}.template`, `Core/configs/${name === 'coa.conf' ? 'modules/' : ''}${name}.dist`, 'server');
-    for (const [folder, scope] of [['Core/configs/modules', 'server'], ['CoA-Bots/Core/configs/modules', 'bots']]) {
+    for (const name of TEMPLATED) add(name, `Settings/${name}.template`, `${configs}/${name === 'coa.conf' ? 'modules/' : ''}${name}.dist`, 'server');
+    for (const [folder, scope] of [[modules, 'server'], ['CoA-Bots/Core/configs/modules', 'bots']]) {
       const entries = await fsp.readdir(this.resolve(folder)).catch(() => []);
       for (const name of entries.filter(item => /\.conf$/i.test(item)).sort()) {
         if (GENERATED.has(name) || TEMPLATED.has(name)) continue;
         // The bot server copies the repack's module files over its own at every start: those are edited at the source.
-        if (scope === 'bots' && this.exists(`Core/configs/modules/${name}`) && name !== 'playerbots.conf') continue;
+        if (scope === 'bots' && this.exists(`${modules}/${name}`) && name !== 'playerbots.conf') continue;
         add(name, `${folder}/${name}`, `${folder}/${name}.dist`, scope);
       }
     }
-    for (const name of TEMPLATED) add(name, `Core/configs/${name === 'coa.conf' ? 'modules/' : ''}${name}`, `Core/configs/${name === 'coa.conf' ? 'modules/' : ''}${name}.dist`, 'server');
+    for (const name of TEMPLATED) add(name, `${configs}/${name === 'coa.conf' ? 'modules/' : ''}${name}`, `${configs}/${name === 'coa.conf' ? 'modules/' : ''}${name}.dist`, 'server');
     return found;
   }
 
@@ -198,7 +204,7 @@ class ServerConfig {
       recipes: CATALOG.recipes.filter(recipe => (recipe.needs || Object.keys(recipe.changes)).every(key => settings.some(setting => setting.key === key))),
       overrides: CATALOG.overrides,
       changed: Object.keys(changes).length,
-      bots: this.exists('CoA-Bots/coa_bots.py'),
+      bots: this.exists('CoA-Bots/coa_bots.py') || this.exists('configs/modules/playerbots.conf'),
     };
   }
 

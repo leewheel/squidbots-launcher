@@ -109,9 +109,9 @@ const MODULE_ART = {
       <rect width="360" height="110" fill="url(#ma-sc)"/>
       ${[[150, 98, 1.6], [210, 100, 1.2], [26, 18, 1.4], [334, 14, 1.2]].map(([x, y, r]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="#8fa8ff" opacity=".5"/>`).join('')}
       ${dwarf}
-      ${bubble(102, 14, 112, ['you need this?'], blue, 'left', 12.5)}
-      ${bubble(222, 12, 128, ['you know the strat?', 'really?'], purple, 'right', 10.5)}
-      ${bubble(170, 62, 124, ['can i have 5 gold', 'for respec?'], red, 'right', 10.5)}`;
+      ${bubble(102, 14, 112, ['需要这个吗？'], blue, 'left', 12.5)}
+      ${bubble(222, 12, 128, ['知道打法吗？', '真的？'], purple, 'right', 10.5)}
+      ${bubble(170, 62, 124, ['能给我 5 金', '重置天赋吗？'], red, 'right', 10.5)}`;
   })(),
   // A sword on an enchanting table, its runes lit by the enchanter's rod.
   enchanter: `<defs><linearGradient id="ma-en" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2a1748"/><stop offset="1" stop-color="#0b0718"/></linearGradient><radialGradient id="ma-englow"><stop offset="0" stop-color="#c9a5ff" stop-opacity=".55"/><stop offset="1" stop-color="#c9a5ff" stop-opacity="0"/></radialGradient></defs>

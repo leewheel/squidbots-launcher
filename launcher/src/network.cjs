@@ -7,7 +7,9 @@
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+//By leewheel 2026-11-02 布局适配：发布版直接改 configs\*.conf，并用随包的 mysql 客户端写 realmlist 行
+const { serverLayout } = require('./layout.cjs');
 
 const FILE = 'Settings/network.json';
 const ADDRESS = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
@@ -24,8 +26,11 @@ async function readNetwork(root) {
 }
 
 async function currentNetwork(root) {
-  const read = relative => fs.readFile(path.join(root, relative), 'utf8').catch(() => '');
-  const bind = /^[ \t]*BindIP[ \t]*=[ \t]*"([^"]*)"/m.exec(await read('Settings/worldserver.conf.template'))?.[1];
+  const read = relative => fs.readFile(path.join(root, ...relative.split('/')), 'utf8').catch(() => '');
+  const L = serverLayout(root);
+  //By leewheel 2026-11-02 官方整合包读 Settings 模板（启动时会重新生成 conf），发布版直接读 configs 里的 conf
+  let bind = /^[ \t]*BindIP[ \t]*=[ \t]*"([^"]*)"/m.exec(await read('Settings/worldserver.conf.template'))?.[1];
+  if (bind === undefined) bind = /^[ \t]*BindIP[ \t]*=[ \t]*"([^"]*)"/m.exec(await read(`${L.configs}/worldserver.conf`))?.[1];
   const row = /UPDATE acore_auth\.realmlist SET name='([^']*)',address='([^']*)'/.exec(await read('Scripts/manage.py'));
   const address = ADDRESS.test(row?.[2] || '') ? row[2] : DEFAULT.address;
   const name = NAME.test(row?.[1] || '') ? row[1] : DEFAULT.name;
@@ -63,7 +68,24 @@ async function applyNetwork(root, wanted) {
   }
   // The remote console (RA, with the repack account) answers this PC only, even on an open server.
   await edit('Settings/worldserver.conf.template', text => text.replace(/^([ \t]*Ra\.IP[ \t]*=[ \t]*)"[^"]*"/m, '$1"127.0.0.1"'));
+  //By leewheel 2026-11-02 发布版布局：直接改 configs 下的两份配置，并把 realmlist 行写进数据库
+  const layout = serverLayout(root);
+  if (layout.kind === 'flat') {
+    for (const file of [`${layout.configs}/authserver.conf`, `${layout.configs}/worldserver.conf`]) {
+      await edit(file, text => text.replace(/^([ \t]*BindIP[ \t]*=[ \t]*)"[^"]*"/m, `$1"${open ? '0.0.0.0' : '127.0.0.1'}"`));
+    }
+    await edit(`${layout.configs}/worldserver.conf`, text => text.replace(/^([ \t]*Ra\.IP[ \t]*=[ \t]*)"[^"]*"/m, '$1"127.0.0.1"'));
+    await setRealmRow(root, { name: network.name, address }).catch(() => []);
+  }
   return changed;
+}
+
+// 发布版：realmlist 的第一行（id=1）用随包的 mysql 客户端写；MySQL 没跑时静默跳过（下次启动再写）
+function setRealmRow(root, { name, address }) {
+  const exe = path.join(root, 'mysql', 'bin', 'mysql.exe');
+  const ini = path.join(root, 'mysql', 'admin-client.ini');
+  const sql = `UPDATE acore_auth.realmlist SET name='${String(name).replace(/'/g, '')}',address='${String(address).replace(/'/g, '')}' WHERE id = 1`;
+  return new Promise(resolve => execFile(exe, [`--defaults-file=${ini}`, '-e', sql], { windowsHide: true, timeout: 20000 }, () => resolve([])));
 }
 
 async function saveNetwork(root, value) {
@@ -76,7 +98,7 @@ async function saveNetwork(root, value) {
 }
 
 // Our programs: the bots worldserver (the realms run it too), the repack's own worldserver and the authserver.
-const PROGRAMS = { world: ['CoA-Bots/Core/worldserver.exe', 'Core/worldserver.exe'], auth: ['Core/authserver.exe'] };
+const PROGRAMS = { world: ['CoA-Bots/Core/worldserver.exe', 'Core/worldserver.exe', 'worldserver.exe'], auth: ['Core/authserver.exe', 'authserver.exe'] };
 const portList = values => [...new Set(values.map(Number).filter(port => port > 0 && port < 65536))];
 
 // Windows Firewall: one inbound rule for the login and world ports (the realms' too), and our programs allowed on

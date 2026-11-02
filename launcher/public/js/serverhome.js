@@ -77,6 +77,8 @@ const CHECK_TEXT = {
     warn: ['Navigation maps of the bots on the way', 'Data\mmaps is being built from your client (home page). The server already runs; until then, bots may walk in straight lines.'],
   },
   'runtime.python': { ok: ['Python of the repack present', 'Runtime\\python runs the repack scripts.'], bad: ['Python of the repack missing', 'Runtime\\python\\python.exe is missing: repair the core.'] },
+  //By leewheel 2026-11-02 发布版布局：检查的是 worldserver.exe 与 configs 是否在服务器根目录
+  'core.binaries': { ok: ['Server programs present', 'worldserver.exe and the configs folder are in the server folder.'], bad: ['Server programs missing', 'worldserver.exe or the configs folder is missing: the server cannot start. Repair the server folder.'] },
   'conf.updates': {
     ok: ['The server updates its databases', 'Updates.EnableDatabases = 7 and the SQL of this core are found at each start.'],
     bad: ['Database updates are off', 'Updates.EnableDatabases = {value}: the SQL of this core is never applied (errors, crashes). The fix sets 7 in the template.'],
@@ -356,11 +358,11 @@ function homeView() {
   return `<div class="page classic">${asm?.applies ? clientBanner(asm) + mmapsBanner(asm.mmaps) : ''}${info.mmapsRestart ? `<div class="update-banner"><i class="dot"></i><span>${esc(t('assemble.mmapsRestart', 'The navigation maps of the bots are ready. Restart the server so it uses all of them.'))}</span><button class="button primary small" data-action="server-restart">${icon('refresh')}${esc(t('assemble.restart', 'Restart the server'))}</button></div>` : ''}
     <section class="hero classic-hero server-hero">${homeLinks()}
       <div class="classic-main">
-        <h1>SquidBots JS-CoA</h1>
+        <h1>${esc(t('home.heroTitle', 'My server'))}</h1>
         <p class="status-line ${foreign ? 'bad' : ''}">${esc(status)}</p>
         <div class="mini-services">${lights}</div>
         <div class="play-row"><div class="split-button ${button[3]}">
-          <button class="split-main" data-action="${button[2]}" ${button[2] ? '' : 'disabled'} title="${esc(info.bots?.installed ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}">${icon(button[0])}<span><strong>${esc(button[1])}</strong><small>${esc(info.bots?.installed ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}</small></span></button>
+          <button class="split-main" data-action="${button[2]}" ${button[2] ? '' : 'disabled'} title="${esc(info.bots?.installed || info.botsBuiltIn ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}">${icon(button[0])}<span><strong>${esc(button[1])}</strong><small>${esc(info.bots?.installed || info.botsBuiltIn ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}</small></span></button>
           <button class="split-more" data-action="play-menu" aria-label="${esc(t('classic.more', 'More'))}">${icon('chevron')}</button>
           <div class="split-menu" id="play-menu" hidden>${menu.map(([action, id, label]) => `<button data-action="${action}" ${id ? `data-id="${id}"` : ''}>${esc(label)}</button>`).join('')}</div>
         </div>
@@ -370,7 +372,7 @@ function homeView() {
       </div>
       <aside class="classic-side">${updateCard()}${componentCards()}
         <button class="side-card" ${s.update?.state?.state === 'available' ? 'data-action="update-open"' : 'data-tab="verify"'}>${icon('layers')}<span><strong>${esc(t('home.core', 'Core'))}</strong><small>${esc(shortRelease(info.details?.release || info.version) || '—')}</small></span>${s.config.hasUpdates ? `<span class="card-tool" role="button" data-action="update-check" title="${esc(t('settings.checkRepack', 'Check for a repack and bots update'))}">${icon('refresh')}</span>` : ''}${s.updates.core || s.update?.state?.state === 'available' ? '<i class="dot"></i>' : icon('next')}</button>
-        <button class="side-card" data-tab="verify">${icon('bot')}<span><strong>CoA Bots</strong><small>${esc(info.bots?.installed ? `${info.bots.version}${info.bots.builtFor ? ` · ${shortRelease(info.bots.builtFor)}` : ''}` : t('bots.notInstalled', 'Not installed'))}</small></span><span class="card-tool" role="button" data-action="srv-tab" data-id="settings" title="${esc(t('srv.tab.settings', 'Server settings'))}">${icon('settings')}</span>${s.updates.bots ? '<i class="dot"></i>' : icon('next')}</button>
+        <button class="side-card" data-tab="verify">${icon('bot')}<span><strong>${esc(t('home.botsCard', 'Bots'))}</strong><small>${esc(info.bots?.installed ? `${info.bots.version}${info.bots.builtFor ? ` · ${shortRelease(info.bots.builtFor)}` : ''}` : info.botsBuiltIn ? t('bots.builtin', 'Built into the core') : t('bots.notInstalled', 'Not installed'))}</small></span><span class="card-tool" role="button" data-action="srv-tab" data-id="settings" title="${esc(t('srv.tab.settings', 'Server settings'))}">${icon('settings')}</span>${s.updates.bots ? '<i class="dot"></i>' : icon('next')}</button>
         <button class="side-card verify-card ${verifyState}" data-tab="verify">${icon('shield')}<span><strong>${esc(t('tab.verify', 'Verification'))}</strong><small>${esc(verifyText)}</small></span>${icon('next')}</button>
         ${addonCard()}
         ${dash?.available ? `<button class="side-card" data-action="${dash.running ? 'dashboard-open' : 'dashboard-start'}">${icon('chart')}<span><strong>${esc(t('home.dashboard', 'Bots dashboard'))}</strong><small>${esc(dash.running ? t('home.dashboardOpen', 'Running on localhost:{port}: open it', { port: dash.port }) : t('home.dashboardStart', 'Map, bots, stats, chat: start it'))}</small></span>${icon('next')}</button>` : ''}

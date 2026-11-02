@@ -20,7 +20,7 @@ const LOGO = (() => {
     const at = (radius, spread) => `${(180 + Math.cos(angle + spread) * radius).toFixed(1)} ${(46 + Math.sin(angle + spread) * radius).toFixed(1)}`;
     return `M${at(30, -0.11)} L${at(long, 0)} L${at(30, 0.11)} Z`;
   }).join(' ');
-  return `<svg class="logo" viewBox="0 -8 360 148" role="img" aria-label="SquidBots">
+  return `<svg class="logo" viewBox="0 -8 360 148" role="img" aria-label="征服艾泽拉斯">
     <defs>
       <linearGradient id="lg-gold" x1="0" y1="0" x2="0" y2="1">
         <stop offset="0" stop-color="#fff0c2" /><stop offset=".35" stop-color="#f2c264" /><stop offset=".7" stop-color="#b87a26" /><stop offset="1" stop-color="#7a4a12" />
@@ -49,7 +49,7 @@ const LOGO = (() => {
     <path class="lg-brow" d="M153 43 Q164 37 174 45" /><path class="lg-brow" d="M207 43 Q196 37 186 45" />
     <g class="lg-eye"><ellipse class="lg-socket" cx="165" cy="54" rx="9" ry="8.5" /><ellipse class="lg-iris" cx="165" cy="54" rx="6.5" ry="6.5" /><ellipse class="lg-pupil" cx="165" cy="54" rx="5.2" ry="1.7" /><circle class="lg-glint" cx="162.5" cy="51.5" r="1.4" /></g>
     <g class="lg-eye"><ellipse class="lg-socket" cx="195" cy="54" rx="9" ry="8.5" /><ellipse class="lg-iris" cx="195" cy="54" rx="6.5" ry="6.5" /><ellipse class="lg-pupil" cx="195" cy="54" rx="5.2" ry="1.7" /><circle class="lg-glint" cx="192.5" cy="51.5" r="1.4" /></g>
-    <text class="lg-name" x="180" y="106" text-anchor="middle">SQUIDBOTS</text>
+    <text class="lg-name" x="180" y="106" text-anchor="middle">CONQUEST</text>
     <g class="lg-front">${mirrored(side(frontArms, false))}</g>
   </svg>`;
 })();

@@ -102,7 +102,8 @@ class ServerControl {
 
   resolve(relative) {
     const file = path.resolve(this.root, relative);
-    if (!file.startsWith(this.root + path.sep)) throw new Error('Path outside the repack folder.');
+    //By leewheel 2026-11-02 允许 cwd 就是服务端根目录（"." 时 path.resolve 得到根目录本身，不能要求以 root\ 开头）
+    if (file !== this.root && !file.startsWith(this.root + path.sep)) throw new Error('Path outside the repack folder.');
     return file;
   }
 
@@ -141,9 +142,9 @@ class ServerControl {
     } catch { return false; }
   }
 
+  //By leewheel 2026-11-02 三个服务并行查询：原来的串行写法在慢机器上要 5 秒，首页会一直空着
   async status() {
-    const result = [];
-    for (const service of this.services) {
+    const results = await Promise.all(this.services.map(async service => {
       const open = await portOpen(service.port);
       const transient = this.states.get(service.id);
       let state = transient && (transient === 'starting' ? !open : open) ? transient : open ? 'running' : 'stopped';
@@ -156,9 +157,9 @@ class ServerControl {
         const owner = await this.portOwner(service.port);
         if (owner?.inside === false) { state = 'foreign'; other = owner.file; }
       }
-      result.push({ id: service.id, name: service.name, port: service.port, state, other, variant: this.variant(service), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) });
-    }
-    return result;
+      return { id: service.id, name: service.name, port: service.port, state, other, variant: this.variant(service), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) };
+    }));
+    return results;
   }
 
   async assertPortFree(service) {
@@ -205,9 +206,20 @@ class ServerControl {
       stdio: [service.console ? 'pipe' : 'ignore', log, log],
     });
     fs.closeSync(log);
+    //By leewheel 2026-11-02 记录启动的进程（.state/<service>.json）：官网整合包由 manage.py 写，
+    // 发布版没有 Python 管理脚本，改由启动器自己写，这样“是不是本目录启动的”“世界在线状态”等功能才能用。
+    try {
+      fs.mkdirSync(path.join(this.root, '.state'), { recursive: true });
+      fs.writeFileSync(path.join(this.root, '.state', `${id}.json`), JSON.stringify({ pid: child.pid, exe, created: (Date.now() + 11644473600000) * 10000, started: new Date().toISOString() }));
+    } catch {}
     this.children.set(id, child);
     this.states.set(id, 'starting');
-    child.once('exit', () => { this.children.delete(id); this.states.delete(id); this.emit().catch(() => {}); });
+    child.once('exit', () => {
+      this.children.delete(id);
+      this.states.delete(id);
+      try { fs.rmSync(path.join(this.root, '.state', `${id}.json`), { force: true }); } catch {}
+      this.emit().catch(() => {});
+    });
     child.once('error', () => { this.children.delete(id); this.states.delete(id); });
     await this.emit();
     const deadline = Date.now() + service.startTimeout * 1000;
@@ -249,7 +261,9 @@ class ServerControl {
   async stop(id) {
     const service = this.services.find(item => item.id === id);
     if (!service) throw new Error('Unknown service.');
-    if (!(await portOpen(service.port))) return;
+    const wasRunning = await portOpen(service.port);
+    const childBefore = this.children.get(id);
+    if (!wasRunning && !childBefore) { this.forget(id); return; }
     // A service started by the repack's manager is stopped the way the manager wants: all together, in order.
     if (service.start && !service.stop && this.commands.stopAll) { await this.stopAll(); return; }
     this.states.set(id, 'stopping');
@@ -261,7 +275,7 @@ class ServerControl {
       } else if (child && service.console && service.stopCommand) {
         child.stdin.write(`${service.stopCommand}\r\n`);
       } else if (service.stopExe) {
-        await exec(this.resolve(service.stopExe), service.stopArgs, { cwd: this.root, windowsHide: true, timeout: 60000 });
+        if (wasRunning) await exec(this.resolve(service.stopExe), service.stopArgs, { cwd: this.root, windowsHide: true, timeout: 60000 });
       } else if (child) {
         await exec('taskkill.exe', ['/PID', String(child.pid), '/T'], { windowsHide: true }).catch(() => {});
       } else {
@@ -269,16 +283,25 @@ class ServerControl {
         if (!owner) throw new Error(`${service.name} was not started from this repack; stop it where it was started.`);
         await exec('taskkill.exe', ['/PID', String(owner.pid), '/T'], { windowsHide: true }).catch(() => {});
       }
-      const deadline = Date.now() + 90 * 1000;
-      while (Date.now() < deadline && await portOpen(service.port)) await new Promise(resolve => setTimeout(resolve, 1000));
-      if (await portOpen(service.port)) {
+      //By leewheel 2026-11-02 等进程真正退出，而不是只等端口关闭：
+      // worldserver 停机时先关端口、再花几十秒把角色/机器人的查询写完（数据库池），此时若已停 MySQL 就会丢数据。
+      const wait = service.console ? 300 * 1000 : 120 * 1000;
+      const deadline = Date.now() + wait;
+      while (Date.now() < deadline && ((await portOpen(service.port)) || this.children.has(id))) await new Promise(resolve => setTimeout(resolve, 1000));
+      if ((await portOpen(service.port)) || this.children.has(id)) {
         const owner = child ? { pid: child.pid } : await this.ownedProcess(service.port);
         if (owner) await exec('taskkill.exe', ['/PID', String(owner.pid), '/T', '/F'], { windowsHide: true }).catch(() => {});
       }
+      this.forget(id);
     } finally {
       this.states.delete(id);
       await this.emit();
     }
+  }
+
+  // 停机后清掉这个服务的进程记录（.state\<id>.json），避免下次启动看到过期的状态
+  forget(id) {
+    try { require('node:fs').rmSync(path.join(this.root, '.state', `${id}.json`), { force: true }); } catch {}
   }
 
   async stopAll() {

@@ -16,9 +16,10 @@ async function sha512(file) {
 function createLauncherUpdates(app, { feedUrl, key, fetchImpl, retryDelay = 20000 }, notify, canRestart) {
   const trustKey = key ? publicKey(key) : null;
   let status;
-  if (!app.isPackaged) status = { phase: 'development', message: 'Launcher updates run in the installed version only.' };
-  else if (!feedUrl) status = { phase: 'disabled', message: 'Launcher updates are not configured.' };
-  else if (!trustKey) status = { phase: 'disabled', message: 'Launcher updates need launcherUpdateKey in launcher.config.json.' };
+  //By leewheel 2026-11-02 中文发射版：启动器自身的更新提示改为中文
+  if (!app.isPackaged) status = { phase: 'development', message: '启动器更新只在打包发布后生效。' };
+  else if (!feedUrl) status = { phase: 'disabled', message: '本启动器未配置在线更新（离线整合版）。' };
+  else if (!trustKey) status = { phase: 'disabled', message: '启动器更新需要在 launcher.config.json 中配置 launcherUpdateKey。' };
   else status = { phase: 'idle', message: '' };
   const set = (phase, message, extra = {}) => { status = { phase, message, ...extra }; notify(status); };
   let updater = null;

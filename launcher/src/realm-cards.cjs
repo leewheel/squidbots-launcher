@@ -79,7 +79,9 @@ async function save(root, value) {
 // RealmCards.Realm.<id>.Image / .DescriptionSpell (looked for in authserver.exe); before it, every card gets the
 // realm's game mode and the expansion, with the default background and no text.
 function perRealmSupported(root) {
-  try { return fs.readFileSync(path.join(root, 'Core', 'authserver.exe')).includes(Buffer.from('.DescriptionSpell')); } catch { return false; }
+  //By leewheel 2026-11-02 登录程序位置按布局取
+  const layout = require('./layout.cjs').serverLayout(root);
+  try { return fs.readFileSync(path.join(root, ...String(layout.auth).split('/'))).includes(Buffer.from('.DescriptionSpell')); } catch { return false; }
 }
 
 // The lines written to the authserver's config: the global ones, then one block per realm id.
@@ -119,7 +121,9 @@ async function apply(root, ids) {
   if (!cards.version) return [];
   const lines = configLines(cards, ids, { perRealm: perRealmSupported(root) });
   const changed = [];
-  for (const relative of ['Settings/authserver.conf.template', 'Core/configs/authserver.conf']) {
+  //By leewheel 2026-11-02 配置位置按布局取（发布版是 configs/authserver.conf）
+  const layout = require('./layout.cjs').serverLayout(root);
+  for (const relative of ['Settings/authserver.conf.template', `${layout.configs}/authserver.conf`]) {
     const file = path.join(root, relative);
     const text = await fsp.readFile(file, 'utf8').catch(() => null);
     if (text === null || !/^RealmCards\.Enable/m.test(text)) continue;

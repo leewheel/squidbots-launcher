@@ -1,10 +1,10 @@
 {
   "name": "coa-launcher-lite",
-  "productName": "CoA Launcher Lite",
-  "version": "0.3.53",
-  "description": "Open-source game launcher: signed client updates, addons, and a local server (repack + bots) with backups and upgrades.",
+  "productName": "征服艾泽拉斯 单机启动器",
+  "version": "1.0.0",
+  "description": "征服艾泽拉斯（Conquest of Azeroth）单机整合包启动器：一键启动/停止本地 MySQL、登录服务器与世界服务器，管理设置、备份与国度。",
   "license": "MIT",
-  "author": "CoA Launcher Lite contributors",
+  "author": "leewheel",
   "main": "src/main.cjs",
   "scripts": {
     "start": "node scripts/copy-fonts.cjs && electron .",
@@ -13,8 +13,9 @@
   },
   "build": {
     "appId": "org.coa.launcher-lite",
-    "productName": "CoA Launcher Lite",
-    "artifactName": "CoA-Launcher-Lite-Setup-${version}.${ext}",
+    "productName": "征服艾泽拉斯 单机启动器",
+    "artifactName": "CoA-Launcher-${version}.${ext}",
+    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "dist"
     },
@@ -25,20 +26,14 @@
       "package.json"
     ],
     "win": {
-      "target": "nsis"
+      "target": "portable",
+      "icon": "editions/server/icon.png"
     },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": true
+    "portable": {
+      "unpackDirName": "CoALauncherLite",
+      "requestExecutionLevel": "user"
     },
-    "publish": [
-      {
-        "provider": "generic",
-        "url": "http://127.0.0.1:5082/downloads/launcher-lite/"
-      }
-    ]
+    "publish": null
   },
   "engines": {
     "node": ">=22"

@@ -13,16 +13,70 @@ const { sanitize } = require('../src/settings.cjs');
 
 const BASE = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'launcher.config.json'), 'utf8'));
 
-test('the shipped configuration is valid, with the game, the server and the bots', () => {
-  const config = validate(BASE);
+// 上游"完整版"配置（带游戏更新、CoA Bots 包与两条更新通道）：本节里测试的是这些逻辑本身，
+// 与"本发布版实际发的是什么配置"无关，所以在这里自己拼一份，不依赖随包文件。
+function withBots() {
+  const config = structuredClone(BASE);
+  config.game.manifestUrl = 'https://updates.example.com/game/latest.json';
+  config.game.addonCatalogUrl = 'https://updates.example.com/addons/catalog.json';
+  config.game.releaseKey = config.server.description ? '' : '';
+  config.feedUrl = 'https://updates.example.com/feed.json';
+  config.launcherUpdateUrl = 'https://updates.example.com/launcher/';
+  Object.assign(config.server, {
+    manifestUrl: 'https://updates.example.com/repack/latest.json',
+    updatesUrl: 'https://updates.example.com/update.json',
+    componentsUrl: 'https://updates.example.com/components/',
+    mmapsUrl: 'https://updates.example.com/mmaps/',
+    bots: {
+      name: 'CoA Bots',
+      folder: 'CoA-Bots',
+      requiredExecutable: 'Core/worldserver.exe',
+      manifestUrl: '',
+      install: { script: 'Installer-Bots.ps1', args: ['-Repack', '{root}', '-NoAddon', '-NoDashboard'], timeout: 1200 },
+      addon: 'squidbots-lite',
+    },
+    commands: {
+      stopAll: { exe: 'Runtime/python/python.exe', args: ['-B', 'Scripts/manage.py', 'stop-all'], timeout: 240 },
+      console: { exe: 'Runtime/python/python.exe', args: ['-B', 'Scripts/manage.py', 'console'], timeout: 60 },
+      purgeBots: { exe: 'Runtime/python/python.exe', args: ['-B', 'CoA-Bots/coa_bots.py', 'purge-bots'], timeout: 600 },
+    },
+  });
+  return config;
+}
+
+test('the shipped configuration is valid: this repack, offline, three local services', () => {
+  const { loadConfig } = require('../src/config.cjs');
+  const config = loadConfig(path.join(__dirname, '..', 'launcher.config.json'));
+  assert.equal(config.edition, 'server', '本地服务器版');
   assert.equal(config.game.clientExecutable, 'Ascension.exe');
   assert.equal(config.game.realmlists[0].address, '127.0.0.1');
+  assert.equal(config.server.requiredExecutable, 'worldserver.exe', '发布版的服务器程序在根目录');
+  assert.deepEqual(config.server.services.map(service => [service.id, service.port, service.exe]), [
+    ['mysql', 3395, 'mysql/bin/mysqld.exe'],
+    ['world', 8085, 'worldserver.exe'],
+    ['auth', 3724, 'authserver.exe'],
+  ]);
+  assert.equal(config.server.services[0].args.includes('--port=3395'), true, 'MySQL 端口写死，避免 my.ini 漂移');
+  assert.equal(config.server.services.find(service => service.id === 'world').console, true, '世界控制台走标准输入');
+  assert.equal(config.server.services.find(service => service.id === 'world').stopCommand, 'server shutdown 1s 0');
+  assert.equal(config.server.bots, null, '机器人编译在核心里，不需要单独的 CoA Bots 包');
+  assert.equal(config.feedUrl, '', '离线整合版：不连任何更新地址');
+  assert.equal(config.launcherUpdateUrl, '');
+  assert.equal(Object.values(config.keys).every(key => key === null), true, '没有任何签名密钥');
+});
+
+test('a full edition configuration (updates, bots package) still validates', async () => {
+  const { loadConfig } = require('../src/config.cjs');
+  const file = path.join(await tempDir(), 'launcher.config.json');
+  await fsp.writeFile(file, JSON.stringify(withBots()));
+  const config = loadConfig(file);
   assert.equal(config.server.bots.folder, 'CoA-Bots');
   assert.deepEqual(config.server.bots.install.args, ['-Repack', '{root}', '-NoAddon', '-NoDashboard']);
+  assert.equal(config.edition, 'server');
 });
 
 test('hostile configurations are refused', () => {
-  const clone = () => structuredClone(BASE);
+  const clone = () => withBots();
   const cases = [
     config => { config.game.manifestUrl = 'http://evil.example.com/latest.json'; },
     config => { config.server.bots.folder = '../../Windows'; },
@@ -30,6 +84,8 @@ test('hostile configurations are refused', () => {
     config => { config.server.bots.install.args = ['-Repack', '..\\..']; },
     config => { config.game.clientExecutable = '..\\cmd.exe'; },
     config => { config.game.realmlists = [{ name: 'x', address: 'a b; c' }]; },
+    config => { config.server.services[0].exe = 'C:/Windows/System32/evil.exe'; },
+    config => { config.server.services[0].args = ['..\\..\\evil']; },
   ];
   for (const change of cases) { const config = clone(); change(config); assert.throws(() => validate(config)); }
   const discord = clone();
@@ -128,7 +184,7 @@ test('updates-only mode: the base game link must be HTTPS', () => {
 });
 
 test('stable and test channels: optional test addresses, validated like the others', () => {
-  const config = structuredClone(BASE);
+  const config = withBots();
   config.server.testManifestUrl = 'https://updates.example.com/test/repack/latest.json';
   config.server.bots.testManifestUrl = 'https://updates.example.com/test/bots/latest.json';
   delete config.game.testManifestUrl;
@@ -143,12 +199,13 @@ test('stable and test channels: optional test addresses, validated like the othe
   assert.equal(sanitize({ channel: 'nightly' }).channel, 'stable');
 });
 
-test('the server edition starts without a bots channel (bots come with the repack updates)', () => {
+test('the server edition starts without a bots channel (bots come with the core)', () => {
   const { loadConfig } = require('../src/config.cjs');
   const { BotsPackage } = require('../src/bots.cjs');
   const config = loadConfig(require('node:path').join(__dirname, '../editions/server/launcher.config.json'));
-  assert.equal(config.server.bots.manifestUrl, '');
-  const bots = new BotsPackage({ bots: { ...config.server.bots, channelUrl: '' }, key: config.keys.bots });
+  assert.equal(config.server.bots, null, '发布版没有单独的 CoA Bots 包');
+  assert.equal(config.server.commands.console, null, '没有 Python 控制台脚本');
+  const bots = new BotsPackage({ bots: { folder: 'CoA-Bots', manifestUrl: '', requiredExecutable: 'Core/worldserver.exe', install: { script: 'x.ps1', args: [] } }, key: config.keys.bots });
   assert.equal(bots.updater.busy, false);
 });
 

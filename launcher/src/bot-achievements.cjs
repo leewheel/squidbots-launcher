@@ -21,7 +21,10 @@ const dbOf = info => String(info || '').split(';')[4] || '';
 // server's config when the bots are installed), then each realm's own (Royaumes\<key>\configs).
 async function targets(root) {
   const list = [];
-  const coaConf = fs.existsSync(path.join(root, 'CoA-Bots', 'Core', 'configs', 'worldserver.conf')) ? path.join(root, 'CoA-Bots', 'Core', 'configs', 'worldserver.conf') : path.join(root, 'Core', 'configs', 'worldserver.conf');
+  //By leewheel 2026-11-02 配置位置按布局取（官方整合包 CoA-Bots/Core/configs 或 Core/configs，发布版 configs）
+  const layout = require('./layout.cjs').serverLayout(root);
+  const botsConf = path.join(root, ...`${layout.botsConfigs}/worldserver.conf`.split('/'));
+  const coaConf = fs.existsSync(botsConf) ? botsConf : path.join(root, ...`${layout.configs}/worldserver.conf`.split('/'));
   const confs = [coaConf];
   for (const key of await fsp.readdir(path.join(root, 'Royaumes')).catch(() => [])) confs.push(path.join(root, 'Royaumes', key, 'configs', 'worldserver.conf'));
   for (const file of confs) {
@@ -35,7 +38,8 @@ async function targets(root) {
 
 // The account prefix of the random bots (AiPlayerbot.RandomBotAccountPrefix, "rndbot" by default).
 async function botPrefix(root) {
-  const text = await read(path.join(root, 'CoA-Bots', 'Core', 'configs', 'modules', 'playerbots.conf'));
+  const layout = require('./layout.cjs').serverLayout(root);
+  const text = await read(path.join(root, ...`${layout.botsConfigs}/modules/playerbots.conf`.split('/')));
   const value = confValue(text, 'AiPlayerbot.RandomBotAccountPrefix') || 'rndbot';
   return /^[A-Za-z0-9_]{1,20}$/.test(value) ? value.toUpperCase() : 'RNDBOT';
 }

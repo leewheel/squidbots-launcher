@@ -12,6 +12,13 @@ const RACES_CONF = 'CoA-Bots/Core/configs/modules/coa_custom_races.conf';
 const RACES_DBC = 'Data/dbc_races';
 const RACES_DBC_COUNT = 23;
 const CORE_MARK = 'CoACustomRaces.Enable';
+//By leewheel 2026-11-02 布局适配：模块配置目录与核心程序位置按布局取（发布版是 configs/modules 与根目录的 worldserver.exe）
+const { serverLayout } = require('./layout.cjs');
+const layoutOf = root => serverLayout(root);
+const moduleDirs = root => {
+  const layout = layoutOf(root);
+  return [`CoA-Bots/Core/configs/modules`, `${layout.modules}`, 'Core/configs/modules'];
+};
 // The race patch files of the client, by exact name. patch-T.MPQ and patch-Z.MPQ are NOT in the list: the
 // official CoA client has its own files under those names, renaming them would break the game. dinput8.dll is
 // left alone too (other tools use the same hook).
@@ -50,11 +57,13 @@ function clientPatch(client) {
 }
 
 async function status(root, { squidbots = true, client = '' } = {}) {
-  const conf = await fsp.readFile(path.join(root, RACES_CONF), 'utf8').catch(() => null);
-  const dist = fs.existsSync(path.join(root, `${RACES_CONF}.dist`));
-  const dbc = (await fsp.readdir(path.join(root, RACES_DBC)).catch(() => [])).filter(name => /\.dbc$/i.test(name)).length;
+  const layout = layoutOf(root);
+  const racesConf = path.join(root, ...`${layout.botsConfigs}/modules/coa_custom_races.conf`.split('/'));
+  const conf = await fsp.readFile(racesConf, 'utf8').catch(() => null);
+  const dist = fs.existsSync(`${racesConf}.dist`);
+  const dbc = (await fsp.readdir(path.join(root, ...`${layout.data}/dbc_races`.split('/'))).catch(() => [])).filter(name => /\.dbc$/i.test(name)).length;
   return {
-    squidbots: { installed: fs.existsSync(path.join(root, 'CoA-Bots', 'coa_bots.py')), enabled: squidbots !== false },
+    squidbots: { installed: fs.existsSync(path.join(root, 'CoA-Bots', 'coa_bots.py')) || fs.existsSync(path.join(root, 'configs', 'modules', 'playerbots.conf')), enabled: squidbots !== false },
     ahbot: await ahbotStatus(root),
     dungeonclear: await dungeonStatus(root),
     enchanter: await enchanterStatus(root),
@@ -64,7 +73,7 @@ async function status(root, { squidbots = true, client = '' } = {}) {
       enabled: confValue(conf, 'CoACustomRaces.Enable') === '1',
       bots: confValue(conf, 'CoACustomRaces.BotsEnable') === '1',
       conf: conf !== null, dist, dbc, dbcNeeded: RACES_DBC_COUNT,
-      core: await coreSupports(path.join(root, 'CoA-Bots', 'Core', 'worldserver.exe')),
+      core: await coreSupports(path.join(root, ...String(layout.world).split('/'))),
       client: clientPatch(client),
     },
   };
@@ -121,7 +130,7 @@ async function setClientPatch(client, on) {
 // the .dist, so its value is the one in force; the first switch creates the .conf from the .dist.
 const MODULE_DIRS = ['CoA-Bots/Core/configs/modules', 'Core/configs/modules'];
 async function moduleConf(root, name) {
-  for (const dir of MODULE_DIRS) {
+  for (const dir of moduleDirs(root)) {
     const file = path.join(root, dir, name);
     const conf = await fsp.readFile(file, 'utf8').catch(() => null);
     if (conf !== null) return conf;
@@ -132,7 +141,7 @@ async function moduleConf(root, name) {
 }
 async function setModuleKeys(root, name, keys, missing) {
   let written = 0;
-  for (const dir of MODULE_DIRS) {
+  for (const dir of moduleDirs(root)) {
     const file = path.join(root, dir, name);
     let text = await fsp.readFile(file, 'utf8').catch(() => null);
     if (text === null) {
@@ -156,7 +165,7 @@ async function ahbotStatus(root) {
 }
 // The instant payout exists from CoA Bots 2.8: shown only when the installed .dist knows its key.
 async function ahbotInstantKnown(root) {
-  for (const dir of MODULE_DIRS) {
+  for (const dir of moduleDirs(root)) {
     const dist = await fsp.readFile(path.join(root, dir, `${AHBOT}.dist`), 'utf8').catch(() => '');
     if (/^[ \t]*AuctionHouseBot\.Buyer\.InstantBids[ \t]*=/m.test(dist)) return true;
   }
@@ -183,7 +192,7 @@ async function dungeonStatus(root) {
 // knows the key.
 const DIFFICULTIES = ['normal', 'heroic', 'mythic'];
 async function dungeonDifficultyKnown(root) {
-  for (const dir of MODULE_DIRS) {
+  for (const dir of moduleDirs(root)) {
     const dist = await fsp.readFile(path.join(root, dir, `${DUNGEON}.dist`), 'utf8').catch(() => '');
     if (/^[ \t]*DungeonClear\.AllowedDifficulties[ \t]*=/m.test(dist)) return true;
   }
@@ -249,17 +258,24 @@ async function setManastorm(root, on) {
 // so the key is always written (0 when absent, see keepRotationOff). manage.py writes Core\configs\modules\coa.conf
 // from Settings\coa.conf.template at every start: the template is the setting, the copies follow it.
 const ROTATION_KEY = 'CoA.RotationAssist.Enable';
-const ROTATION_FILES = ['Settings/coa.conf.template', 'CoA-Bots/Core/configs/modules/coa.conf', 'Core/configs/modules/coa.conf'];
+//By leewheel 2026-11-02 轮转助手的配置文件列表：发布版没有 Settings 模板，直接用 configs/modules/coa.conf
+const rotationFiles = root => ['Settings/coa.conf.template', 'CoA-Bots/Core/configs/modules/coa.conf', `${layoutOf(root).modules}/coa.conf`, 'Core/configs/modules/coa.conf'];
 async function rotationStatus(root) {
-  const template = await fsp.readFile(path.join(root, ROTATION_FILES[0]), 'utf8').catch(() => null);
-  const known = await coreSupports(path.join(root, 'CoA-Bots', 'Core', 'worldserver.exe'), ROTATION_KEY);
+  const files = rotationFiles(root);
+  let template = null;
+  let templatePath = '';
+  for (const rel of files) {
+    const text = await fsp.readFile(path.join(root, ...rel.split('/')), 'utf8').catch(() => null);
+    if (text !== null) { template = text; templatePath = rel; break; }
+  }
+  const known = await coreSupports(path.join(root, ...String(layoutOf(root).world).split('/')), ROTATION_KEY);
   const value = confValue(template, ROTATION_KEY);
-  return { available: template !== null && known, enabled: value === undefined ? known : isOn(value), missing: value === undefined };
+  return { available: template !== null && known, enabled: value === undefined ? known : isOn(value), missing: value === undefined, file: templatePath };
 }
 async function writeRotation(root, value, onlyWhenMissing) {
   let written = 0;
-  for (const rel of ROTATION_FILES) {
-    const file = path.join(root, rel);
+  for (const rel of rotationFiles(root)) {
+    const file = path.join(root, ...rel.split('/'));
     const text = await fsp.readFile(file, 'utf8').catch(() => null);
     if (text === null || (onlyWhenMissing && confValue(text, ROTATION_KEY) !== undefined)) continue;
     await fsp.writeFile(file, await setKey(text, ROTATION_KEY, value));
@@ -274,7 +290,7 @@ async function setRotation(root, on) {
 }
 // Before every start: a missing key is written as 0 (never changes a value the player chose).
 async function keepRotationOff(root) {
-  if (!(await coreSupports(path.join(root, 'CoA-Bots', 'Core', 'worldserver.exe'), ROTATION_KEY).catch(() => false))) return 0;
+  if (!(await coreSupports(path.join(root, ...String(layoutOf(root).world).split('/')), ROTATION_KEY).catch(() => false))) return 0;
   return writeRotation(root, '0', true).catch(() => 0);
 }
 

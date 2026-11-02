@@ -184,7 +184,7 @@ App.actions['whats-new-ok'] = () => dialog.close();
 (async function boot() {
   $('#settings-button').innerHTML = icon('settings');
   $('.brand').insertAdjacentHTML('beforeend', LOGO);
-  $('#settings-button').title = 'Settings';
+  $('#settings-button').title = '设置';
   $('#win-min').innerHTML = icon('minimize');
   $('#win-max').innerHTML = icon('maximize');
   $('#win-close').innerHTML = icon('close');
