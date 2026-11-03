@@ -110,23 +110,61 @@ function sql(root, query) {
   return new Promise((resolve, reject) => execFile(path.join(root, 'mysql', 'bin', 'mysql.exe'), [...mysqlArgs(root), '-N', '-B', '-e', query],
     { windowsHide: true, timeout: 120000, maxBuffer: 16 << 20 }, (error, stdout, stderr) => error ? reject(new Error(String(stderr || error.message).trim().split(/\r?\n/).pop())) : resolve(String(stdout).trim())));
 }
-// mysqldump of a database (or some of its tables) poured straight into another database.
-function copyDump(root, args, target) {
+//By leewheel 2026-11-03 修：原来 dump|mysql 直接对接管道，有三处会让它永久挂起——
+//   ① mysqldump 没有 --single-transaction/--skip-lock-tables：主服 worldserver 在跑时会被表锁卡住（界面就停在
+//      "Creating acore_characters_x…" 十几分钟，一张表都没有）；
+//   ② 接收端（mysql.exe）先失败退出时没人杀 dump，管道无人读，dump 永远写不进去；
+//   ③ 全程没有超时，promise 永远不 settle。
+// 现在改成「先 dump 到临时文件（带超时），再导入目标库」，失败能给出可读原因，临时文件一定清理。
+const TMP = root => path.join(root, '.coa-launcher', 'tmp');
+const DUMP_LIMIT = 30 * 60 * 1000;
+const LOAD_LIMIT = 60 * 60 * 1000;
+
+function runChild(exe, args, { timeout, stdinFile = '', stdoutFile = '' } = {}) {
   return new Promise((resolve, reject) => {
-    const dump = spawn(path.join(root, 'mysql', 'bin', 'mysqldump.exe'), [...mysqlArgs(root), ...args], { windowsHide: true });
-    const load = spawn(path.join(root, 'mysql', 'bin', 'mysql.exe'), [...mysqlArgs(root), target], { windowsHide: true });
+    const out = stdoutFile ? fs.openSync(stdoutFile, 'w') : 'ignore';
+    const input = stdinFile ? fs.openSync(stdinFile, 'r') : 'ignore';
+    const child = spawn(exe, args, { windowsHide: true, stdio: [input, out, 'pipe'] });
     let errors = '';
-    dump.stderr.on('data', chunk => { errors += chunk; });
-    load.stderr.on('data', chunk => { errors += chunk; });
-    dump.stdout.pipe(load.stdin);
-    let left = 2;
-    const codes = [];
-    const end = code => { codes.push(code); if (--left === 0) codes.some(Boolean) ? reject(new Error(`Copy into ${target} failed: ${errors.trim().split(/\r?\n/).pop() || codes.join(',')}`)) : resolve(); };
-    dump.once('exit', end);
-    load.once('exit', end);
-    dump.once('error', reject);
-    load.once('error', reject);
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { if (stdoutFile) fs.closeSync(out); } catch {}
+      try { if (stdinFile) fs.closeSync(input); } catch {}
+      error ? reject(error) : resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch {}
+      finish(new Error(`${path.basename(exe)} 超时（${Math.round(timeout / 60000)} 分钟）`));
+    }, timeout);
+    child.stderr.on('data', chunk => { errors += chunk; if (errors.length > 8000) errors = errors.slice(-8000); });
+    child.once('error', error => finish(error));
+    child.once('exit', code => {
+      if (code === 0) return finish(null, { errors });
+      const last = String(errors).trim().split(/\r?\n/).filter(line => line && !/^Warning/.test(line)).pop();
+      finish(new Error(last || `${path.basename(exe)} 退出码 ${code}`));
+    });
   });
+}
+
+// mysqldump 一份（或其中几张表）灌进另一个数据库：先落文件再导入
+async function copyDump(root, args, target) {
+  const tmp = TMP(root);
+  await fsp.mkdir(tmp, { recursive: true });
+  const file = path.join(tmp, `copy-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sql`);
+  try {
+    await runChild(path.join(root, 'mysql', 'bin', 'mysqldump.exe'),
+      [...mysqlArgs(root), '--single-transaction', '--skip-lock-tables', '--no-tablespaces', '--set-gtid-purged=OFF', ...args],
+      { timeout: DUMP_LIMIT, stdoutFile: file });
+    const size = (await fsp.stat(file)).size;
+    if (!size) throw new Error(`mysqldump 没有输出任何内容（${target}）`);
+    await runChild(path.join(root, 'mysql', 'bin', 'mysql.exe'), [...mysqlArgs(root), target], { timeout: LOAD_LIMIT, stdinFile: file });
+    return size;
+  } finally {
+    await fsp.rm(file, { force: true }).catch(() => {});
+  }
 }
 const hasDatabase = async (root, name) => (await sql(root, `SHOW DATABASES LIKE '${name}'`)) === name;
 
@@ -158,9 +196,33 @@ async function ports(root, key) {
 
 function pidAlive(pid) { try { process.kill(Number(pid), 0); return true; } catch { return false; } }
 
+//By leewheel 2026-11-03 查某个 PID 现在的进程镜像名（tasklist，带 3 秒缓存：状态页每 5 秒轮询全部国度）。
+const pidNameCache = new Map();
+function imageNameOfPid(pid) {
+  const cached = pidNameCache.get(pid);
+  if (cached && Date.now() - cached.at < 3000) return Promise.resolve(cached.name);
+  const job = new Promise(resolve => {
+    execFile('tasklist.exe', ['/FI', `PID eq ${Number(pid)}`, '/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 8000 }, (error, stdout) => {
+      resolve(error ? '' : (/^"([^"]+)"/m.exec(String(stdout))?.[1] || ''));
+    });
+  });
+  pidNameCache.set(pid, { at: Date.now(), job });
+  return job;
+}
+
 async function processOf(root, key) {
-  const state = await readJson(path.join(dirOf(root, key), '.state.json'));
-  return state?.pid && pidAlive(state.pid) ? Number(state.pid) : 0;
+  const file = path.join(dirOf(root, key), '.state.json');
+  const state = await readJson(file);
+  if (!state?.pid || !pidAlive(state.pid)) return 0;
+  //By leewheel 2026-11-03 PID 会被系统复用：只查“PID 活着”会把别的进程当成世界服，
+  // Wildcard 的灯没在跑也一直闪就是它（记录里的世界服早退了，PID 被别的程序拿去用）。
+  // 必须镜像名与记录里的 exe 对得上才算活；对不上就是过期记录，删掉再报停止。
+  const name = await imageNameOfPid(state.pid);
+  if (!name || path.basename(String(state.exe || 'worldserver.exe')).toLowerCase() !== name.toLowerCase()) {
+    try { await fsp.unlink(file); } catch {}
+    return 0;
+  }
+  return Number(state.pid);
 }
 
 // What the realm imposes (layer 3), by settings file: the keys of its mode and those that make it a realm of its own.
@@ -258,7 +320,15 @@ async function writeConfigs(root, key, saved) {
   const dir = dirOf(root, key);
   const target = path.join(dir, 'configs');
   await fsp.rm(target, { recursive: true, force: true });
-  await fsp.cp(BOTS_CONFIGS(root), target, { recursive: true });
+  //By leewheel 2026-11-03 主服正在启动/收尾时会写 Server\configs，这时复制源可能被占用（EBUSY/EPERM），
+  // 原来一次失败就把整个国度启动打断（界面只看到"没起来"）。这里重试 6 次、每次等 1.5 秒。
+  for (let attempt = 1; ; attempt++) {
+    try { await fsp.cp(BOTS_CONFIGS(root), target, { recursive: true }); break; }
+    catch (error) {
+      if (attempt >= 6) throw new Error(`复制主服配置到 ${key} 失败（${error.code || error.message}）：主服可能正在启动，稍后再试。`);
+      await new Promise(resolve => setTimeout(resolve, 1500));
+    }
+  }
   const edits = new Map();
   const add = (fileId, keys) => edits.set(fileId, { ...edits.get(fileId), ...keys });
   for (const [fileId, keys] of Object.entries(await ownSettings(root, key))) add(fileId, keys);
@@ -443,6 +513,17 @@ async function create(root, key, { bots = DEFAULT_BOTS, notify = () => {} } = {}
 
   const chars = `acore_characters_${key}`;
   const botsDb = `acore_playerbots_${key}`;
+  //By leewheel 2026-11-03 修：库存在但一张表都没有 = 上次建到一半（比如被表锁卡住、程序被关掉）。
+  // 以前这里只看"库是否存在"，于是半成品库会被当成建好了直接跳过，国度起来永远是空库。
+  const tableCount = async name => Number(await sql(root, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${name}'`).catch(() => '0')) || 0;
+  if (await hasDatabase(root, chars) && await tableCount(chars) === 0) {
+    notify(`清理没建完的 ${chars}，重新来一次…`);
+    await sql(root, `DROP DATABASE ${chars}`);
+  }
+  if (await hasDatabase(root, botsDb) && await tableCount(botsDb) === 0) {
+    notify(`清理没建完的 ${botsDb}，重新来一次…`);
+    await sql(root, `DROP DATABASE ${botsDb}`);
+  }
   if (!(await hasDatabase(root, chars))) {
     notify(`Creating ${chars}…`);
     await sql(root, `CREATE DATABASE ${chars} DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
@@ -450,6 +531,9 @@ async function create(root, key, { bots = DEFAULT_BOTS, notify = () => {} } = {}
     const present = new Set((await sql(root, "SELECT table_name FROM information_schema.tables WHERE table_schema = 'acore_characters'")).split(/\r?\n/));
     const seed = SEED_TABLES.filter(table => present.has(table));
     if (seed.length) await copyDump(root, ['--no-create-info', 'acore_characters', ...seed], chars);
+    const built = await tableCount(chars);
+    if (!built) throw new Error(`国度角色库 ${chars} 没建出任何表（请检查 MySQL 是否正常、是否有别的程序锁着 acore_characters）。`);
+    notify(`${chars}：${built} 张表`);
   }
   if (!(await hasDatabase(root, botsDb))) {
     notify(`Creating ${botsDb}…`);
@@ -556,7 +640,21 @@ async function syncShippedTables(root, key) {
   return stale;
 }
 
+//By leewheel 2026-11-03 国度启停日志：写 Server\logs\realm-control.log，记录谁在什么时候启停了哪个国度。
+// 起因：老大启动第二个国度时第一个被停了（日志里是 RA 优雅停机），必须能查出是谁发的停机。
+function controlLog(root, action, key, extra = '') {
+  try {
+    const line = `${new Date().toISOString()} ${action} ${key}${extra ? ' ' + extra : ''}\n`;
+    fs.appendFileSync(path.join(root, 'logs', 'realm-control.log'), line);
+  } catch {}
+}
+function caller() {
+  const stack = String(new Error().stack || '').split('\n').slice(3, 6).map(line => line.trim().replace(/^at\s+/, '').replace(/\(.*[\\/]([^\\/]+:\d+:\d+)\)$/, '($1)')).join(' <- ');
+  return stack.slice(0, 300);
+}
+
 async function start(root, key, { timeout = 1200 } = {}) {
+  controlLog(root, 'START', key, `by ${caller()}`);
   const saved = await realmFile(root, key);
   if (!saved) throw new Error('Create the realm first.');
   if (saved.disabled) throw new Error('This realm is switched off: switch it on first.');
@@ -585,8 +683,16 @@ function launch(root, key, why, env) {
   fs.mkdirSync(path.join(dir, 'Logs'), { recursive: true });
   const log = fs.openSync(path.join(dir, 'Logs', 'world-console.log'), 'a');
   fs.writeSync(log, `\n==== ${new Date().toISOString()} ${why} ====\n`);
-  const child = spawn(worldExe(root), ['-c', 'configs\\worldserver.conf'], { cwd: dir, windowsHide: true, detached: !env, stdio: ['ignore', log, log], env: env ? { ...process.env, ...env } : process.env });
+  //By leewheel 2026-11-03 关键修复：stdin 必须给 pipe。原来用 'ignore'（等于立刻 EOF），世界服的控制台线程
+  // 读到 EOF 就认为"控制台断开"，加载完（约 40～60 秒）后打印 "Halting process..." 自己退出 ——
+  // 这就是"国度启动一下又停"的真正原因，跟启动器、内存、端口都无关。主服一直正常，就因为它的 stdin 是管道。
+  const child = spawn(worldExe(root), ['-c', 'configs\\worldserver.conf'], { cwd: dir, windowsHide: true, detached: !env, stdio: ['pipe', log, log], env: env ? { ...process.env, ...env } : process.env });
   fs.closeSync(log);
+  if (child.stdin) {
+    child.stdin.on('error', () => {});
+    // 写一行空命令不算停机（控制台会忽略空行），却能让 stdin 保持打开状态
+    try { child.stdin.write('\r\n'); } catch {}
+  }
   fs.writeFileSync(path.join(dir, '.state.json'), JSON.stringify({ pid: child.pid, exe: worldExe(root), started: new Date().toISOString() }));
   if (!env) child.unref();
   return child;
@@ -605,6 +711,7 @@ async function anotherStarting(root, except) {
 
 const stopping = new Set();
 async function stop(root, key) {
+  controlLog(root, 'STOP', key, `by ${caller()}`);
   const saved = await realmFile(root, key);
   if (!saved) return;
   const pid = await processOf(root, key);
@@ -627,6 +734,7 @@ const STOP_WAIT = 300 * 1000;
 // Every realm is asked to stop; one still running after the wait fails the whole stop, so nothing stops MySQL under it.
 async function stopAll(root) {
   if (!root || !fs.existsSync(path.join(root, 'Royaumes'))) return;
+  controlLog(root, 'STOP-ALL', '*', `by ${caller()}`);
   const results = await Promise.allSettled(Object.keys(MODES).map(key => stop(root, key)));
   const failed = results.filter(result => result.status === 'rejected').map(result => result.reason);
   if (failed.length) throw Object.assign(new Error(failed.map(error => error.message).join(' ')), { code: 'REALM_SAVING' });

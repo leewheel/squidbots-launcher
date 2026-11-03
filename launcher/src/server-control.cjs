@@ -136,9 +136,15 @@ class ServerControl {
       if (process.platform !== 'win32') return true;
       // Windows gives a number again once its process ended (the launcher itself got MySQL's old one): the process
       // must still be the program the repack started.
+      //By leewheel 2026-11-03 光对镜像名还不够：PID 被系统复用给另一个同名 exe 时会误判“启动中”，
+      // 灯就一直闪。再核对运行中进程的完整路径必须与记录一致；对不上即过期记录，删掉报停止。
       const { stdout } = await exec('tasklist.exe', ['/FI', `PID eq ${Number(record.pid)}`, '/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 8000 });
       const name = /^"([^"]+)"/m.exec(stdout)?.[1] || '';
-      return name.toLowerCase() === path.basename(String(record.exe)).toLowerCase();
+      if (name.toLowerCase() !== path.basename(String(record.exe)).toLowerCase()) { this.forget(id); return false; }
+      const { stdout: exePath } = await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(record.pid)}).Path`], { windowsHide: true, timeout: 10000 }).catch(() => ({ stdout: '' }));
+      const running = exePath.trim().toLowerCase();
+      if (!running || !running.startsWith(this.root.toLowerCase())) { this.forget(id); return false; }
+      return true;
     } catch { return false; }
   }
 
@@ -201,7 +207,11 @@ class ServerControl {
     await fsp.mkdir(path.dirname(this.logFile(id)), { recursive: true });
     const log = fs.openSync(this.logFile(id), 'a');
     fs.writeSync(log, `\n==== ${new Date().toISOString()} started by the launcher ====\n`);
-    const child = spawn(exe, service.args.map(arg => arg.replace(/\{root\}/g, this.root)), {
+    //By leewheel 2026-11-03 命令行 --port 必须与状态轮询的端口同源（service.port 是 inspectRepack
+    // 覆盖后的实际端口）：以前 config 写 3396、repack.json 存 3395，mysqld 听 3396 而状态查 3395，
+    // 灯永远不变绿、240 秒超时——老大实弹。
+    const args = service.args.map(arg => arg.replace(/\{root\}/g, this.root)).map(arg => /^--port=/i.test(arg) ? `--port=${service.port}` : arg);
+    const child = spawn(exe, args, {
       cwd: this.resolve(service.cwd || '.'), windowsHide: true, detached: false,
       stdio: [service.console ? 'pipe' : 'ignore', log, log],
     });
@@ -299,7 +309,19 @@ class ServerControl {
       // worldserver 停机时先关端口、再花几十秒把角色/机器人的查询写完（数据库池），此时若已停 MySQL 就会丢数据。
       const wait = service.console ? 300 * 1000 : 120 * 1000;
       const deadline = Date.now() + wait;
-      while (Date.now() < deadline && ((await portOpen(service.port)) || this.children.has(id))) await new Promise(resolve => setTimeout(resolve, 1000));
+      //By leewheel 2026-11-03 入口时端口还没开（服务正在启动中）≠ 不用优雅停机：
+      // 等待期间端口开了（正好就绪），要补做一次优雅停机，而不是傻等到点强杀——
+      // 以前这里跳过 mysqladmin，最后 taskkill /F，数据库连 Normal shutdown 都没写就没了。
+      // 入口时已经优雅停过（wasRunning=true 走过 stopExe）就不再重复。
+      let gracefulDone = !service.stopExe || wasRunning;
+      while (Date.now() < deadline && ((await portOpen(service.port)) || this.children.has(id))) {
+        if (!gracefulDone && await portOpen(service.port)) {
+          gracefulDone = true;
+          await exec(this.resolve(service.stopExe), service.stopArgs, { cwd: this.root, windowsHide: true, timeout: 60000 })
+            .catch(error => { console.log(`[stop] ${service.name}: ${error.message}（继续用兜底方式停）`); });
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
       if ((await portOpen(service.port)) || this.children.has(id)) {
         const owner = child ? { pid: child.pid } : await this.ownedProcess(service.port);
         if (owner) await exec('taskkill.exe', ['/PID', String(owner.pid), '/T', '/F'], { windowsHide: true }).catch(() => {});

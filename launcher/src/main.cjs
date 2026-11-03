@@ -2648,7 +2648,15 @@ async function anyServiceRunning() {
   }
   if (!ports.size) return false;
   const open = await Promise.all([...ports].map(port => portOpen(port).catch(() => false)));
-  return open.some(Boolean);
+  if (open.some(Boolean)) return true;
+  //By leewheel 2026-11-03 端口还没开 ≠ 没有服务在跑：正在启动中的 MySQL/世界服（端口未就绪）
+  // 也要算“在跑”，否则启动中途关启动器会静默跳过确认框、最后把刚就绪的数据库强杀。
+  const control = serverControl();
+  try { if (control?.children?.size) return true; } catch {}
+  for (const service of control?.services || []) {
+    try { if (await control.processAlive(service.id)) return true; } catch {}
+  }
+  return false;
 }
 //By leewheel 2026-11-03 关闭流程的日志：写在 userData\closing.log，方便排查"关了但服务还在"
 function closingLog(line) {
