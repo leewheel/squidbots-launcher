@@ -40,6 +40,11 @@ const modules = require('./modules.cjs');
 const realms = require('./realms.cjs');
 const { mysqlLender } = require('./mysql-lender.cjs');
 const { fixManage } = require('./manage-fix.cjs');
+//By leewheel 2026-11-03 服务端/客户端更新 + 首次运行目录整形
+const releaseUpdate = require('./release-update.cjs');
+const { normalizeLayout, readMarker: readLayoutMarker, isNormalized: isLayoutNormalized } = require('./layout-fix.cjs');
+let releaseBusy = false;
+let releaseAbort = null;
 // The repack's own updates (squidbots-updates releases): the signed list, the run in progress, its last result.
 const update = { manifest: null, error: null, busy: false, phase: null, last: null };
 let feed = null;
@@ -119,11 +124,23 @@ const gameDataPath = () => [settings.installPaths.game, settings.installPaths.ad
 const serverPath = () => settings.installPaths.server || '';
 const realmlist = () => settings.realmlist || config.game.realmlists[0].address;
 
-//By leewheel 2026-11-02 发布版目录布局：启动器 exe 与 Client\、Server\ 两个目录同级。
-// 便携版 exe（单文件）运行在临时目录，真正的所在目录由 PORTABLE_EXECUTABLE_DIR 给出。
+//By leewheel 2026-11-02 发布版目录布局：启动器与 Client\、Server\ 两个目录同级。
+// 三种放法都认：①便携版单 exe（PORTABLE_EXECUTABLE_DIR 给出真实所在目录）；
+// ②解包目录形态（启动器\ 里是 exe + resources，Client、Server 在其上级）；
+// ③exe 直接与 Client、Server 并排。
+function launcherRootCandidates() {
+  const list = [];
+  if (process.env.PORTABLE_EXECUTABLE_DIR) list.push(path.resolve(process.env.PORTABLE_EXECUTABLE_DIR));
+  const exeDir = app.isPackaged ? path.dirname(app.getPath('exe')) : path.join(__dirname, '..');
+  list.push(path.resolve(exeDir));
+  list.push(path.resolve(exeDir, '..'));
+  return [...new Set(list)];
+}
+// 第一个含 Client 或 Server 的候选目录就是发布根目录；都没有时退回 exe 所在目录。
 function launcherRootFolder() {
-  if (process.env.PORTABLE_EXECUTABLE_DIR) return path.resolve(process.env.PORTABLE_EXECUTABLE_DIR);
-  return app.isPackaged ? path.dirname(app.getPath('exe')) : path.join(__dirname, '..');
+  const candidates = launcherRootCandidates();
+  const found = candidates.find(root => fs_exists(path.join(root, 'Client')) || fs_exists(path.join(root, 'Server')));
+  return found || candidates[0];
 }
 const publishedFolders = () => {
   const root = launcherRootFolder();
@@ -1477,7 +1494,12 @@ function registerIpc() {
     if (!baseByRealm) return;
     const c = requireControl();
     const world = (await c.status()).some(service => /world/i.test(service.id) && ['running', 'starting'].includes(service.state));
-    const realmOn = (await realms.status(serverPath(), { live: false })).realms.some(realm => ['running', 'starting'].includes(realm.state));
+    //By leewheel 2026-11-03 改用【端口】判断国度是否还在跑：realms.status() 依赖 .state.json 的 pid，
+    // 一旦记录过期就会误判"没有国度在跑"，接着 stopAll() 把 MySQL 停掉 —— MySQL 一停，所有国度的世界服
+    // 都会优雅退出（就是"启动第二个，第一个停了"的现场）。端口在监听就一定不停。
+    const realmPorts = (await realms.status(serverPath(), { live: false }).catch(() => ({ realms: [] }))).realms.map(realm => Number(realm.worldPort)).filter(Boolean);
+    let realmOn = false;
+    for (const port of realmPorts) if (await portOpen(port)) { realmOn = true; break; }
     if (world || realmOn) return;
     baseByRealm = false;
     await c.stopAll().catch(() => {});
@@ -2124,6 +2146,152 @@ function registerIpc() {
   });
   handle('verify:archiveCrashes', () => { if (!serverPath()) throw new Error('Choose the server folder first.'); return require('./verify.cjs').archiveCrashes(serverPath()); });
   handle('launcher:install', () => launcherUpdates.install());
+  //By leewheel 2026-11-03 与点标题栏 X 走同一条关闭路径（隐藏窗口的自动化测试用它，验证真的会停服再退出）
+  handle('debug:close', async () => { closeWithNotice().catch(() => {}); return true; });
+  //By leewheel 2026-11-03 只允许从界面打开 GitHub / Discord 链接
+  handle('shell:open', async url => {
+    const target = String(url || '');
+    if (!/^https:\/\/(github\.com|www\.github\.com|discord\.gg|discord\.com)\//i.test(target)) throw new Error('只允许打开 GitHub 或 Discord 链接。');
+    await shell.openExternal(target);
+    return true;
+  });
+
+  //By leewheel 2026-11-03 日志编码：AC 在中文 Windows 上写的是 ANSI(GBK)，按 UTF-8 读中文全是乱码。
+  // 两种都解一次，谁的"替换符"少就用谁（GBK 文件用 GBK 解得 0 个，UTF-8 文件用 GBK 解会一大堆）。
+  const decodeLog = buffer => {
+    const utf8 = new TextDecoder('utf-8').decode(buffer);
+    const badUtf8 = (utf8.match(/\uFFFD/g) || []).length;
+    if (!badUtf8) return utf8;
+    let gbk = '';
+    try { gbk = new TextDecoder('gbk').decode(buffer); } catch { return utf8; }
+    const badGbk = (gbk.match(/\uFFFD/g) || []).length;
+    return badGbk < badUtf8 ? gbk : utf8;
+  };
+  handle('server:log', async (realm = '', lines = 200) => {
+    const root = serverPath();
+    if (!root) return { path: '', lines: [], size: 0, mtime: 0, missing: true, running: false, realm: '' };
+    const layout = require('./layout.cjs').serverLayout(root);
+    const control = serverControl();
+    const services = control ? await control.status().catch(() => []) : [];
+    const worldService = services.find(service => /world/i.test(service.id));
+    let running = worldService ? ['running', 'starting'].includes(worldService.state) : false;
+    let file = path.join(root, ...String(layout.logs || 'logs').split('/'), 'Server.log');
+    if (realm) {
+      //By leewheel 2026-11-03 国度也有自己的日志：Royaumes\<key>\Logs\Server.log（同样是 GBK），运行状态看它自己的端口
+      file = path.join(root, 'Royaumes', String(realm), 'Logs', 'Server.log');
+      const list = await realms.status(root, { live: false }).catch(() => ({ realms: [] }));
+      running = (list.realms || []).some(item => item.key === realm && ['running', 'starting'].includes(item.state));
+    }
+    let stat = null;
+    try { stat = await fs.stat(file); } catch { return { path: file, lines: [], size: 0, mtime: 0, missing: true, running, realm: String(realm) }; }
+    const want = Math.max(20, Math.min(600, Number(lines) || 200));
+    const handle = await fs.open(file, 'r').catch(() => null);
+    if (!handle) return { path: file, lines: [], size: stat.size, mtime: stat.mtimeMs, missing: true, running, realm: String(realm) };
+    try {
+      const span = Math.min(stat.size, 96 * 1024);
+      const buffer = Buffer.alloc(span);
+      await handle.read(buffer, 0, span, stat.size - span);
+      const text = decodeLog(buffer).replace(/^\uFEFF/, '');
+      const all = text.split(/\r?\n/);
+      if (stat.size > span) all.shift();
+      return { path: file, lines: all.slice(-want), size: stat.size, mtime: stat.mtimeMs, missing: false, running, realm: String(realm) };
+    } finally { await handle.close().catch(() => {}); }
+  });
+  // 这里把明细给界面：哪个文件的哪个键、现在是什么、主服（基准）是什么，玩家才知道到底改了哪些。
+  handle('realm:changed', async key => {
+    const root = serverPath();
+    if (!root || !key) return { count: 0, items: [], configs: '' };
+    const own = path.join(root, 'Royaumes', String(key), 'settings.json');
+    let saved = null;
+    try { saved = JSON.parse((await fs.readFile(own, 'utf8')).replace(/^\uFEFF/, '')); } catch { return { count: 0, items: [], configs: '' }; }
+    const configsDir = path.join(root, ...String(require('./layout.cjs').serverLayout(root).configs || 'configs').split('/'));
+    const grab = (text, wanted) => {
+      const found = new RegExp(`^[ \\t]*${String(wanted).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}[ \\t]*=[ \\t]*(.*)$`, 'm').exec(text);
+      return found ? found[1].trim() : '';
+    };
+    const items = [];
+    for (const [file, keys] of Object.entries(saved || {})) {
+      if (!keys || typeof keys !== 'object') continue;
+      const baseText = await fs.readFile(path.join(configsDir, ...String(file).split('/')), 'utf8').catch(() => '');
+      for (const [name, value] of Object.entries(keys)) items.push({ file, key: name, value: String(value), base: grab(baseText, name) });
+    }
+    return { count: items.length, items, configs: configsDir };
+  });
+  handle('release:check', async () => {
+    const root = launcherRootFolder();
+    const installed = await releaseUpdate.installedVersion(root);
+    const coreRelease = serverPath() ? String(inspectRepack(serverPath()).release || '') : '';
+    let releases = [];
+    let error = '';
+    try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '' }); } catch (caught) { error = caught.message; }
+    const latest = releases[0] || null;
+    return {
+      current: installed || coreRelease,
+      latest,
+      asset: latest ? releaseUpdate.pickAsset(latest) : null,
+      releases: releases.slice(0, 10),
+      history: await releaseUpdate.readHistory(root),
+      updateDir: path.join(root, 'Update'),
+      error,
+    };
+  });
+  handle('release:history', () => releaseUpdate.readHistory(launcherRootFolder()));
+  handle('release:cancel', () => { try { releaseAbort?.abort(); } catch {} return true; });
+  handle('release:apply', async options => {
+    if (releaseBusy) throw new Error('更新正在进行中，请等它完成。');
+    if (!options?.asset?.url) throw new Error('没有可用的更新包。');
+    const root = launcherRootFolder();
+    const version = String(options.version || options.asset.version || 'latest').replace(/[^A-Za-z0-9._-]+/g, '-');
+    const serverRoot = path.join(root, 'Server');
+    const clientRoot = path.join(root, 'Client');
+    if (!fs_exists(serverRoot) || !fs_exists(clientRoot)) throw new Error('先把目录整理成 Server 与 Client 两个目录（启动器会自动整理）。');
+    releaseBusy = true;
+    releaseAbort = new AbortController();
+    const folder = path.join(root, 'Update', version);
+    const zip = path.join(folder, options.asset.name || 'update.zip');
+    const extract = path.join(folder, 'extracted');
+    const progress = payload => send('release:progress', payload);
+    try {
+      await fs.rm(folder, { recursive: true, force: true });
+      await fs.mkdir(folder, { recursive: true });
+      progress({ phase: 'download', version, message: `正在下载 ${options.asset.name}`, pct: 0 });
+      await releaseUpdate.download(options.asset.url, zip, {
+        fetchImpl: netFetch,
+        signal: releaseAbort.signal,
+        onProgress: (done, total) => progress({ phase: 'download', version, done, total, pct: total ? Math.floor((done / total) * 100) : null, message: '正在下载' }),
+      });
+      progress({ phase: 'extract', version, message: '正在解压', pct: null });
+      await releaseUpdate.extractZip(zip, extract, line => progress({ phase: 'extract', version, message: String(line).slice(0, 200), pct: null }));
+      progress({ phase: 'apply', version, message: '正在归位到 Server / Client', pct: null });
+      const result = await releaseUpdate.applyUpdate({
+        root, world: extract, serverRoot, clientRoot,
+        onPhase: phase => progress({ phase, version, message: `正在处理：${phase}`, pct: null }),
+        onLine: line => progress({ phase: 'apply', version, message: String(line).slice(0, 300), pct: null }),
+        importSqlFiles: options.importSql !== false,
+      });
+      const entry = { version: options.version || version, tag: options.tag || '', asset: options.asset.name, at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings };
+      await releaseUpdate.recordVersion(root, entry);
+      // 更新完是否删除 Update 临时目录（玩家在界面上勾选）
+      if (options.deleteAfter !== false) {
+        await fs.rm(folder, { recursive: true, force: true }).catch(() => {});
+        progress({ phase: 'done', version, message: '更新完成，临时目录已删除', pct: 100, result: entry });
+      } else {
+        progress({ phase: 'done', version, message: `更新完成，临时文件保留在 ${folder}`, pct: 100, result: entry, kept: folder });
+      }
+      return { ...entry, folder: options.deleteAfter !== false ? '' : folder };
+    } finally {
+      releaseBusy = false;
+      releaseAbort = null;
+    }
+  });
+  // 首次运行把根目录整理成 启动器 + Client + Server（只做一次，结果写 .coa-launcher/layout.json）
+  handle('layout:normalize', async () => {
+    const root = launcherRootFolder();
+    const report = await normalizeLayout(root, { log: line => send('repack:notice', { key: 'layout.move', text: line }) });
+    if (report.done) await detectPublishedFolders();
+    return { ...report, root };
+  });
+  handle('layout:report', async () => ({ root: launcherRootFolder(), marker: await readLayoutMarker(launcherRootFolder()), normalized: await isLayoutNormalized(launcherRootFolder()) }));
 }
 
 function registerProtocol() {
@@ -2375,7 +2543,8 @@ function localNote(body) {
 let dashboardWindow = null;
 function openDashboardWindow(url) {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) { dashboardWindow.loadURL(url); dashboardWindow.show(); dashboardWindow.focus(); return; }
-  dashboardWindow = new BrowserWindow({ width: 1320, height: 860, minWidth: 900, minHeight: 600, title: 'SquidBots 控制面板', backgroundColor: '#04121c', autoHideMenuBar: true,
+  dashboardWindow = new BrowserWindow({ width: 1320, height: 860, minWidth: 900, minHeight: 600, title: 'SquidBots 控制面板', backgroundColor: '#0e0805', autoHideMenuBar: true,
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false } });
   dashboardWindow.removeMenu();
   const local = target => /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//.test(target);
@@ -2452,19 +2621,79 @@ const CLOSE_TEXT = {
   //By leewheel 2026-11-02 本发布版的服务由启动器直接拉起（没有独立管理器），关闭启动器就要优雅停止服务器
   zh: { title: '关闭启动器会停止服务器', message: '关闭启动器会先保存并停止服务器（MySQL、登录服、世界服），然后退出。', detail: '确认后请稍等几秒，等世界服务器把角色数据保存完成。', close: '关闭并停止服务器', cancel: '取消', again: '不再显示' },
 };
+//By leewheel 2026-11-03 关闭启动器 = 关掉它启动的【一切】：所有国度的世界服、主服的登录服/世界服/MySQL、面板。
+// 旧逻辑只停主服，国度的世界服会继续在后台跑（玩家以为关掉了，其实还占着 8185/8285…）；
+// 而且等待过程窗口一直没反应，像"关不掉"。现在：先弹遮罩告诉玩家在停机，90 秒还没停完就强杀子进程退出。
+function killAllChildren() {
+  const found = serverControl();
+  try { for (const child of found?.children?.values?.() || []) { try { child.kill(); } catch {} } } catch {}
+  try { dashboard.stop(); } catch {}
+}
+//By leewheel 2026-11-03 「现在有没有服务在跑」用端口探测，别用 status()：
+// status() 要查每个国度的远程控制台（RA 连不上要等超时），关闭时会让界面像卡死（老大的"点了没反应"就是这个）。
+async function anyServiceRunning() {
+  const ports = new Set();
+  for (const service of serverControl()?.services || []) if (service.port) ports.add(Number(service.port));
+  const root = serverPath();
+  if (root) {
+    try {
+      for (const entry of await fs.readdir(path.join(root, 'Royaumes'), { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const realm = JSON.parse((await fs.readFile(path.join(root, 'Royaumes', entry.name, 'realm.json'), 'utf8')).replace(/^\uFEFF/, ''));
+          if (realm?.worldPort) ports.add(Number(realm.worldPort));
+        } catch {}
+      }
+    } catch {}
+  }
+  if (!ports.size) return false;
+  const open = await Promise.all([...ports].map(port => portOpen(port).catch(() => false)));
+  return open.some(Boolean);
+}
+//By leewheel 2026-11-03 关闭流程的日志：写在 userData\closing.log，方便排查"关了但服务还在"
+function closingLog(line) {
+  try { require('node:fs').appendFileSync(path.join(app.getPath('userData'), 'closing.log'), `${new Date().toISOString()} ${line}\n`); } catch {}
+}
+async function stopEverything() {
+  const root = serverPath();
+  closingLog(`stopEverything: root=${root} realms=${typeof realms?.stopAll} control=${!!serverControl()}`);
+  // 先停国度（世界服要保存角色），再停主服（auth → world → MySQL），最后面板
+  if (root) await realms.stopAll(root).then(() => closingLog('国度已停'), error => closingLog('国度停机失败: ' + error.message));
+  const control = serverControl();
+  if (control) await control.stopAll().then(() => closingLog('主服已停'), error => closingLog('主服停机失败: ' + error.message));
+  try { dashboard.stop(); } catch {}
+  const left = control ? (await control.status().catch(() => [])).filter(service => service.state !== 'stopped' && service.state !== 'foreign') : [];
+  closingLog('剩余服务: ' + JSON.stringify(left.map(service => `${service.id}:${service.state}`)));
+}
 async function closeWithNotice() {
-  // Kept in the notification area: the window only hides.
-  if (settings.trayOnClose && tray) { window?.hide(); return; }
-  const running = !settings.hideCloseNotice && (await serverControl()?.status().catch(() => []) || []).some(service => service.state === 'running' || service.state === 'starting');
-  if (running) {
+  if (closing) return;
+  closingLog('closeWithNotice: 开始');
+  const running = await anyServiceRunning().catch(() => false);
+  closingLog(`有服务在跑: ${running}`);
+  if (running && !settings.hideCloseNotice) {
     const words = CLOSE_TEXT[settings.language] || CLOSE_TEXT.en;
     const answer = await dialog.showMessageBox(window, { type: 'info', title: words.title, message: words.message, detail: words.detail, buttons: [words.close, words.cancel], defaultId: 0, cancelId: 1, checkboxLabel: words.again, noLink: true });
     if (answer.response !== 0) return;
     if (answer.checkboxChecked) await persist({ ...settings, hideCloseNotice: true }).catch(() => {});
-    //By leewheel 2026-11-02 关闭前先优雅停止（世界服保存角色数据），再退出
-    await serverControl()?.stopAll().catch(() => {});
   }
   closing = true;
+  if (running) {
+    // 窗口先留着并显示停机进度，别让玩家以为点了没反应
+    send('closing', { phase: 'stopping' });
+    const stopped = await Promise.race([stopEverything().then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 90000))]);
+    if (!stopped) {
+      console.log('[closing] 90 秒内没停完，强制结束子进程');
+      send('closing', { phase: 'forcing' });
+      killAllChildren();
+      //By leewheel 2026-11-03 强杀后还要按 exe 路径兜底扫一遍：上一个实例拉起的 MySQL 不在
+      // children 里，漏掉它就是“关了启动器 mysqld 还占着端口”的根因。
+      try { const killed = await serverControl()?.killAllInside(); if (killed?.length) closingLog('兜底强杀: ' + killed.join(', ')); } catch {}
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      app.exit(0);
+      return;
+    }
+    send('closing', { phase: 'done' });
+  }
   window?.close();
 }
 
@@ -2499,6 +2728,13 @@ async function main() {
   // Windows shows notifications only for an app with its own id (the installer's appId; the exe itself when run from the sources).
   if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? (config.edition === 'server' ? 'org.squidbots.server' : 'org.coa.launcher-lite') : process.execPath);
   //By leewheel 2026-11-02 同级的 Client\ 与 Server\ 自动识别，玩家不需要再手动指目录
+  //By leewheel 2026-11-03 首次运行先整理根目录结构（散文件 → Server\ / Client\）；只在打包版做，开发模式不动源码目录
+  if (app.isPackaged && !smokeDir) {
+    const root = launcherRootFolder();
+    if (!(await isLayoutNormalized(root))) {
+      await normalizeLayout(root, { log: line => send('repack:notice', { key: 'layout.move', text: line }) }).catch(error => send('repack:notice', { key: 'layout.failed', text: `目录整理失败：${error.message}` }));
+    }
+  }
   await detectPublishedFolders();
   createUpdaters();
   launcherUpdates = createLauncherUpdates(app, { feedUrl: config.launcherUpdateUrl, key: config.launcherUpdateKey, fetchImpl: netFetch }, status => send('launcher:update', status), async () => {
@@ -2514,7 +2750,9 @@ async function main() {
   window = new BrowserWindow({
     // The server edition's home with the server live (its tiles and the game account) shows whole in 820 px, on a
     // screen tall enough for it.
-    width: 1180, height: config.edition === 'server' ? Math.max(640, Math.min(820, screen.getPrimaryDisplay().workAreaSize.height - 16)) : 760, minWidth: 980, minHeight: 640, frame: false, show: false, backgroundColor: '#04121c', title: config.appName,
+    width: 1180, height: config.edition === 'server' ? Math.max(640, Math.min(820, screen.getPrimaryDisplay().workAreaSize.height - 16)) : 760, minWidth: 980, minHeight: 640, frame: false, show: false, backgroundColor: '#0e0805', title: config.appName,
+    //By leewheel 2026-11-02 窗口与任务栏图标 =《征服艾泽拉斯》奇幻金色徽章；底色改成 1122.png 的深棕黑
+    icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, devTools: !app.isPackaged, backgroundThrottling: !smokeDir },
   });
   window.removeMenu();
@@ -2556,14 +2794,21 @@ async function main() {
   let quittingServer = false;
   app.on('before-quit', event => {
     closing = true;
-    dashboard.stop();
-    if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.destroy();
-    const found = serverControl();
-    const busy = !!found && (found.children.size > 0 || found.states.size > 0);
-    if (quittingServer || smokeDir || !busy) return;
+    if (quittingServer) return;
+    //By leewheel 2026-11-03 托盘退出/系统关机/任务杀：同样要停【国度 + 主服】
     event.preventDefault();
     quittingServer = true;
-    found.stopAll().catch(() => {}).finally(() => app.exit(0));
+    const root = serverPath();
+    Promise.race([
+      (async () => { if (root) await realms.stopAll(root).catch(() => {}); dashboard.stop(); if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.destroy(); await serverControl()?.stopAll().catch(() => {}); })(),
+      new Promise(resolve => setTimeout(resolve, 90000)),
+    ]).then(async () => {
+      killAllChildren();
+      //By leewheel 2026-11-03 最后兜底：凡 exe 在整合包目录内的 worldserver/authserver/mysqld
+      // 一律结束（含上一个实例拉起的 MySQL）。优雅停机已成功时这里扫不到进程，属空操作。
+      try { const killed = await serverControl()?.killAllInside(); if (killed?.length) closingLog('兜底强杀: ' + killed.join(', ')); } catch {}
+      app.exit(0);
+    }).catch(() => app.exit(0));
   });
   setTimeout(() => launcherUpdates.check(), 1500).unref();
   if (config.edition === 'server' && !smokeDir) createTray().catch(() => {});

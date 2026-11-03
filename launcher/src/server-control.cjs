@@ -86,8 +86,8 @@ class ServerControl {
       const collect = chunk => { output += chunk.toString(); if (output.length > 200000) output = output.slice(-100000); };
       child.stdout.on('data', collect);
       child.stderr.on('data', collect);
-      for (const line of input) child.stdin.write(`${line}\r\n`);
-      child.stdin.end();
+      for (const line of input) { try { child.stdin.write(`${line}\r\n`); } catch (error) { if (error.code !== 'EPIPE') throw error; } }
+      try { child.stdin.end(); } catch {}
       const timer = setTimeout(() => { exec('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true }).catch(() => child.kill()); reject(new Error(`${command.exe} took too long.`)); }, command.timeout * 1000);
       child.once('error', error => { clearTimeout(timer); reject(error); });
       child.once('exit', code => {
@@ -214,6 +214,9 @@ class ServerControl {
     } catch {}
     this.children.set(id, child);
     this.states.set(id, 'starting');
+    //By leewheel 2026-11-03 子进程的管道要挂 error：进程自己退出后再往里写会抛 EPIPE，
+    // 没接住就是主进程未捕获异常（关闭启动器时弹"JavaScript error occurred in the main process"）。
+    for (const stream of [child.stdin, child.stdout, child.stderr]) if (stream) stream.on('error', () => {});
     child.once('exit', () => {
       this.children.delete(id);
       this.states.delete(id);
@@ -273,9 +276,18 @@ class ServerControl {
       if (service.stop) {
         await this.run(service.stop, id);
       } else if (child && service.console && service.stopCommand) {
-        child.stdin.write(`${service.stopCommand}\r\n`);
+        //By leewheel 2026-11-03 世界服可能已经自己退出（控制台管道已断）：这时 write 会抛 EPIPE，
+        // 以前会把主进程打崩。断开了就当作它已经停了，交给下面的等待/兜底逻辑处理。
+        if (child.stdin && child.stdin.writable && !child.killed) {
+          try { child.stdin.write(`${service.stopCommand}\r\n`); }
+          catch (error) { if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED') throw error; }
+        }
       } else if (service.stopExe) {
-        if (wasRunning) await exec(this.resolve(service.stopExe), service.stopArgs, { cwd: this.root, windowsHide: true, timeout: 60000 });
+        //By leewheel 2026-11-03 mysqladmin 在数据库忙（刚停完世界服、还在刷盘）时会超时或返回非 0，
+        // 以前这里直接抛错 → stopAll 中断 → MySQL 一直留在后台（老大关掉启动器后 3395 还占着就是这个）。
+        // 现在只把原因记下来，继续走下面的"等端口关闭 + 兜底 taskkill"，保证它一定被停掉。
+        if (wasRunning) await exec(this.resolve(service.stopExe), service.stopArgs, { cwd: this.root, windowsHide: true, timeout: 60000 })
+          .catch(error => { console.log(`[stop] ${service.name}: ${error.message}（继续用兜底方式停）`); });
       } else if (child) {
         await exec('taskkill.exe', ['/PID', String(child.pid), '/T'], { windowsHide: true }).catch(() => {});
       } else {
@@ -302,6 +314,32 @@ class ServerControl {
   // 停机后清掉这个服务的进程记录（.state\<id>.json），避免下次启动看到过期的状态
   forget(id) {
     try { require('node:fs').rmSync(path.join(this.root, '.state', `${id}.json`), { force: true }); } catch {}
+  }
+
+  //By leewheel 2026-11-03 兜底强杀：凡可执行文件位于本整合包目录内（含 mysql\）的
+  // worldserver.exe / authserver.exe / mysqld.exe 一律结束。老大的规则：关闭启动器 =
+  // 关掉它属下的一切，尤其是 Server\mysql 下的数据库进程。
+  // 为什么只靠 children 不够：MySQL 可能是【上一个启动器实例】拉起的（关闭时本实例
+  // children 为空，start() 又因端口已开而提前返回），优雅停机再一失败，它就永远没人杀
+  // （实弹：关掉启动器后 mysqld 还占着端口）。这里按 exe 路径归属判定，不看是谁起的：
+  // 只杀 exe 在 root 内的进程，绝不动系统 MySQL、E:\ 其他项目等外来进程。
+  async killAllInside() {
+    if (process.platform !== 'win32') return [];
+    const script = "Get-CimInstance Win32_Process -Filter \"Name='worldserver.exe' OR Name='authserver.exe' OR Name='mysqld.exe'\" | ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ExecutablePath }";
+    const { stdout } = await exec('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true, timeout: 15000 }).catch(() => ({ stdout: '' }));
+    const lower = this.root.toLowerCase() + path.sep;
+    const killed = [];
+    for (const line of String(stdout).split(/\r?\n/)) {
+      const separator = line.indexOf('|');
+      if (separator <= 0) continue;
+      const pid = line.slice(0, separator).trim();
+      const file = line.slice(separator + 1).trim();
+      if (!/^\d+$/.test(pid) || !file) continue;
+      if (!file.toLowerCase().startsWith(lower)) continue;
+      await exec('taskkill.exe', ['/PID', pid, '/T', '/F'], { windowsHide: true }).catch(() => {});
+      killed.push(`${file} (PID ${pid})`);
+    }
+    return killed;
   }
 
   async stopAll() {
@@ -337,7 +375,11 @@ class ServerControl {
     const world = this.services.find(service => service.console);
     const child = world && this.children.get(world.id);
     if (!child?.stdin?.writable) throw new Error('Start the worldserver from the launcher first.');
-    for (const command of commands) child.stdin.write(`${command}\r\n`);
+    //By leewheel 2026-11-03 世界服可能刚好退出：writable 为真也会抛 EPIPE，这里接住不崩主进程
+    for (const command of commands) {
+      try { child.stdin.write(`${command}\r\n`); }
+      catch (error) { if (error.code === 'EPIPE' || error.code === 'ERR_STREAM_DESTROYED') throw new Error('世界服已经退出了，命令没有发出去。'); throw error; }
+    }
   }
 
   async tail(id, lines = 200) {

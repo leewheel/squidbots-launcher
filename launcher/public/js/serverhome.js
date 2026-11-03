@@ -191,7 +191,7 @@ function verifyView() {
   const v = App.state.verify;
   const running = App.state.verifying;
   const head = `<div class="verify-head"><div class="verify-score ${v ? (v.summary.bad ? 'bad' : v.summary.warn ? 'warn' : 'ok') : ''}">${v ? (v.summary.bad ? icon('warning') : v.summary.warn ? icon('info') : icon('check')) : icon('shield')}<div><strong>${esc(!v ? t('verify.never', 'Not checked yet') : v.summary.bad ? t('verify.bad', '{n} problem(s) to fix', { n: v.summary.bad }) : v.summary.warn ? t('verify.warn', '{n} point(s) to look at', { n: v.summary.warn }) : t('verify.ok', 'All good'))}</strong><small>${esc(v ? t('verify.when', 'Checked at {time}{deep}', { time: new Date(v.at).toLocaleTimeString(I18N.lang), deep: v.deep ? t('verify.withFiles', ', files included') : '' }) : t('verify.hint', 'A quick check reads the versions, the services and the logs.'))}</small></div></div>
-    <div class="button-row"><button class="button ghost" data-action="verify-copy" title="${esc(t('verify.copyHint', 'For the support Discord: the versions of the core and the bots'))}">${icon('book')}${esc(t('verify.copy', 'Copy the versions'))}</button><button class="button ghost" data-action="verify-run" ${running ? 'disabled' : ''}>${icon('refresh')}${esc(t('verify.quick', 'Check again'))}</button><button class="button primary" data-action="verify-deep" ${running ? 'disabled' : ''}>${icon('shield')}${esc(t('verify.deep', 'Check every file'))}</button></div></div>`;
+    <div class="button-row"><button class="button ghost" data-action="verify-copy" title="${esc(t('verify.copyHint', 'For the support Discord: the versions of the core and the bots'))}">${icon('book')}${esc(t('verify.copy', 'Copy the versions'))}</button><button class="button ghost" data-action="verify-update" title="${esc(t('verify.updateHint', '检查启动器与服务器是否有新版本'))}">${icon('download')}${esc(t('verify.update', '检查更新'))}</button><button class="button ghost" data-action="verify-run" ${running ? 'disabled' : ''}>${icon('refresh')}${esc(t('verify.quick', 'Check again'))}</button><button class="button primary" data-action="verify-deep" ${running ? 'disabled' : ''}>${icon('shield')}${esc(t('verify.deep', 'Check every file'))}</button></div></div>`;
   if (!v) return `<div class="page verify">${head}${running ? `<div class="task-line">${icon('refresh')}<span>${esc(t('verify.running', 'Checking…'))}</span></div>` : ''}</div>`;
   // Two columns, each group going under the shorter one: no hole under a short group.
   const cols = [{ html: '', size: 0 }, { html: '', size: 0 }];
@@ -310,7 +310,7 @@ function homeView() {
     const first = direct
       ? `<button class="split-button update" data-action="install-server" ${p || !gameOk ? 'disabled' : ''}><span class="split-main">${icon('download')}<span><strong>${esc(t('install.title', 'Install the server'))}</strong><small>${esc(t('install.package', 'SquidBots {version} · {size}', { version: packageVersion, size: formatBytes(repack.bytes) }))}</small><small class="muted">${esc(t('install.hint', 'Downloaded and installed by the launcher, in an empty folder you choose.'))}</small></span></span></button>${progress}`
       : `<button class="split-button ready" data-tab="server"><span class="split-main">${icon('download')}<span><strong>${esc(t('home.install', 'Install'))}</strong></span></span></button>`;
-    return `<div class="page classic"><section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1><p class="status-line">${esc(direct ? t('assemble.noServer', 'No server yet: the launcher downloads our server (about 150 MB, without any game data), then takes the game data from your own client.') : t('home.noServer', 'No server yet: install the CoA repack with its bots in a few clicks, or show the folder of the one you have.'))}</p>
+    return `<div class="page classic home-page"><section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1><p class="status-line">${esc(direct ? t('assemble.noServer', 'No server yet: the launcher downloads our server (about 150 MB, without any game data), then takes the game data from your own client.') : t('home.noServer', 'No server yet: install the CoA repack with its bots in a few clicks, or show the folder of the one you have.'))}</p>
       ${direct ? `<ol class="setup-steps">
         <li class="${gameOk ? 'done' : 'current'}"><span class="step-num">${gameOk ? icon('check') : '1'}</span><div class="step-body"><strong>${esc(t('setup.game', 'Your game'))}</strong><small>${esc(gameOk ? s.client.path : t('setup.gameHint', 'The server takes its game data from your own CoA client.'))}</small></div><button class="button ${gameOk ? 'ghost small' : 'primary'}" data-action="client-locate">${icon('folder')}${esc(gameOk ? t('setup.change', 'Change') : t('setup.pickGame', 'Choose the game folder'))}</button></li>
         <li class="${gameOk ? 'current' : 'locked'}"><span class="step-num">2</span><div class="step-body">${first}${gameOk ? '' : `<small class="muted">${esc(t('setup.gameFirst', 'Choose your game folder first.'))}</small>`}</div></li>
@@ -319,7 +319,7 @@ function homeView() {
   }
   // A server without game data: prepared from the player's own client before anything else.
   const asm = info.assembly;
-  if (asm?.applies && asm.needed) return `<div class="page classic"><section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1>${assemblyCard(asm)}</div></section></div>`;
+  if (asm?.applies && asm.needed) return `<div class="page classic home-page"><section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1>${assemblyCard(asm)}</div></section></div>`;
   const services = info.services || [];
   // CoA world stopped, one or more realms running on MySQL and the login: the server runs, with them.
   const realmsOn = (info.realmsOn || []).filter(realm => realm.state === 'running');
@@ -355,7 +355,7 @@ function homeView() {
   // Something runs without the world (MySQL alone...): it can be stopped from here.
   const menu = [...(running && !worldOn && !realmsOnly ? [['service-stop-all', '', t('home.menuStopRest', 'Stop what is running ({n} of {total})', { n: running, total: services.length })]] : []), ['srv-tab', 'services', t('home.menuServices', 'Services one by one')], ['srv-tab', 'backups', t('srv.tab.backups', 'Backups')], ['server-folder', '', t('home.menuFolder', 'Open the server folder')],
     ['instance-new', '', t('home.menuNew', 'Create a new server (clean instance)…')], ['instance-add', '', t('home.menuAdd', 'Add a repack folder I unpacked…')], ['instance-pick', '', t('home.menuSwitch', 'My servers…')]];
-  return `<div class="page classic">${asm?.applies ? clientBanner(asm) + mmapsBanner(asm.mmaps) : ''}${info.mmapsRestart ? `<div class="update-banner"><i class="dot"></i><span>${esc(t('assemble.mmapsRestart', 'The navigation maps of the bots are ready. Restart the server so it uses all of them.'))}</span><button class="button primary small" data-action="server-restart">${icon('refresh')}${esc(t('assemble.restart', 'Restart the server'))}</button></div>` : ''}
+  return `<div class="page classic home-page">${asm?.applies ? clientBanner(asm) + mmapsBanner(asm.mmaps) : ''}${info.mmapsRestart ? `<div class="update-banner"><i class="dot"></i><span>${esc(t('assemble.mmapsRestart', 'The navigation maps of the bots are ready. Restart the server so it uses all of them.'))}</span><button class="button primary small" data-action="server-restart">${icon('refresh')}${esc(t('assemble.restart', 'Restart the server'))}</button></div>` : ''}
     <section class="hero classic-hero server-hero">${homeLinks()}
       <div class="classic-main">
         <h1>${esc(t('home.heroTitle', 'My server'))}</h1>
@@ -381,8 +381,105 @@ function homeView() {
     </section>
     ${feedNewsRow(false)}
     ${!App.state.feed?.news?.length && (s.news || []).filter(item => item.area !== 'client').length ? `<section class="news-row"><h2>${esc(t('classic.news', 'Latest news'))}</h2><div class="news-grid">${newsCards((s.news || []).filter(item => item.area !== 'client'))}</div></section>` : ''}
+    ${logPanelView()}
   </div>`;
 }
+
+//By leewheel 2026-11-03 主页下半部分的半透明日志窗口：直接看 worldserver 在干什么（加载数据、生成机器人、报错）。
+// 世界服是最后才开端口的，加载/生成机器人要好几分钟，只靠状态灯分不清"在忙"还是"卡死"。
+function logPanelView() {
+  const log = App.state.serverLog;
+  const lines = log?.lines || [];
+  const stamp = log?.mtime ? new Date(log.mtime).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+  const size = log?.size ? `${(log.size / 1024).toFixed(0)} KB` : '';
+  const staleText = log && (log.lines || []).length && !log.running
+    ? t('log.stale', '服务器当前没有在运行：下面是上一次运行留下的日志（最后写入 {time}）。启动服务器后才会继续更新。', { time: stamp })
+    : '';
+  const body = lines.length ? esc(lines.join('\n')) : esc(t('log.empty', '（还没有日志：服务器没启动，或者日志文件是空的）'));
+  //By leewheel 2026-11-03 日志窗口可以切换：主服 + 每个已经建好的国度
+  const realmList = (App.state.realms?.realms || []).filter(realm => realm.state !== 'absent');
+  const current = App.state.logRealm || '';
+  const picker = realmList.length
+    ? `<select class="log-picker" id="log-realm" title="${esc(t('log.pick', '看哪个世界服的日志'))}">
+        <option value=""${current === '' ? ' selected' : ''}>${esc(t('log.main', 'CoA（主服）'))}</option>
+        ${realmList.map(realm => `<option value="${esc(realm.key)}"${current === realm.key ? ' selected' : ''}>${esc(realmShort(realm.key))}${realm.state === 'running' ? ' ●' : ''}</option>`).join('')}
+      </select>`
+    : '';
+  return `<section class="log-panel" id="log-panel">
+    <header class="log-head">
+      <span class="log-title">${icon('terminal')}${esc(t('log.title', '世界服日志'))}</span>
+      ${picker}
+      <span class="log-meta">${esc(t('log.meta', '{file} · {size} · 更新于 {time}', { file: 'Server.log', size, time: stamp }))}</span>
+      <span class="spacer"></span>
+      <button class="button ghost small" data-action="log-refresh">${icon('refresh')}${esc(t('log.refresh', '刷新'))}</button>
+      <button class="button ghost small" data-action="log-toggle">${esc(t('log.toggle', '收起'))}</button>
+    </header>
+    <p class="log-stale" id="log-stale" ${staleText ? '' : 'hidden'}>${icon('info')}<span id="log-stale-text">${esc(staleText)}</span></p>
+    <pre class="log-body" id="server-log-body">${body}</pre>
+  </section>`;
+}
+
+let logTimer = 0;
+async function refreshServerLog() {
+  if (App.state.tab !== 'home' || !App.state.server?.path) return;
+  let data = null;
+  try { data = await App.api.serverLog(App.state.logRealm || '', 240); } catch { return; }
+  App.state.serverLog = data;
+  const panel = document.getElementById('log-panel');
+  if (!panel) return;
+  const head = panel.querySelector('.log-meta');
+  if (head && data) {
+    const stamp = data.mtime ? new Date(data.mtime).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+    head.textContent = t('log.meta', '{file} · {size} · 更新于 {time}', { file: 'Server.log', size: data.size ? `${(data.size / 1024).toFixed(0)} KB` : '', time: stamp });
+  }
+  const body = document.getElementById('server-log-body');
+  if (body) {
+    //By leewheel 2026-11-03 滚动修复（滚动条不再上下闪烁跳跃）：
+    // 旧循环 = 整页 App.render() 每 5~15 秒重建一次面板（scrollTop 归零＝跳上去）→
+    // mount→startServerLog 无条件 logFollowed=false → 下一次 refresh 判定"首次"又拉回底部
+    // （跳下去）→ 循环往复。现在改为：
+    // 1) 跟随状态由 scroll 事件实时维护：在底部（gap<32px）=跟随，往上翻=不跟随；
+    // 2) 重渲染重建面板后，跟随状态下立即吸底，非跟随状态恢复用户上次的位置，两头都不跳；
+    // 3) 只在切换国度时重置跟随状态，不再随每次 mount 重置。
+    if (!body.dataset.scrollBound) {
+      body.dataset.scrollBound = '1';
+      body.addEventListener('scroll', () => {
+        const gap = body.scrollHeight - body.scrollTop - body.clientHeight;
+        App.state.logFollowed = gap < 32;
+        if (!App.state.logFollowed) App.state.logScrollTop = body.scrollTop;
+      });
+    }
+    if ((App.state.logFollowedRealm || '') !== (App.state.logRealm || '')) { App.state.logFollowed = false; App.state.logFollowedRealm = App.state.logRealm || ''; }
+    const firstTime = App.state.logFollowed === undefined;
+    const text = (data?.lines || []).length ? data.lines.join('\n') : t('log.empty', '（还没有日志：服务器没启动，或者日志文件是空的）');
+    body.textContent = text;
+    if (App.state.logFollowed || firstTime) { body.scrollTop = body.scrollHeight; if (firstTime) App.state.logFollowed = true; }
+    else if (App.state.logScrollTop) body.scrollTop = Math.min(App.state.logScrollTop, Math.max(0, body.scrollHeight - body.clientHeight));
+  }
+  //By leewheel 2026-11-03 服务器没在跑时要说明"这是上次的日志"，否则玩家以为日志在自己动
+  const stale = document.getElementById('log-stale');
+  if (stale && data) {
+    const stampText = data.mtime ? new Date(data.mtime).toLocaleTimeString('zh-CN', { hour12: false }) : '';
+    const text = (data.lines || []).length && !data.running
+      ? t('log.stale', '服务器当前没有在运行：下面是上一次运行留下的日志（最后写入 {time}）。启动服务器后才会继续更新。', { time: stampText })
+      : '';
+    stale.hidden = !text;
+    const span = document.getElementById('log-stale-text');
+    if (span) span.textContent = text;
+  }
+}
+function startServerLog() {
+  stopServerLog();
+  //By leewheel 2026-11-03 只在切换国度时重置跟随状态：mount 会随整页重渲染反复执行，
+  // 原来这里无条件 logFollowed=false，配合重渲染就是"跳上去又拉到底"的闪烁循环。
+  // 面板重建后内容还在（logPanelView 用 App.state.serverLog 渲染），跟随状态先立即吸底，等 refresh 接手。
+  if ((App.state.logFollowedRealm || '') !== (App.state.logRealm || '')) { App.state.logFollowed = false; App.state.logFollowedRealm = App.state.logRealm || ''; }
+  const body = document.getElementById('server-log-body');
+  if (body && (App.state.logFollowed || App.state.logFollowed === undefined)) body.scrollTop = body.scrollHeight;
+  refreshServerLog();
+  logTimer = setInterval(refreshServerLog, 2500);
+}
+function stopServerLog() { if (logTimer) { clearInterval(logTimer); logTimer = 0; } }
 
 // The feed announces a repack whose release differs from the one installed here.
 // Play: the game client of this PC. Dimmed while no game folder is known; a click then asks for it.
@@ -678,6 +775,96 @@ function launcherBanner() {
   return '';
 }
 
+//By leewheel 2026-11-03 服务端 / 客户端更新窗口（从 GitHub releases 读取；含下载进度、dbc 注入、SQL 导入）
+App.state.releaseInfo = null;
+let releaseUnsubscribe = null;
+
+function releaseVersionsHtml(info) {
+  const current = info.current || t('update.none', '未知');
+  const latest = info.latest?.version || '';
+  const newer = latest && (!info.current || (typeof compareVersions === 'function' ? compareVersions(latest, info.current) > 0 : latest !== info.current));
+  const badge = newer
+    ? `<span class="pill warn">${esc(t('release.newer', '有新版本'))}</span>`
+    : `<span class="pill ok">${esc(t('release.current', '已是最新'))}</span>`;
+  return `<div class="realm-badge"><div><strong>${esc(t('release.currentVersion', '当前版本'))}：${esc(current)}</strong><small>${esc(t('release.latestVersion', '最新版本'))}：${latest || esc(t('release.none', '上游还没有发布版本'))}${info.latest?.publishedAt ? ` · ${esc(formatDate(info.latest.publishedAt))}` : ''}</small></div>${badge}</div>`;
+}
+
+function showReleaseUpdate() {
+  dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${skeleton(3)}</div>`);
+  App.api.releaseCheck().then(info => {
+    App.state.releaseInfo = info;
+    const asset = info.asset;
+    const notes = String(info.latest?.notes || '').slice(0, 4000);
+    const history = (info.history || []).slice(-3).reverse();
+    const historyHtml = history.length
+      ? `<h3>${esc(t('release.history', '更新记录'))}</h3><ul class="notes">${history.map(item => `<li><strong>${esc(item.version || '?')}</strong> · ${esc(formatDate(item.at, true))} · ${esc(t('release.files', '服务端 {s} 个 / 客户端 {c} 个', { s: item.files?.server ?? 0, c: item.files?.client ?? 0 }))}</li>`).join('')}</ul>`
+      : '';
+    const body = info.error
+      ? `<p class="conf-warn">${icon('warning')}<span>${esc(info.error)}</span></p>`
+      : !info.latest
+        ? `<p class="status-line">${esc(t('release.empty', '上游仓库还没有发布任何版本（releases 为空），发布后这里就会显示更新。'))}</p><p class="muted small">${esc(t('release.scope', '这里检查的是服务端与客户端的内容更新，不是启动器自身的版本。'))}</p>`
+        : `${releaseVersionsHtml(info)}
+          ${notes ? `<h3>${esc(t('release.notes', '更新说明'))}</h3><pre class="log">${esc(notes)}</pre>` : ''}
+          ${asset ? `<p class="muted small">${esc(t('release.asset', '更新包'))}：${esc(asset.name)} · ${esc(formatBytes(asset.size))}</p>` : `<p class="conf-warn">${icon('warning')}<span>${esc(t('release.noAsset', '这个版本没有附带 zip 更新包。'))}</span></p>`}
+          <div id="release-progress"></div>
+          <label class="check"><input type="checkbox" id="release-delete" checked><span>${esc(t('release.deleteAfter', '更新完成后自动删除 Update 临时目录'))}</span></label>
+          <p class="muted small">${esc(t('release.how', '更新包按 Server\\ 与 Client\\ 目录归位；dbc 注入客户端补丁档（按 dbc-map.json 的映射，没有映射就自动找含该表的档）；sql\\ 里的脚本会用项目自带的 MySQL 依次导入。'))}</p>`;
+    const footer = `<footer class="dialog-foot">
+      ${info.latest?.url ? `<button class="button ghost" data-action="release-page">${icon('external')}${esc(t('release.page', '发布页'))}</button>` : ''}
+      <button class="button ghost" data-action="release-history">${esc(t('release.history', '更新记录'))}</button>
+      <button class="button ghost" data-action="dialog-close">${esc(t('common.close', '关闭'))}</button>
+      ${info.latest && asset ? `<button class="button primary" data-action="release-apply">${icon('download')}${esc(t('release.start', '开始更新'))}</button>` : ''}
+    </footer>`;
+    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${historyHtml}</div>${footer}`);
+  }).catch(error => {
+    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content"><p class="conf-warn">${icon('warning')}<span>${esc(translateError(error.message))}</span></p></div><footer class="dialog-foot"><button class="button primary" data-action="dialog-close">${esc(t('common.close', '关闭'))}</button></footer>`);
+  });
+}
+
+function releaseProgress(payload) {
+  const box = document.getElementById('release-progress');
+  if (!box) return;
+  const pct = payload.pct;
+  if (payload.phase === 'download' || payload.phase === 'done') {
+    box.innerHTML = `<div class="hero-progress"><div class="progress${pct === null || pct === undefined ? ' indeterminate' : ''}"><span data-pct="${pct ?? 30}"></span></div><span>${pct === null || pct === undefined ? '' : `${pct}%`}</span></div>`;
+    applyBars(box);
+  }
+  const line = document.createElement('p');
+  line.className = 'muted small';
+  line.textContent = payload.done && payload.total ? `${payload.message}（${formatBytes(payload.done)} / ${formatBytes(payload.total)}）` : payload.message;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+function applyReleaseUpdate(button) {
+  const info = App.state.releaseInfo;
+  if (!info?.asset) { toast(t('release.noAsset', '这个版本没有附带 zip 更新包。')); return; }
+  const deleteAfter = document.getElementById('release-delete')?.checked !== false;
+  if (releaseUnsubscribe) releaseUnsubscribe();
+  releaseUnsubscribe = App.api.onReleaseProgress(payload => releaseProgress(payload));
+  const box = document.getElementById('release-progress');
+  if (box) box.innerHTML = '';
+  guard(async () => {
+    const result = await App.api.releaseApply({ version: info.latest.version, tag: info.latest.tag, asset: info.asset, deleteAfter });
+    if (releaseUnsubscribe) { releaseUnsubscribe(); releaseUnsubscribe = null; }
+    const injected = (result.dbc || []).length;
+    toast(t('release.doneToast', '更新完成：服务端 {s} 个文件、客户端 {c} 个文件、注入 {d} 张表', { s: result.files?.server ?? 0, c: result.files?.client ?? 0, d: injected }), 'success');
+    dialog.close();
+    App.reloadAll();
+    return result;
+  }, button);
+}
+
+function showReleaseHistory() {
+  App.api.releaseHistory().then(history => {
+    const list = (history || []).slice().reverse();
+    const body = list.length
+      ? `<ul class="notes">${list.map(item => `<li><strong>${esc(item.version || '?')}</strong> · ${esc(formatDate(item.at, true))} · ${esc(t('release.files', '服务端 {s} 个 / 客户端 {c} 个', { s: item.files?.server ?? 0, c: item.files?.client ?? 0 }))}${item.sql?.length ? ` · SQL ${item.sql.length} 个` : ''}${item.dbc?.length ? ` · DBC ${item.dbc.length} 张` : ''}</li>`).join('')}</ul>`
+      : `<p class="muted">${esc(t('release.noHistory', '还没有更新记录。'))}</p>`;
+    dialog.open(`${dialog.header(t('release.history', '更新记录'))}<div class="dialog-content">${body}</div><footer class="dialog-foot"><button class="button primary" data-action="dialog-close">${esc(t('common.close', '关闭'))}</button></footer>`);
+  }).catch(() => toast(t('release.noHistory', '还没有更新记录。')));
+}
+
 App.pages.home = {
   render: homeView,
   mount() {
@@ -685,6 +872,8 @@ App.pages.home = {
     if (!App.state.dashboard) refreshDashboard();
     if (!App.state.network && App.state.server?.path) App.api.networkInfo().then(data => { App.state.network = data.network; if (App.state.tab === 'home') App.render(); }).catch(() => {});
     if (!App.state.verify && !App.state.verifying && App.state.server?.path && !App.state.server.assembly?.needed) runVerify(false);
+    //By leewheel 2026-11-03 主页的日志窗口每 2.5 秒刷一次（离开主页自动停）
+    if (App.state.server?.path) startServerLog();
   },
 };
 
@@ -890,6 +1079,14 @@ Object.assign(App.actions, {
     App.actions[action]?.(target);
   },
   'verify-deep': () => runVerify(true),
+  //By leewheel 2026-11-03 日志窗口的两个按钮
+  'log-refresh': () => refreshServerLog(),
+  'log-toggle': () => { const body = document.getElementById('server-log-body'); if (body) body.hidden = !body.hidden; },
+  //By leewheel 2026-11-03 「检查更新」= 检查【服务端与客户端】的新版本（GitHub releases），并可直接下载安装
+  'verify-update': () => showReleaseUpdate(),
+  'release-apply': button => applyReleaseUpdate(button),
+  'release-page': () => { const url = App.state.releaseInfo?.latest?.url; if (url && App.api.openUrl) App.api.openUrl(url).catch(() => {}); },
+  'release-history': () => showReleaseHistory(),
   'verify-copy': button => guard(async () => { await App.api.copyVersions(); toast(t('verify.copied', 'Versions copied: paste them on Discord.'), 'success'); }, button),
   'verify-fix': button => guard(async () => {
     const id = button.dataset.id;

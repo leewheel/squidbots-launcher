@@ -35,12 +35,12 @@
       {
         "id": "mysql",
         "name": "MySQL 数据库",
-        "port": 3395,
+        "port": 3396,
         "cwd": ".",
         "exe": "mysql/bin/mysqld.exe",
         "args": [
           "--defaults-file={root}/my.ini",
-          "--port=3395"
+          "--port=3396"
         ],
         "startTimeout": 240,
         "stopExe": "mysql/bin/mysqladmin.exe",

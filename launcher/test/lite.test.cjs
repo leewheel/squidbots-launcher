@@ -52,11 +52,11 @@ test('the shipped configuration is valid: this repack, offline, three local serv
   assert.equal(config.game.realmlists[0].address, '127.0.0.1');
   assert.equal(config.server.requiredExecutable, 'worldserver.exe', '发布版的服务器程序在根目录');
   assert.deepEqual(config.server.services.map(service => [service.id, service.port, service.exe]), [
-    ['mysql', 3395, 'mysql/bin/mysqld.exe'],
+    ['mysql', 3396, 'mysql/bin/mysqld.exe'],
     ['world', 8085, 'worldserver.exe'],
     ['auth', 3724, 'authserver.exe'],
   ]);
-  assert.equal(config.server.services[0].args.includes('--port=3395'), true, 'MySQL 端口写死，避免 my.ini 漂移');
+  assert.equal(config.server.services[0].args.includes('--port=3396'), true, 'MySQL 端口写死，避免 my.ini 漂移');
   assert.equal(config.server.services.find(service => service.id === 'world').console, true, '世界控制台走标准输入');
   assert.equal(config.server.services.find(service => service.id === 'world').stopCommand, 'server shutdown 1s 0');
   assert.equal(config.server.bots, null, '机器人编译在核心里，不需要单独的 CoA Bots 包');
