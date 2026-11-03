@@ -8,7 +8,7 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { isNewer } = require('./updates.cjs');
-const { repackChecks } = require('./repack-checks.cjs');
+const { repackChecks, playerbotsConfVersion } = require('./repack-checks.cjs');
 //By leewheel 2026-11-02 布局适配：日志、崩溃报告与核心程序的位置由 layout 提供
 const { serverLayout } = require('./layout.cjs');
 
@@ -117,6 +117,11 @@ async function runChecks({ root, inspect, control, backup, repack, botsPackage, 
   }
 
   // ---- bots
+  //By leewheel 2026-11-03 核心内置机器人（没有独立 CoA Bots 包）时，从 playerbots.conf 固定行读版本展示
+  if (!botsPackage) {
+    const botVersion = playerbotsConfVersion(root);
+    if (botVersion) add('bots', 'bots.version', 'ok', { version: botVersion });
+  }
   if (botsPackage) {
     const bots = await botsPackage.info(root);
     if (!bots.installed) add('bots', 'bots.installed', 'info', {}, 'bots-install');

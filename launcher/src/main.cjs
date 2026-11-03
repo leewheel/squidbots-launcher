@@ -22,7 +22,7 @@ const assembler = require('./assembler.cjs');
 const { peekUpdates } = require('./updates.cjs');
 const fs_exists = folder => require('node:fs').existsSync(folder);
 const { runChecks, summary } = require('./verify.cjs');
-const { FIXES } = require('./repack-checks.cjs');
+const { FIXES, playerbotsConfVersion } = require('./repack-checks.cjs');
 const { Dashboard } = require('./dashboard.cjs');
 const network = require('./network.cjs');
 const repackImport = require('./repack-import.cjs');
@@ -298,6 +298,8 @@ async function serverInfo() {
     bots: bots ? { name: config.server.bots.name, description: config.server.bots.description, ...(await bots.info(folder)) } : null,
     //By leewheel 2026-11-02 发布版：机器人模块直接编译在核心里（没有单独的 CoA Bots 包），页面显示“核心已内置”
     botsBuiltIn: !!folder && !config.server.bots && fs_exists(path.join(folder, 'configs', 'modules', 'playerbots.conf')),
+    //By leewheel 2026-11-03 机器人版本：读 playerbots.conf 固定行（打包时由 sync-bot-version.cjs 写入）
+    botVersion: folder ? playerbotsConfVersion(folder) : '',
     canPurgeBots: !!config.server.commands.purgeBots,
     // The extra realms whose world runs or starts: the home page counts the server as running with them alone.
     realmsOn: folder ? (await realms.status(folder, { live: false }).catch(() => ({ realms: [] }))).realms.filter(realm => ['running', 'starting'].includes(realm.state)).map(realm => ({ key: realm.key, state: realm.state })) : [],
@@ -614,7 +616,8 @@ function registerIpc() {
       `启动器：${config.appName} ${app.getVersion()}`,
       `核心：${core?.releaseId || info.release || '?'}${core?.releaseDate ? `（${core.releaseDate}）` : ''}`,
       `核心文件：${repackUpdater ? (await repackUpdater.installedVersion(serverPath())) || '非启动器安装' : '-'}`,
-      botsRelease ? `CoA Bots：${botsRelease.version}，适用于 ${botsRelease.release}${botsRelease.built ? `（构建于 ${botsRelease.built}）` : ''}` : 'CoA Bots：未安装（核心已内置机器人模块）',
+      //By leewheel 2026-11-03 核心内置机器人时，版本从 playerbots.conf 固定行读出
+      botsRelease ? `CoA Bots：${botsRelease.version}，适用于 ${botsRelease.release}${botsRelease.built ? `（构建于 ${botsRelease.built}）` : ''}` : `CoA Bots：未安装独立包（核心已内置机器人模块）${playerbotsConfVersion(serverPath()) ? `，机器人版本 v${playerbotsConfVersion(serverPath())}` : ''}`,
       `通道：${settings.channel}`,
     ];
     clipboard.writeText(lines.join('\n'));

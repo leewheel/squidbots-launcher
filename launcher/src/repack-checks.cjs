@@ -338,4 +338,15 @@ const FIXES = {
   'restart-auth': async ({ control }) => { await control.stop('auth'); await control.start('auth'); },
 };
 
-module.exports = { repackChecks, FIXES, confValue, gluedConfs };
+//By leewheel 2026-11-03 机器人版本号：核心内置的 mod-playerbots 没有独立的 release.json，
+// 版本由本机打包时的 sync-bot-version.cjs 写进 playerbots.conf 的固定注释行（玩家机器上没有源码树）。
+// 没有这一行（旧包）就返回空串，界面回退到“核心已内置”。
+function playerbotsConfVersion(root) {
+  try {
+    const layout = serverLayout(root);
+    const text = fs.readFileSync(path.join(root, ...`${layout.botsConfigs}/modules/playerbots.conf`.split('/')), 'utf8');
+    return (/^#\s*AiPlayerbot\.Version\s*=\s*([0-9][^\s（(]*)/m.exec(text))?.[1] || '';
+  } catch { return ''; }
+}
+
+module.exports = { repackChecks, FIXES, confValue, gluedConfs, playerbotsConfVersion };

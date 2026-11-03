@@ -29,6 +29,10 @@ const CHECK_TEXT = {
     ok: ['CoA Bots installed', 'Version {version}, built for {builtFor}.'],
     info: ['CoA Bots not installed', 'The server runs without bots. Install them from Management.'],
   },
+  //By leewheel 2026-11-03 机器人版本（核心内置版，从 playerbots.conf 固定行读出）
+  'bots.version': {
+    ok: ['机器人版本 v{version}', '机器人模块随核心内置（mod-playerbots），版本号写在 configs\\modules\\playerbots.conf 首行，由打包工具从核心源码同步。'],
+  },
   'bots.update': {
     ok: ['Bots up to date', 'Release {installed}.'],
     warn: ['New bots available', '{latest} (installed: {installed}).'],
@@ -372,7 +376,7 @@ function homeView() {
       </div>
       <aside class="classic-side">${updateCard()}${componentCards()}
         <button class="side-card" ${s.update?.state?.state === 'available' ? 'data-action="update-open"' : 'data-tab="verify"'}>${icon('layers')}<span><strong>${esc(t('home.core', 'Core'))}</strong><small>${esc(shortRelease(info.details?.release || info.version) || '—')}</small></span>${s.config.hasUpdates ? `<span class="card-tool" role="button" data-action="update-check" title="${esc(t('settings.checkRepack', 'Check for a repack and bots update'))}">${icon('refresh')}</span>` : ''}${s.updates.core || s.update?.state?.state === 'available' ? '<i class="dot"></i>' : icon('next')}</button>
-        <button class="side-card" data-tab="verify">${icon('bot')}<span><strong>${esc(t('home.botsCard', 'Bots'))}</strong><small>${esc(info.bots?.installed ? `${info.bots.version}${info.bots.builtFor ? ` · ${shortRelease(info.bots.builtFor)}` : ''}` : info.botsBuiltIn ? t('bots.builtin', 'Built into the core') : t('bots.notInstalled', 'Not installed'))}</small></span><span class="card-tool" role="button" data-action="srv-tab" data-id="settings" title="${esc(t('srv.tab.settings', 'Server settings'))}">${icon('settings')}</span>${s.updates.bots ? '<i class="dot"></i>' : icon('next')}</button>
+        <button class="side-card" data-tab="verify">${icon('bot')}<span><strong>${esc(t('home.botsCard', 'Bots'))}</strong><small>${esc(info.bots?.installed ? `${info.bots.version}${info.bots.builtFor ? ` · ${shortRelease(info.bots.builtFor)}` : ''}` : info.botsBuiltIn ? `${t('bots.builtin', 'Built into the core')}${info.botVersion ? ` · v${info.botVersion}` : ''}` : t('bots.notInstalled', 'Not installed'))}</small></span><span class="card-tool" role="button" data-action="srv-tab" data-id="settings" title="${esc(t('srv.tab.settings', 'Server settings'))}">${icon('settings')}</span>${s.updates.bots ? '<i class="dot"></i>' : icon('next')}</button>
         <button class="side-card verify-card ${verifyState}" data-tab="verify">${icon('shield')}<span><strong>${esc(t('tab.verify', 'Verification'))}</strong><small>${esc(verifyText)}</small></span>${icon('next')}</button>
         ${addonCard()}
         ${dash?.available ? `<button class="side-card" data-action="${dash.running ? 'dashboard-open' : 'dashboard-start'}">${icon('chart')}<span><strong>${esc(t('home.dashboard', 'Bots dashboard'))}</strong><small>${esc(dash.running ? t('home.dashboardOpen', 'Running on localhost:{port}: open it', { port: dash.port }) : t('home.dashboardStart', 'Map, bots, stats, chat: start it'))}</small></span>${icon('next')}</button>` : ''}
