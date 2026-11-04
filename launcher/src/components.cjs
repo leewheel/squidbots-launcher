@@ -17,6 +17,20 @@ const DASHBOARD_DIR = ['CoA-Bots', 'Tools', 'Dashboard'];
 const VERSION = /^\d+(\.\d+){0,3}$/;
 const URL_OK = /^(https:\/\/|http:\/\/(127\.0\.0\.1|localhost)[:/])/;
 
+//By leewheel 2026年11月4日 SquidBots Lite 的位置要相对、可自适配：官方整合包在 <root>/CoA-Bots/Client/Interface/AddOns，
+// COA 发布版（扁平布局）随客户端放在 <root>/../Client/Interface/AddOns。下面两个函数按"哪个存在用哪个"决定路径，
+// 这样组件更新与版本读取在任意解压位置都能工作，不再依赖写死目录。
+function addonTocPath(root) {
+  const official = path.join(root, 'CoA-Bots', 'Client', 'Interface', 'AddOns', 'SquidBotsLite', 'SquidBotsLite.toc');
+  if (root && fsSync.existsSync(official)) return official;
+  return path.join(root, '..', 'Client', 'Interface', 'AddOns', 'SquidBotsLite', 'SquidBotsLite.toc');
+}
+function addonTargetDir(root) {
+  const official = path.join(root, 'CoA-Bots', 'Client', 'Interface', 'AddOns', 'SquidBotsLite');
+  if (root && fsSync.existsSync(official)) return official;
+  return path.join(root, '..', 'Client', 'Interface', 'AddOns', 'SquidBotsLite');
+}
+
 function clean(name, data) {
   if (!data || typeof data !== 'object' || data.name !== name) throw new Error(`The ${name} list is malformed.`);
   if (!VERSION.test(data.version || '')) throw new Error(`The ${name} list has no final version.`);
@@ -27,7 +41,7 @@ function clean(name, data) {
 // The version in the repack: the addon's .toc, the dashboard's VERSION file (none = older than 2.2.2).
 function installed(root, name) {
   try {
-    if (name === 'addon') return /^##\s*Version:\s*(.+)$/m.exec(fsSync.readFileSync(path.join(root, ...ADDON_DIR, 'SquidBotsLite.toc'), 'utf8'))?.[1].trim() || '';
+    if (name === 'addon') return /^##\s*Version:\s*(.+)$/m.exec(fsSync.readFileSync(addonTocPath(root), 'utf8'))?.[1].trim() || '';
     return fsSync.readFileSync(path.join(root, ...DASHBOARD_DIR, 'VERSION'), 'utf8').trim() || '0';
   } catch { return name === 'dashboard' && fsSync.existsSync(path.join(root, ...DASHBOARD_DIR)) ? '0' : ''; }
 }
@@ -70,7 +84,7 @@ async function install(root, offer, { cacheDir, backupDir, fetchImpl }) {
       // One SquidBotsLite folder at the top of the zip, replacing the repack's copy as a whole.
       const source = path.join(stage, 'SquidBotsLite');
       if (!fsSync.existsSync(path.join(source, 'SquidBotsLite.toc'))) throw new Error('The addon zip has no SquidBotsLite folder at its top.');
-      const target = path.join(root, ...ADDON_DIR);
+      const target = addonTargetDir(root);
       if (fsSync.existsSync(target)) await fs.cp(target, path.join(backupDir, `addon-${installed(root, 'addon') || 'old'}-${stamp()}`), { recursive: true });
       const fresh = `${target}.new`;
       await fs.rm(fresh, { recursive: true, force: true });

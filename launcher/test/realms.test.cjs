@@ -73,7 +73,8 @@ test('configs of a realm: CoA, then its own values, then what its mode imposes; 
   assert.strictEqual(value(ws, 'Ra.Port'), '3543');
   assert.strictEqual(value(ws, 'SOAP.Enabled'), '0');
   assert.strictEqual(value(ws, 'CharacterDatabaseInfo'), '"127.0.0.1;3307;acore;secret;acore_characters_wildcard"');
-  assert.match(value(ws, 'LogsDir'), /Royaumes\/wildcard\/Logs"$/);
+  //By leewheel 2026-11-04 国度世界服以 cwd = Royaumes\<key> 启动，日志目录就是国度自己的 Logs\，故相对值为 "Logs"（绝不写绝对路径，否则玩家换盘/换目录就崩）。
+  assert.match(value(ws, 'LogsDir'), /^"Logs"$/);
   assert.strictEqual(value(pb, 'AiPlayerbot.MaxRandomBots'), '150');
   assert.strictEqual(value(pb, 'AiPlayerbot.MinRandomBots'), '500');
   assert.strictEqual(value(pb, 'AiPlayerbot.CommandServerPort'), '0');

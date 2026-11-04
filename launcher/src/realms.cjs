@@ -337,10 +337,13 @@ async function writeConfigs(root, key, saved) {
   const chars = confValue(ws, 'CharacterDatabaseInfo') || '';
   if (chars.split(';').length < 5) throw new Error('CharacterDatabaseInfo cannot be read in worldserver.conf.');
   const prefix = chars.split(';').slice(0, 4).join(';');
-  add('worldserver.conf', { CharacterDatabaseInfo: `"${prefix};acore_characters_${key}"`, LogsDir: `"${path.join(dir, 'Logs').replace(/\\/g, '/')}"` });
-  //By leewheel 2026-11-02 发布版的数据目录是共享的 ClientData：国度世界在 Royaumes\<key> 里启动，必须写绝对路径
+  //By leewheel 2026年11月4日 国度世界服以 cwd = Royaumes\<key> 启动，conf 里的路径必须相对该目录，
+  // 绝不写绝对路径（否则玩家换盘/换目录就崩，也违背 server-config 的"含根路径即跳过"防护）。
+  // 日志目录就在国度自己的 Logs\，数据目录是共享的 Server\ClientData（从 Royaumes\<key> 上两级）。
+  const toRel = value => path.relative(dir, value).replace(/\\/g, '/');
+  add('worldserver.conf', { CharacterDatabaseInfo: `"${prefix};acore_characters_${key}"`, LogsDir: `"${toRel(path.join(dir, 'Logs'))}"` });
   const layout = serverLayout(root);
-  if (layout.kind === 'flat') add('worldserver.conf', { DataDir: `"${path.join(root, ...String(layout.data).split('/')).replace(/\\/g, '/')}"` });
+  if (layout.kind === 'flat') add('worldserver.conf', { DataDir: `"${toRel(path.join(root, ...String(layout.data).split('/')))}"` });
   add('playerbots.conf', { PlayerbotsDatabaseInfo: `"${prefix};acore_playerbots_${key}"` });
   for (const [fileId, keys] of edits) {
     if (!FILE_ID.test(fileId)) continue;
@@ -681,7 +684,11 @@ async function start(root, key, { timeout = 1200 } = {}) {
 function launch(root, key, why, env) {
   const dir = dirOf(root, key);
   fs.mkdirSync(path.join(dir, 'Logs'), { recursive: true });
-  const log = fs.openSync(path.join(dir, 'Logs', 'world-console.log'), 'a');
+  //By leewheel 2026年11月4日 国度控制台日志同样只保留“上一次启动的一份”：world-console.log → world-console.log.1，
+  // 同名覆盖，不生成带日期的副本；当前日志从空白开始。
+  const consoleLog = path.join(dir, 'Logs', 'world-console.log');
+  try { if (fs.existsSync(consoleLog) && fs.statSync(consoleLog).size > 0) fs.renameSync(consoleLog, `${consoleLog}.1`); } catch {}
+  const log = fs.openSync(consoleLog, 'w');
   fs.writeSync(log, `\n==== ${new Date().toISOString()} ${why} ====\n`);
   //By leewheel 2026-11-03 关键修复：stdin 必须给 pipe。原来用 'ignore'（等于立刻 EOF），世界服的控制台线程
   // 读到 EOF 就认为"控制台断开"，加载完（约 40～60 秒）后打印 "Halting process..." 自己退出 ——
