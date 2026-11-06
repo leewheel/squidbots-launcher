@@ -47,6 +47,8 @@ const { fixManage } = require('./manage-fix.cjs');
 const releaseUpdate = require('./release-update.cjs');
 //By leewheel 2026年11月6日 BUG 反馈：格式对齐参考启动器（product 必须是 COA）
 const bugReport = require('./bug-report.cjs');
+//By leewheel 2026年11月6日 启动器自替换：老版启动器只会把 client\ 铺到 Client\，从那里把新 exe 装到根目录
+const launcherSwap = require('./launcher-swap.cjs');
 const { normalizeLayout, readMarker: readLayoutMarker, isNormalized: isLayoutNormalized } = require('./layout-fix.cjs');
 //By leewheel 2026年11月4日 配置文件随整合包放在 Server\configs，启动时没有就生成默认；目录一律相对启动器所在目录
 const portableConfig = require('./portable-config.cjs');
@@ -182,12 +184,85 @@ async function saveInstallPath(area, folder) {
 }
 //End By leewheel
 
-const gamePath = () => areaFolder('game');
-const addonPath = () => areaFolder('addon');
+//By leewheel 2026年11月6日 版本号以包内 package.json 为准：便携版 exe 的版本资源可能是旧的，
+// app.getVersion() 会读到旧值（实弹：界面还显示 1.0.1104），所以优先读包里的 package.json。
+function appVersion() {
+  // 优先读包内 package.json（app.getAppPath() 指向 app.asar），app.getVersion() 只作兜底：
+  // 便携版 exe 的版本资源可能是旧的，实弹界面还显示 1.0.1104。
+  try {
+    const file = path.join(app.getAppPath(), 'package.json');
+    const parsed = JSON.parse(require('node:fs').readFileSync(file, 'utf8'));
+    if (parsed?.version) return String(parsed.version);
+  } catch { /* 读不到就用 Electron 的 */ }
+  return app.getVersion();
+}
+const gamePath = () => areaFolder('game');const addonPath = () => areaFolder('addon');
 // The game the server takes its data from: the game folder, or else the client the Play tab shows (server edition).
 const gameDataPath = () => [gamePath(), addonPath()].find(item => item && fs_exists(item)) || '';
 const serverPath = () => areaFolder('server');
 const realmlist = () => settings.realmlist || config.game.realmlists[0].address;
+
+//By leewheel 2026年11月6日 把系统分辨率写进 Client\WTF\Config.wtf 的 gxResolution：
+//  - 主显示器的**物理**分辨率（size × scaleFactor），否则 4K 屏在 150% 缩放时会被写小；
+//  - 只在启动器启动时和点“开始游戏”前各做一次；文件不存在就跳过，值没变不写，改前留 .bak。
+//By leewheel 2026年11月6日 目录自动识别：返回本次自动填上的目录说明（空数组 = 没动）。
+// 规则：
+//  - 已经能解析出有效的客户端/服务端（设置里存过且目录存在）就不管，绝不覆盖玩家自己的选择；
+//  - 先看启动器同级：Client、Server、Game、客户端、服务端；
+//  - 再看同级子目录（最多两层），找 Ascension.exe / Wow.exe（客户端）与 worldserver.exe（服务端）；
+//  - 找到就写进 settings.installPaths，存相对名，整合包挪位置也不失效。
+async function autoDetectInstallPaths(root) {
+  if (!root) return [];
+  const detected = [];
+  const clientOkay = !!areaFolder('game') && fs_exists(areaFolder('game'));
+  const serverOkay = !!areaFolder('server') && fs_exists(path.join(areaFolder('server'), 'worldserver.exe'));
+  if (clientOkay && serverOkay) return [];
+  const names = new Set(['client', 'server', 'game', '客户端', '服务端']);
+  const candidates = [];
+  const push = (dir, depth) => { if (dir && !candidates.some(item => item.dir === dir)) candidates.push({ dir, depth }); };
+  for (const name of names) {
+    for (const entry of await fs.readdir(root, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.toLowerCase() === name || entry.name === name) push(path.join(root, entry.name), 0);
+    }
+  }
+  for (const entry of await fs.readdir(root, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory()) continue;
+    const first = path.join(root, entry.name);
+    push(first, 1);
+    for (const child of await fs.readdir(first, { withFileTypes: true }).catch(() => [])) {
+      if (child.isDirectory()) push(path.join(first, child.name), 2);
+    }
+  }
+  const isClient = dir => ['Ascension.exe', 'Wow.exe', 'WoW.exe'].some(name => fs_exists(path.join(dir, name)));
+  const isServer = dir => fs_exists(path.join(dir, 'worldserver.exe'));
+  if (!clientOkay) {
+    const hit = candidates.find(item => isClient(item.dir)) || (fs_exists(path.join(root, 'Client')) ? { dir: path.join(root, 'Client') } : null);
+    if (hit) {
+      await saveInstallPath('game', hit.dir);
+      await saveInstallPath('addon', hit.dir);
+      detected.push(`客户端 ${toStoredPath(hit.dir)}`);
+    }
+  }
+  if (!serverOkay) {
+    const hit = candidates.find(item => isServer(item.dir));
+    if (hit) { await saveInstallPath('server', hit.dir); detected.push(`服务端 ${toStoredPath(hit.dir)}`); }
+  }
+  return detected;
+}
+
+function syncDisplayResolution(clientRoot) {  if (!clientRoot) return { changed: false, reason: '没有客户端目录' };
+  try {
+    const display = screen.getPrimaryDisplay();
+    const width = Math.round(display.size.width * (display.scaleFactor || 1));
+    const height = Math.round(display.size.height * (display.scaleFactor || 1));
+    const result = require('./resolution.cjs').syncResolution(clientRoot, { width, height });
+    if (result.changed) send('repack:notice', { key: 'game.resolution', text: `已把游戏分辨率设为 ${result.wanted}（原来是 ${result.previous || '未设置'}）` });
+    return result;
+  } catch (error) {
+    return { changed: false, reason: String(error?.message || error) };
+  }
+}
 
 //By leewheel 2026-11-02 发布版目录布局：启动器与 Client\、Server\ 两个目录同级。
 // 三种放法都认：①便携版单 exe（PORTABLE_EXECUTABLE_DIR 给出真实所在目录）；
@@ -231,12 +306,8 @@ const publishedFolders = () => Object.fromEntries(Object.entries(PUBLISHED_REL).
 //   worldserver.conf      → Updates.EnableDatabases = 0
 //   authserver.conf       → Updates.EnableDatabases = 0
 //   modules\playerbots.conf → Playerbots.Updates.EnableDatabases = 0
-// 调用点：启动器启动、自动更新完成、点“启动服务器”、点“启动数据库”。
-const DB_UPDATE_RULES = [
-  { file: ['configs', 'worldserver.conf'], keys: ['Updates.EnableDatabases'] },
-  { file: ['configs', 'authserver.conf'], keys: ['Updates.EnableDatabases'] },
-  { file: ['configs', 'modules', 'playerbots.conf'], keys: ['Playerbots.Updates.EnableDatabases'] },
-];
+//By leewheel 2026年11月6日 这三条规则连同“数据库端口对齐”一起搬进 src/db-config.cjs（启动前也要跑）。
+// 调用点：启动器启动、自动更新完成、点“启动服务器”、点“启动数据库”、每次启动 world/auth 前。
 //By leewheel 2026年11月5日 游戏内时间设置：读/写 configs\modules\coa.conf 的 CoA.Clock.*
 // mode 0 = 跟随电脑本地时间；mode 1 = 每天固定时刻（hour:minute）。改完重启服务器生效。
 function clockConfFile(serverRoot) { return path.join(serverRoot, 'configs', 'modules', 'coa.conf'); }
@@ -277,32 +348,17 @@ async function writeClock(serverRoot, options) {
   return { mode, hour, minute, configured: true };
 }
 
+//By leewheel 2026年11月6日 配置体检统一走 db-config.cjs：
+// 数据库端口对齐整合包自带 MySQL + 关掉三处数据库自动更新 + 去 BOM（老整合包写死 3395 的坑就出在这）。
 async function enforceDbUpdatesOff(serverRoot, { notify = true } = {}) {
-  const changed = [];
-  for (const rule of DB_UPDATE_RULES) {
-    const file = path.join(serverRoot, ...rule.file);
-    let text = '';
-    try { text = await fs.readFile(file, 'utf8'); } catch { continue; }
-    //By leewheel 2026年11月5日 顺手去掉 UTF-8 BOM：带 BOM 时世界服启动会报
-    // “Config::LoadFile: Failure to read line number 1”，第一行配置被跳过。
-    const hadBom = text.charCodeAt(0) === 0xFEFF;
-    let next = hadBom ? text.slice(1) : text;
-    if (hadBom) changed.push(`${rule.file[rule.file.length - 1]} → 去掉 UTF-8 BOM`);
-    for (const key of rule.keys) {
-      const pattern = new RegExp(`^(\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*)([^\\r\\n#]+)`, 'm');
-      const match = pattern.exec(next);
-      if (!match) continue;
-      if (match[2].trim() === '0') continue;
-      next = next.replace(pattern, (all, prefix) => `${prefix}0`);
-      changed.push(`${rule.file[rule.file.length - 1]} → ${key} = ${match[2].trim()} ⇒ 0`);
-    }
-    if (next !== (hadBom ? text.slice(1) : text)) {
-      await fs.writeFile(file, next, 'utf8');
-    }
-  }
-  if (changed.length && notify) send('repack:notice', { key: 'db.updatesOff', text: `已关闭数据库自动更新（否则服务端起不来）：${changed.join('；')}` });
+  let changed = [];
+  try {
+    changed = await require('./db-config.cjs').ensureDatabaseConfig(serverRoot);
+  } catch { return []; }
+  if (changed.length && notify) send('repack:notice', { key: 'db.updatesOff', text: `已修正服务端配置：${changed.join('；')}` });
   return changed;
 }
+//End By leewheel
 
 //By leewheel 2026年11月6日 重建机器人（核心内置 mod-playerbots 版）。
 // 参考启动器用的是 CoA-Bots/coa_bots.py purge-bots；我们的机器人编进核心里，没有那个脚本，
@@ -333,7 +389,10 @@ async function purgeBuiltInBots() {
     const value = await releaseUpdate.mysqlQuery(root, `SELECT COUNT(*) FROM acore_auth.account WHERE username LIKE '${prefix}%'`, conns.auth || conns.world);
     return Number(value) || 0;
   };
-  const control = requireControl();
+  //By leewheel 2026年11月6日 这里不能在 requireControl 定义之前引用它（老大的实弹：点“重新生成机器人”
+  // 报 requireControl is not defined）。直接用模块内的 serverControl() 取控制对象并自己判空。
+  const control = serverControl();
+  if (!control) throw new Error('请先选择服务器目录。');
   const world = control.services.find(service => /world/i.test(service.id));
   // 这里已经在 withMysql() 里跑（MySQL 由启动器自动拉起，跑完按“原来没开就关掉”的规则还原），
   // 所以只需要再启动一次 worldserver 让它执行删除动作。
@@ -659,9 +718,9 @@ function handle(channel, action) {
 
 function registerIpc() {
   //By leewheel 2026-11-05 smoke 测试跑在临时英文目录、也没有 Client/Server，不能让启动告警干扰截图测试
-  handle('bootstrap', async () => ({ config: publicConfig(), settings, client: await clientInfo(), version: app.getVersion(), launcherUpdate: launcherUpdates.status, smoke: !!smokeDir, whatsNew: whatsNew(), layout: smokeDir ? { chinesePath: false, badFolders: [] } : startupLayout() }));
+  handle('bootstrap', async () => ({ config: publicConfig(), settings, client: await clientInfo(), version: appVersion(), launcherUpdate: launcherUpdates.status, smoke: !!smokeDir, whatsNew: whatsNew(), layout: smokeDir ? { chinesePath: false, badFolders: [] } : startupLayout() }));
   //End By leewheel
-  handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: app.getVersion() }); return true; });
+  handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: appVersion() }); return true; });
   handle('window', action => {
     if (action === 'minimize') window.minimize();
     else if (action === 'maximize') window.isMaximized() ? window.unmaximize() : window.maximize();
@@ -840,7 +899,7 @@ function registerIpc() {
     const core = await read('RELEASE.json');
     const botsRelease = await read('CoA-Bots/release.json');
     const lines = [
-      `启动器：${config.appName} ${app.getVersion()}`,
+      `启动器：${config.appName} ${appVersion()}`,
       `核心：${core?.releaseId || info.release || '?'}${core?.releaseDate ? `（${core.releaseDate}）` : ''}`,
       `核心文件：${repackUpdater ? (await repackUpdater.installedVersion(serverPath())) || '非启动器安装' : '-'}`,
       //By leewheel 2026-11-03 核心内置机器人时，版本从 playerbots.conf 固定行读出
@@ -1153,7 +1212,7 @@ function registerIpc() {
     const offer = componentLists[id];
     if (!serverPath() || !offer) throw new Error('No new version of this component.');
     if (componentsBusy) throw new Error('A component is already being installed.');
-    if (offer.minLauncher && repackUpdate.compareVersions(app.getVersion(), offer.minLauncher) < 0) throw new Error(`This needs launcher ${offer.minLauncher} or newer: update the launcher first (Settings > About).`);
+    if (offer.minLauncher && repackUpdate.compareVersions(appVersion(), offer.minLauncher) < 0) throw new Error(`This needs launcher ${offer.minLauncher} or newer: update the launcher first (Settings > About).`);
     if (components.blocker(serverPath(), offer)) throw new Error(`This needs CoA Bots ${offer.minBots} or newer on the server: update the server first.`);
     if (update.busy) throw new Error('An update is running.');
     componentsBusy = true;
@@ -1207,7 +1266,7 @@ function registerIpc() {
     if (update.busy) throw new Error('An update is already running.');
     assertServerFree();
     if (state.state !== 'available') throw new Error('No update to install for this server.');
-    if (update.manifest?.minLauncher && repackUpdate.compareVersions(app.getVersion(), update.manifest.minLauncher) < 0) throw new Error(`This update needs launcher ${update.manifest.minLauncher} or newer: update the launcher first (Settings > About).`);
+    if (update.manifest?.minLauncher && repackUpdate.compareVersions(appVersion(), update.manifest.minLauncher) < 0) throw new Error(`This update needs launcher ${update.manifest.minLauncher} or newer: update the launcher first (Settings > About).`);
     update.busy = true;
     const phase = (name, extra = {}) => { update.phase = name; send('update:event', { event: 'phase', phase: name, ...extra }); };
     // A server that was running is started again once the update ended well (the tool stops it for the update).
@@ -1298,10 +1357,14 @@ function registerIpc() {
   }
   handle('update:pickClient', async () => (await pickClient()) ?? (addonPath() || ''));
   // Play: starts the game client of this PC (the folder chosen for the addon), asked once when none is known.
+  //By leewheel 2026年11月6日 手动/自检用：立刻按系统分辨率刷新一次 Config.wtf（返回改没改、改成了什么）
+  handle('game:resolution', async () => syncDisplayResolution(path.join(launcherRootFolder(), 'Client')));
   handle('game:play', async options => {
     const known = addonPath();
     const client = known && addonSync.isClient(known) ? known : await pickClient();
     if (!client) return { started: false };
+    //By leewheel 2026年11月6日 启动游戏前把 Config.wtf 的 gxResolution 对齐系统分辨率（全屏/窗口都按这个走）
+    try { syncDisplayResolution(client); } catch { /* 没有 Config.wtf 就跳过 */ }
     const exe = ['Ascension.exe', 'Wow.exe', 'WoW.exe'].map(name => path.join(client, name)).find(file => fs_exists(file));
     if (!exe) throw new Error('No Ascension.exe or Wow.exe in the game folder.');
     if (options?.startServer === true && config.server && serverPath()) {
@@ -2359,7 +2422,7 @@ function registerIpc() {
     const client = await clientInfo();
     const server = await serverInfo().catch(() => null);
     const summary = [
-      `${config.appName} ${app.getVersion()} — ${new Date().toISOString()}`,
+      `${config.appName} ${appVersion()} — ${new Date().toISOString()}`,
       support.systemSummary(),
       '',
       `Game: ${client.installed ? `installed, release ${client.version || '?'}` : 'not installed'}`,
@@ -2661,6 +2724,13 @@ function registerIpc() {
       // 下次启动服务器 / 下次开启动器时自动补导，绝不要求玩家手动开库。
       if (result.sqlPending) await savePendingSql(root, result.sqlPending, options.version || version);
       else await clearPendingSql(root);
+      //By leewheel 2026年11月6日 启动器自替换：按常规做法——独立助手等本进程退出后改名替换
+      // （运行中的 exe 既不能改名也不能覆盖，只有进程退出后才允许，所以必须由别的程序来做）。
+      if (result.launcherPending) {
+        const helper = launcherSwap.spawnReplaceHelper(root, process.pid, { restart: false });
+        const scheduled = helper || launcherSwap.spawnTakeover(path.join(root, launcherSwap.STAGED_NAME), process.pid);
+        progress({ phase: 'launcher', version, message: scheduled ? '启动器新版本已就位：关闭启动器后自动替换' : '启动器新版本已就位：下次打开时替换', pct: null });
+      }
       //By leewheel 2026年11月5日 更新包会覆盖 configs：更新完成后必须再把数据库自动更新关掉
       await enforceDbUpdatesOff(serverRoot, { notify: false }).catch(() => {});
       const entry = { version: options.version || version, tag: options.tag || '', asset: options.asset.name, at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings };
@@ -2743,7 +2813,142 @@ function registerIpc() {
   });
   //End By leewheel
   //By leewheel 2026年11月5日 界面重开/重载后先问主进程：正在更新？已经更新完？——据此决定给不给“开始更新”按钮
+  //By leewheel 2026年11月6日 强制更新（本地包）：GitHub 上没有 zip 资产、或者版本号相同但文件已经坏了的时候，
+  // 直接把 CoA-Update-*.zip 放到 <根目录>\Update\ 里，点“强制更新”就能重装一遍——
+  // 这是今天这种“启动器/服务端坏掉、玩家又没法从 GitHub 下载”的兜底。跳过版本比较，按所选 zip 直接覆盖。
+  handle('release:localZip', async options => {
+    if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    const root = launcherRootFolder();
+    let zip = String(options?.path || '');
+    if (!zip) {
+      const syncFs = require('node:fs');
+      for (const dir of [path.join(root, 'Update'), path.join(root, 'update')]) {
+        if (!syncFs.existsSync(dir)) continue;
+        const hit = syncFs.readdirSync(dir).filter(name => /^CoA-Update-.*\.zip$/i.test(name)).sort().pop();
+        if (hit) { zip = path.join(dir, hit); break; }
+      }
+    }
+    if (!zip || !fs_exists(zip)) throw new Error('没有找到本地更新包：把 CoA-Update-*.zip 放到 Update\\ 目录，或在弹窗里选文件。');
+    const version = (/CoA-Update-([0-9.]+)/i.exec(path.basename(zip)) || [])[1] || '';
+    releaseBusy = true;
+    const progress = payload => send('release:progress', payload);
+    try {
+      progress({ phase: 'download', version, message: `使用本地更新包：${path.basename(zip)}`, pct: 2 });
+      const workDir = path.join(root, 'Update', `local-${Date.now()}`);
+      await fs.mkdir(workDir, { recursive: true });
+      progress({ phase: 'extract', version, message: '正在解压…', pct: 8 });
+      await releaseUpdate.extractZip(zip, workDir, line => progress({ phase: 'extract', version, message: String(line).slice(0, 200), pct: 10 }));
+      const serverRoot = path.join(root, 'Server');
+      const clientRoot = path.join(root, 'Client');
+      progress({ phase: 'apply', version, message: '正在替换文件…', pct: 30 });
+      const result = await releaseUpdate.applyUpdate({
+        root, world: workDir, serverRoot, clientRoot,
+        onPhase: phase => progress({ phase, version, message: `正在处理：${phase}`, pct: null }),
+        onLine: line => progress({ phase: 'apply', version, message: String(line).slice(0, 300), pct: null }),
+        importSqlFiles: options?.importSql !== false,
+        conns: null,
+        waitMs: 15000,
+      });
+      await enforceDbUpdatesOff(serverRoot, { notify: false }).catch(() => {});
+      if (result.launcherPending) {
+        launcherSwap.spawnReplaceHelper(root, process.pid, { restart: false });
+      }
+      const entry = { version: version || 'local', tag: 'local', asset: path.basename(zip), at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings };
+      await releaseUpdate.recordVersion(root, entry);
+      await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
+      progress({ phase: 'done', version: entry.version, message: '强制更新完成', pct: 100, result: entry });
+      Object.assign(releaseState, { busy: false, done: true, failed: false, message: '强制更新完成', version: entry.version });
+      return { ...entry };
+    } catch (error) {
+      const message = String(error?.message || error);
+      Object.assign(releaseState, { busy: false, done: false, failed: true, message: '强制更新失败', error: message });
+      progress({ phase: 'failed', version, message: `强制更新失败：${message}`, pct: 100 });
+      throw new Error(message);
+    } finally {
+      releaseBusy = false;
+    }
+  });
+  handle('release:localPick', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      title: '选择更新包（CoA-Update-*.zip）',
+      properties: ['openFile'],
+      filters: [{ name: '更新包', extensions: ['zip'] }],
+    });
+    return result.canceled ? '' : result.filePaths[0];
+  });
+  //By leewheel 2026年11月6日 强制更新 = **从 GitHub 重新下载安装**（老大明确：强制更新就是下载 GitHub，
+  // 本机已经是最新版本、或者文件被改坏了，也照样重下一次覆盖）。本地 zip 是另一个按钮（release:localZip）。
+  handle('release:forceRemote', async options => {
+    if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    const root = launcherRootFolder();
+    let releases = [];
+    try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); }
+    catch (error) { throw new Error(`读取 GitHub 更新列表失败：${error.message}`); }
+    if (!releases.length) throw new Error('GitHub 上还没有发布任何版本。');
+    // 取最新一个**带 zip 资产**的 release（没有资产的跳过，并明确告诉玩家）
+    const withAsset = releases.find(release => releaseUpdate.pickAsset(release));
+    if (!withAsset) throw new Error('GitHub 上的版本没有附带 zip 更新包：请让管理员上传 zip，或用「从本地包更新」选本地 zip。');
+    const asset = releaseUpdate.pickAsset(withAsset);
+    return applyOnePatch({
+      version: withAsset.version || withAsset.tag_name || withAsset.tag,
+      tag: withAsset.tag_name || withAsset.tag || '',
+      asset,
+      deleteAfter: options?.deleteAfter !== false,
+      importSql: options?.importSql !== false,
+    });
+  });
   handle('release:state', () => ({ ...releaseState }));
+  //By leewheel 2026年11月6日 强制更新：仓库里放一份 force-update.json（minVersion + reason），
+  // 启动器启动时读一次：本机版本低于 minVersion 就不许启动服务器/游戏，只能先更新——
+  // 否则像今天这种“数据库缺表导致世界服起不来”的问题，玩家连更新入口都点不出来。
+  handle('force:check', async () => {
+    const root = launcherRootFolder();
+    // 比的是**整合包版本**（Server\RELEASE.json 的 version，例如 2026.11.06），不是启动器自身的 1.0.1104，
+    // 否则拿 1.0.x 去和 2026.x 比，永远判成“要强制更新”。
+    let current = '';
+    try {
+      const release = JSON.parse(await fs.readFile(path.join(root, 'Server', 'RELEASE.json'), 'utf8'));
+      // RELEASE.json 里没有 version 字段：从 releaseId（coa-publish-20261106）或 releaseDate（2026-11-06）取
+      const fromId = String(release.releaseId || '').replace(/^coa-publish-/, '');
+      const fromDate = String(release.releaseDate || '').replace(/-/g, '');
+      current = /^\d{8}$/.test(fromDate) ? `${fromDate.slice(0, 4)}.${fromDate.slice(4, 6)}.${fromDate.slice(6, 8)}`
+        : /^\d{8}$/.test(fromId) ? `${fromId.slice(0, 4)}.${fromId.slice(4, 6)}.${fromId.slice(6, 8)}`
+        : String(release.version || '');
+    } catch { current = ''; }
+    if (!current) current = String(repackUpdate?.installedVersion ? await repackUpdate.installedVersion(serverPath()).catch(() => '') : '');
+    const urls = [
+      'https://raw.githubusercontent.com/leewheel/azerothcore-wotlk-coa/main/Document/update-packages/force-update.json',
+      'https://ghfast.top/https://raw.githubusercontent.com/leewheel/azerothcore-wotlk-coa/main/Document/update-packages/force-update.json',
+    ];
+    let policy = null;
+    for (const url of urls) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        const response = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!response.ok) continue;
+        policy = await response.json();
+        break;
+      } catch { /* 换镜像再试 */ }
+    }
+    //By leewheel 2026年11月6日 断网也要能强制：更新包里的 Server\RELEASE.json 可以自带
+    // forceMinVersion / forceReason；和远端策略取更严的那个（远端 2026.11.10、本地 2026.11.06 → 用 2026.11.10）。
+    let localMin = '';
+    let localReason = '';
+    try {
+      const release = JSON.parse(await fs.readFile(path.join(root, 'Server', 'RELEASE.json'), 'utf8'));
+      localMin = String(release.forceMinVersion || '');
+      localReason = String(release.forceReason || '');
+    } catch { /* 没有本地策略就只认远端 */ }
+    const remoteMin = String(policy?.minVersion || '');
+    const minVersion = localMin && remoteMin && releaseUpdate.compareVersions(localMin, remoteMin) > 0 ? localMin
+      : localMin && !remoteMin ? localMin : remoteMin;
+    const reason = minVersion === localMin && localReason ? localReason : String(policy?.reason || '');
+    if (!minVersion) return { needsForce: false, current, minVersion: '', reason: '' };
+    const needsForce = releaseUpdate.compareVersions(current, minVersion) < 0;
+    return { needsForce, current, minVersion, reason, blockStart: policy?.blockStart !== false };
+  });
   //By leewheel 2026年11月5日 界面/自检也能主动关一次数据库自动更新（三个参数），并回报改了哪些
   handle('repack:dbUpdatesOff', async () => enforceDbUpdatesOff(serverPath() || launcherRootFolder(), { notify: false }));
   //By leewheel 2026年11月5日 游戏内时间：读写 configs\modules\coa.conf 里的 CoA.Clock.Mode/Hour/Minute
@@ -2757,7 +2962,7 @@ function registerIpc() {
     const serverRoot = path.join(root, 'Server');
     const clientRoot = path.join(root, 'Client');
     const running = (await serverControl()?.status().catch(() => []) || []).some(service => /world/i.test(service.id) && service.state === 'running');
-    const env = bugReport.collectEnv({ root, serverRoot, clientRoot, launcherVersion: app.getVersion(), running });
+    const env = bugReport.collectEnv({ root, serverRoot, clientRoot, launcherVersion: appVersion(), running });
     return {
       endpoint: config.bugReport?.endpoint || bugReport.DEFAULT_ENDPOINT,
       product: config.bugReport?.product || bugReport.DEFAULT_PRODUCT,
@@ -2782,7 +2987,7 @@ function registerIpc() {
     const running = (await serverControl()?.status().catch(() => []) || []).some(service => /world/i.test(service.id) && service.state === 'running');
     const built = await bugReport.buildArchive({
       root, serverRoot, clientRoot,
-      launcherVersion: app.getVersion(),
+      launcherVersion: appVersion(),
       running,
       options: options || {},
     });
@@ -2999,7 +3204,7 @@ async function runUpdateTool(folder, packageFolder, command, extra) {
 function supportReport() {
   const last = update.last || {};
   const here = serverPath() ? repackUpdate.installed(serverPath()) : {};
-  return [`SquidBots Server ${app.getVersion()} · Windows ${require('node:os').release()}`,
+  return [`SquidBots Server ${appVersion()} · Windows ${require('node:os').release()}`,
     `Repack: ${serverPath() || '-'} · release ${here.release || '-'} · CoA Bots ${here.bots || '-'}`,
     `Update: ${update.manifest?.version || '-'} (${update.manifest?.release || '-'})`,
     last.error ? `Error [${last.error.code}] ${last.error.text}` : 'No error',
@@ -3257,7 +3462,7 @@ async function closeWithNotice() {
 let firstRunOfLauncher = false;
 function whatsNew() {
   if (smokeDir && !process.env.COA_SMOKE_WHATSNEW) return [];
-  const current = app.getVersion();
+  const current = appVersion();
   if (firstRunOfLauncher || settings.lastSeenVersion === current) return [];
   let list = [];
   try { list = require('./data/whats-new.json'); } catch { return []; }
@@ -3270,6 +3475,17 @@ async function main() {
   // 先整理根目录（散文件 → Client\ / Server\），再定配置与设置文件的位置；目录不可写时退回 %APPDATA%。
   const portableAllowed = app.isPackaged && !smokeDir && !process.env.COA_LAUNCHER_PROFILE;
   const launchRoot = launcherRootFolder();
+  //By leewheel 2026年11月6日 启动器自替换（换不了正在运行的 exe，所以由新 exe 当替换器）：
+  // 启动时若发现已落地的 CoA启动器.new.exe，就让它等本进程退出后把自己换到根目录。
+  if (!smokeDir) {
+    try {
+      launcherSwap.cleanupLegacy(launchRoot);
+      if (launcherSwap.ensureStagedSwap(launchRoot, process.pid)) send('repack:notice', { key: 'launcher.pending', text: '启动器新版本已就位：关闭后自动替换' });
+    } catch { /* 换不动不影响启动 */ }
+  }
+  //By leewheel 2026年11月6日 启动器一跑就把游戏分辨率对齐系统分辨率（Client\WTF\Config.wtf）。
+  // 冒烟测试也执行（只读 + 改一行配置，安全），方便自动化验证这条路径。
+  try { syncDisplayResolution(path.join(launchRoot, 'Client')); } catch { /* 文件不在就跳过 */ }
   if (portableAllowed && !(await isLayoutNormalized(launchRoot))) {
     await normalizeLayout(launchRoot, { log: line => send('repack:notice', { key: 'layout.move', text: line }) }).catch(error => send('repack:notice', { key: 'layout.failed', text: `目录整理失败：${error.message}` }));
   }
@@ -3281,12 +3497,21 @@ async function main() {
   if (!fs_exists(settingsFile)) migrateSettings(settingsFile, path.join(app.getPath('userData'), 'settings.json'));
   const firstRun = !(await statOrNull(settingsFile).catch(() => null));
   settings = await readSettings(settingsFile);
+  //By leewheel 2026年11月6日 自动识别客户端/服务端目录：玩家把整合包解压好就行，
+  // 不用再手动去选目录——扫启动器同级目录（先看 Client/Server/Game，再看两层内的子目录），
+  // 找到 Ascension.exe/Wow.exe 就当客户端、找到 worldserver.exe 就当服务端，写进设置。
+  if (!smokeDir) {
+    try {
+      const detected = await autoDetectInstallPaths(launchRoot);
+      if (detected.length) send('repack:notice', { key: 'layout.detected', text: `已自动识别目录：${detected.join('；')}` });
+    } catch { /* 扫不到就让玩家自己选 */ }
+  }
   //End By leewheel
   // A fresh install of the server edition starts with the classic skin and its emblem.
   if (firstRun && config.edition === 'server') settings.theme = 'abyss';
   // A fresh install has nothing « new » to show: this version counts as seen.
   firstRunOfLauncher = firstRun;
-  if (firstRun) settings.lastSeenVersion = app.getVersion();
+  if (firstRun) settings.lastSeenVersion = appVersion();
   if (firstRun) {
     //By leewheel 2026-11-02 中文发射版：首次启动一律使用简体中文界面（系统语言不再决定界面语言）
     settings.language = 'zh';
@@ -3395,7 +3620,15 @@ async function main() {
   setInterval(() => refreshComponents(), 30 * 60 * 1000).unref();
 }
 
-if (!smokeDir && !app.requestSingleInstanceLock()) app.quit();
+//By leewheel 2026年11月6日 替换器模式（--takeover=<旧PID>）：等旧启动器退出，把旧 exe 改名 .old.exe、
+// 把自己复制成 CoA启动器.exe，然后直接退出——不开窗口、不抢单实例锁。更新时由主进程 spawn 自己。
+const takeoverArg = process.argv.find(arg => String(arg).startsWith('--takeover=')) || '';
+const takeoverPid = Number(takeoverArg.split('=')[1]) || 0;
+if (takeoverPid > 0) {
+  launcherSwap.performTakeover(launcherRootFolder(), takeoverPid)
+    .catch(() => false)
+    .finally(() => app.exit(0));
+} else if (!smokeDir && !app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => showWindow());
   app.whenReady().then(main).catch(error => { dialog.showErrorBox(boxText('launchFailed')[0], error.message); app.quit(); });

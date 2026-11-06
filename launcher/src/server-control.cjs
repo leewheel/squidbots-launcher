@@ -285,6 +285,23 @@ class ServerControl {
     if (!service) throw new Error('Unknown service.');
     //By leewheel 2026-11-05 世界服读配置之前修好 RA；修不动也不该挡住服务器启动，只留一条中文告警
     if (/world/i.test(id)) await ensureWorldConsole(this.root).catch(error => console.warn(`[启动器] 远程控制台配置修复失败：${error.message}`));
+    //By leewheel 2026年11月6日 世界服/登录服启动前，把数据库端口和“数据库自动更新”两条配置对齐整合包：
+    // 老整合包写的是 3395、新包是 3396，端口不对世界服直接连不上库；Updates.EnableDatabases 不关会在启动时自己改库。
+    if (/world|auth/i.test(id)) {
+      await require('./db-config.cjs').ensureDatabaseConfig(this.root)
+        .then(changed => { if (changed.length) console.warn(`[启动器] 已修正服务端配置：${changed.join('；')}`); })
+        .catch(error => console.warn(`[启动器] 服务端配置体检失败：${error.message}`));
+    }
+    //By leewheel 2026年11月6日 关掉数据库自动更新后，新版本的核心会用到新表：缺表时世界服
+    // 在 mysql_stmt_prepare 阶段直接退出（老大实测 account_bazaar_token_hourly_cap）。启世界服前先补齐。
+    if (/world/i.test(id)) {
+      await require('./schema-guard.cjs').ensureDatabaseSchema(this.root)
+        .then(result => {
+          if (result.ran?.length) console.warn(`[启动器] 已补齐数据库表：${result.ran.join(', ')}`);
+          if (result.skipped?.length) console.warn(`[启动器] 建表兜底跳过：${result.skipped.join('；')}`);
+        })
+        .catch(error => console.warn(`[启动器] 角色库建表兜底失败：${error.message}`));
+    }
     //End By leewheel
     if (this.states.get(id) === 'stopping') throw new Error(`${service.name} is stopping: wait until it is stopped.`);
     if (await this.assertPortFree(service)) return;

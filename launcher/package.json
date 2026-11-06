@@ -1,7 +1,7 @@
 {
   "name": "coa-launcher-lite",
   "productName": "征服艾泽拉斯 单机启动器",
-  "version": "1.0.1104",
+  "version": "1.0.2026110620",
   "description": "征服艾泽拉斯（Conquest of Azeroth）单机整合包启动器：一键启动/停止本地 MySQL、登录服务器与世界服务器，管理设置、备份与国度。",
   "license": "MIT",
   "author": "leewheel",
@@ -9,7 +9,9 @@
   "scripts": {
     "start": "node scripts/copy-fonts.cjs && electron .",
     "test": "node --test \"test/*.test.cjs\"",
-    "dist": "node scripts/copy-fonts.cjs && electron-builder --win nsis --publish never"
+    "dist": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && electron-builder --win nsis --publish never",
+    "stage": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs",
+    "dist:obf": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never"
   },
   "build": {
     "appId": "org.coa.launcher-lite",
@@ -28,7 +30,8 @@
       "grantFileProtocolExtraPrivileges": false
     },
     "directories": {
-      "output": "dist"
+      "output": "dist",
+      "app": "build/app"
     },
     "files": [
       "src/**",
@@ -41,7 +44,7 @@
       "icon": "editions/server/icon.png"
     },
     "portable": {
-      "unpackDirName": "CoALauncherLite",
+      "unpackDirName": "CoALauncherLite-1.0.2026110620",
       "requestExecutionLevel": "user"
     },
     "publish": null
@@ -57,6 +60,7 @@
     "@fontsource/inter": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "electron": "^44.4.5",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "javascript-obfuscator": "^5.10.0"
   }
 }

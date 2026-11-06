@@ -59,9 +59,16 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   releaseApply: options => call('release:apply', options),
   //By leewheel 2026-11-05 按发布顺序依次补齐所有缺失补丁
   releaseApplyAll: options => call('release:applyAll', options),
+  //By leewheel 2026年11月6日 强制更新：用本地 CoA-Update-*.zip 直接重装（跳过版本比较，GitHub 没资产也能修）
+  releaseLocalZip: options => call('release:localZip', options),
+  releaseLocalPick: () => call('release:localPick'),
+  //By leewheel 2026年11月6日 强制更新 = 从 GitHub 重新下载安装（本地包是另一个按钮）
+  releaseForceRemote: options => call('release:forceRemote', options),
   //End By leewheel
   //By leewheel 2026年11月5日 更新状态由主进程记着：界面重开后先查它，避免重复点“开始更新”
   releaseState: () => call('release:state'),
+  //By leewheel 2026年11月6日 强制更新检查（本机版本低于仓库策略里的 minVersion 就必须更新）
+  forceCheck: () => call('force:check'),
   //By leewheel 2026年11月5日 关掉数据库自动更新（worldserver/authserver/playerbots 三个 EnableDatabases）
   dbUpdatesOff: () => call('repack:dbUpdatesOff'),
   //By leewheel 2026年11月5日 游戏内时间（configs\modules\coa.conf 的 CoA.Clock.*）
@@ -103,6 +110,8 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   updateReport: () => call('update:report'),
   updatePickClient: () => call('update:pickClient'),
   gamePlay: options => call('game:play', options),
+  //By leewheel 2026年11月6日 按系统分辨率刷新 Config.wtf 的 gxResolution
+  gameResolution: () => call('game:resolution'),
   charsList: () => call('chars:list'),
   charsExport: name => call('chars:export', name),
   charsImport: account => call('chars:import', account),

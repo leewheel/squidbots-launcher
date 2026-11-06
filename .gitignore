@@ -12,3 +12,4 @@ private/
 editions/private/
 *.pem
 publish/
+launcher/build/

@@ -332,3 +332,14 @@ body::after {
 body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
 .dialog-content .layout-alert-line { padding: 8px 0; border-bottom: 1px solid var(--line); }
 /*End By leewheel*/
+
+/* 免费声明改用图片渲染：meta 用小图，按高度缩放 */
+.free-banner .fb-meta-img { height: 18px; width: auto; display: block; opacity: .95; }
+
+/* 强制更新遮罩（2026-11-06）：版本低于策略要求时挡住全部操作，只能先更新 */
+#force-update-mask { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; background: rgba(8,10,14,.86); backdrop-filter: blur(3px); }
+#force-update-mask .force-card { max-width: 520px; padding: 28px 30px; border: 1px solid rgba(255,196,92,.45); border-radius: 16px; background: linear-gradient(180deg, rgba(28,24,18,.98), rgba(16,14,12,.98)); box-shadow: 0 20px 60px rgba(0,0,0,.6); text-align: center; }
+#force-update-mask h2 { margin: 0 0 10px; color: #ffcf5c; font-size: 22px; }
+#force-update-mask .force-version { margin: 0 0 8px; color: #e8e6e0; }
+#force-update-mask .force-reason { margin: 0 0 12px; color: #cfd6e4; line-height: 1.6; }
+#force-update-mask .button.primary { margin-top: 10px; }

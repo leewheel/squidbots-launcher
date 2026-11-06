@@ -474,3 +474,9 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(3px); }
 /* ---------- 顶部 BUG 提交（瓢虫图标，放在“检查”左边） ---------- */
 #tabs-right .tab-bug { color: #ffcf5c; }
 #tabs-right .tab-bug:hover { color: #ffe9a8; }
+
+/*By leewheel 2026年11月6日 更新弹窗按钮太多被挤成竖排：窗口加宽一档，页脚允许换行、按钮不折行*/
+dialog.xwide { width: min(980px, 96vw); }
+.dialog-foot { flex-wrap: wrap; row-gap: 8px; }
+.dialog-foot .button { white-space: nowrap; flex: 0 0 auto; }
+/*End By leewheel*/

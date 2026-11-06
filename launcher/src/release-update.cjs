@@ -688,6 +688,44 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
     }
   }
 
+  //By leewheel 2026年11月6日 启动器自己也能随包更新：
+  // 🔴 正在运行的 exe 不能改名也不能覆盖（运行镜像不共享删除权限），会报
+  //    EBUSY: resource busy or locked, copyfile ... -> CoA启动器.exe（老大实测）。
+  // 所以这里只把新 exe 落成 CoA启动器.new.exe；替换交给主进程 spawn 这个新 exe 当“替换器”
+  // （launcher-swap.cjs：等旧进程退出 → 旧 exe 改名 .old.exe → 复制自己到目标位置）。包删不删都不影响。
+  const launcherFrom = await findDir(folder, ['launcher']);
+  if (launcherFrom) {
+    onPhase('launcher');
+    const names = await fsp.readdir(launcherFrom).catch(() => []);
+    const exeName = names.find(name => /^CoA启动器\.exe$/i.test(name)) || names.find(name => /\.exe$/i.test(name));
+    if (exeName) {
+      const staged = path.join(root, 'CoA启动器.new.exe');
+      await fsp.copyFile(path.join(launcherFrom, exeName), staged);
+      // 替换助手（独立小 exe）：由它在旧进程退出后给文件改名，避免 EBUSY
+      const helperSource = names.find(name => /^launcher-replace\.exe$/i.test(name));
+      if (helperSource) await fsp.copyFile(path.join(launcherFrom, helperSource), path.join(root, 'launcher-replace.exe')).catch(() => {});
+      result.launcherPending = true;
+      onLine(helperSource ? '启动器新版本已就位：关闭启动器后自动替换' : '启动器新版本已就位：下次打开时替换');
+    } else {
+      result.warnings.push('包里有 launcher 目录但没找到 exe，启动器未更新');
+    }
+  }
+
+  //By leewheel 2026年11月6日 配置只按**新参数**写：包里的 configs\configs.patch.json 逐键应用，
+  // 不再整份覆盖玩家的 .conf（老大要求；否则玩家自己改的设置每次更新都会被冲掉）。
+  const patchFile = path.join(folder, 'configs', 'configs.patch.json');
+  if (fs.existsSync(patchFile)) {
+    onPhase('configs');
+    try {
+      const patchResult = await require('./config-patch.cjs').applyConfigPatch(path.join(root, 'Server'), patchFile);
+      const keys = patchResult.applied.reduce((sum, item) => sum + item.keys.length, 0);
+      result.configPatch = { files: patchResult.applied.length, keys };
+      onLine(keys ? `配置：已写入 ${keys} 个新参数（只改动值，其他行原样保留）` : '配置：没有需要更新的参数');
+    } catch (error) {
+      result.warnings.push(`配置参数写入失败：${error.message}`);
+    }
+  }
+
   if (snapshot.saved) { result.backup = snapshotDir; onLine(`被覆盖的 ${snapshot.saved} 个文件已留底：${path.relative(root, snapshotDir)}`); }
   return result;
 }

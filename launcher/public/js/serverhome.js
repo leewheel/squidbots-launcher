@@ -397,19 +397,24 @@ function homeView() {
 
 //By leewheel 2026-11-04 主页 hero 与日志窗口之间的空档：一条免费声明横幅。
 // 视觉走 HUD 风：网格底纹 + 扫描光带 + 四角括号 + 霓虹辉光，样式在 css/coa.css 的 .free-banner 段。
-//By leewheel 2026年11月6日 老大要求：这句话不能再以明文出现在源码/界面里（会被倒卖狗改成他们的广告）。
-// 现在文字只以字节数组形式存在（UTF-8 逐字节异或），运行时解码后画进 canvas，DOM 里没有可搜索的文本；
-// 字号也从 16.5px 提到 20px。改文案就重新生成这两行字节数组，不要把明文写回来。
-const FREE_NOTICE_BYTES = [188,227,8,47,70,178,222,214,29,66,85,89,242,131,218,96,47,66,28,173,135,133,7,61,54,73,135,174,218,7,85,87,65,246,196,213,104,58,85,25,158,221,137,31,13,51,180,136,174,214,36];
-const FREE_META_BYTES = [21,57,226,133,167,93,125,125,64,16,236,23,129,155,134,11,34,41,105,154,216,195,41,68,120,123,60,131,209,171,87,115,123,249,233,203,107,51,74,24,175,209];
-function decodeFreeNotice(bytes) {
-  const plain = bytes.map((value, index) => value ^ ((index * 37 + 0x5A) & 0xFF));
-  return new TextDecoder('utf-8').decode(new Uint8Array(plain));
+//By leewheel 2026年11月6日 老大要求：不要文本，但要把文字**渲染**出来。
+// 所以文案彻底退出代码——现在只有两张透明 PNG（assets/notice-free.png、assets/notice-meta.png），
+// 源码里搜不到任何字样；canvas 只负责把图片按画布高度缩放后绘制，再叠杂波特效。
+// 说明：图片当然能被人看见，但改它需要重新打包 asar，而 asar 有完整性校验——改过的启动器起不来。
+const freeNoticeArt = { text: null, meta: null };
+function loadFreeNoticeArt() {
+  if (!freeNoticeArt.text) {
+    freeNoticeArt.text = new Image();
+    freeNoticeArt.text.onload = () => drawFreeNotice();
+    freeNoticeArt.text.src = 'assets/notice-free.png';
+  }
+  if (!freeNoticeArt.meta) freeNoticeArt.meta = 'assets/notice-meta.png';
 }
 function drawFreeNotice() {
   const canvas = document.getElementById('free-notice-canvas');
   const holder = canvas?.parentElement;
   if (!canvas || !holder) return;
+  loadFreeNoticeArt();
   const ratio = window.devicePixelRatio || 1;
   const width = Math.max(240, holder.clientWidth || 640);
   const height = 34;
@@ -419,8 +424,6 @@ function drawFreeNotice() {
   canvas.style.height = `${height}px`;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
-  const meta = document.getElementById('free-notice-meta');
-  if (meta && !meta.textContent) meta.textContent = decodeFreeNotice(FREE_META_BYTES);
   paintFreeNotice(ctx, ratio, width, height, performance.now());
   startFreeNoticeGlitch();
 }
@@ -431,15 +434,16 @@ function drawFreeNotice() {
 let freeNoticeRaf = 0;
 let freeNoticeStatic = false;
 function paintFreeNotice(ctx, ratio, width, height, now) {
-  const text = decodeFreeNotice(FREE_NOTICE_BYTES);
+  const art = freeNoticeArt.text;
   const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  const family = getComputedStyle(document.body).fontFamily || 'system-ui';
-  ctx.font = `700 20px ${family}`;
-  if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
-  ctx.textBaseline = 'middle';
+  if (!art || !art.complete || !art.naturalWidth) return;   // 图还没加载好，等 onload 后重画
+  // 按画布高度等比缩放，垂直居中
+  const artHeight = 26;
+  const artWidth = art.naturalWidth * (artHeight / art.naturalHeight);
   const middle = height / 2;
+  const top = middle - artHeight / 2;
   // 两组独立的 glitch 节奏：各自每 period 触发一次，持续 duration
   const burst = (clock, period, duration, range) => {
     const phase = clock % period;
@@ -449,18 +453,18 @@ function paintFreeNotice(ctx, ratio, width, height, now) {
   const clock = now / 1000;
   const shiftA = burst(clock, 3.7, 0.16, 3.2);
   const shiftB = burst(clock, 4.3, 0.13, 2.6);
-  // 色散重影（红/青各一层，位置随机抖）
+  // 色散重影：红/青各画一层图（用 canvas filter 上色，不依赖字体）
   ctx.globalAlpha = 0.55;
-  ctx.fillStyle = 'rgba(255,60,120,.9)';
-  ctx.fillText(text, 1.4 + shiftA, middle + 0.5 + shiftB * 0.3);
-  ctx.fillStyle = 'rgba(0,229,255,.9)';
-  ctx.fillText(text, -1.4 - shiftB, middle - 0.5 - shiftA * 0.3);
+  ctx.filter = 'sepia(1) saturate(6) hue-rotate(-40deg)';
+  ctx.drawImage(art, 1.4 + shiftA, top + 0.5 + shiftB * 0.3, artWidth, artHeight);
+  ctx.filter = 'sepia(1) saturate(6) hue-rotate(140deg)';
+  ctx.drawImage(art, -1.4 - shiftB, top - 0.5 - shiftA * 0.3, artWidth, artHeight);
+  ctx.filter = 'none';
   // 主体：霓虹辉光 + 每 6.5 秒一次亮度跳动
   ctx.globalAlpha = !reduced && clock % 6.5 > 6.36 ? 0.55 : 1;
   ctx.shadowColor = 'rgba(0,229,255,.75)';
   ctx.shadowBlur = 14;
-  ctx.fillStyle = '#eaffff';
-  ctx.fillText(text, shiftA * 0.6, middle);
+  ctx.drawImage(art, shiftA * 0.6, top, artWidth, artHeight);
   ctx.shadowBlur = 0;
   ctx.globalAlpha = 1;
   if (reduced) return;
@@ -513,7 +517,7 @@ function freeBannerView() {
     <span class="fb-corner br" aria-hidden="true"></span>
     <span class="fb-badge" aria-hidden="true"><b>FREE</b><small>¥0.00</small></span>
     <span class="fb-text"><canvas id="free-notice-canvas" class="fb-canvas" aria-hidden="true"></canvas></span>
-    <span class="fb-meta" id="free-notice-meta" aria-hidden="true"></span>
+    <span class="fb-meta" id="free-notice-meta" aria-hidden="true"><img class="fb-meta-img" src="assets/notice-meta.png" alt=""></span>
   </section>`;
 }
 
@@ -979,8 +983,10 @@ function showReleaseUpdate() {
       ${finished ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}${esc(t('release.recheck', '重新检查'))}</button>` : ''}
       ${failed ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}重新检查</button>` : ''}
       ${pending.length && !running && !finished && !failed ? `<button class="button primary" data-action="release-apply">${icon('download')}${esc(pending.length > 1 ? `开始更新（${pending.length} 个补丁）` : t('release.start', '开始更新'))}</button>` : ''}
+      ${!running ? `<button class="button ghost" data-action="release-force-remote" title="${esc('从 GitHub 重新下载最新更新包并覆盖安装（已经是最新版本也会重装，用来修坏掉的文件）')}">${icon('refresh')}强制更新（从 GitHub 下载）</button>` : ''}
+      ${!running ? `<button class="button ghost" data-action="release-local" title="${esc('GitHub 上没有 zip 资产时，用本地的 CoA-Update-*.zip 覆盖安装')}">${icon('download')}从本地包更新</button>` : ''}
     </footer>`;
-    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${running || finished || failed ? '' : historyHtml}</div>${footer}`);
+    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${running || finished || failed ? '' : historyHtml}</div>${footer}`, 'xwide');
     // 重开时如果正在更新/失败，把进度条按当前状态画出来（CSP 下宽度用 CSSOM 设）
     const box = document.getElementById('release-progress');
     if (box && running) { box.innerHTML = releaseRunView(run); applyBars(box); }
@@ -1456,6 +1462,39 @@ Object.assign(App.actions, {
   },
   'release-retry': () => { App.state.releaseRun = null; showReleaseUpdate(); },
   'release-apply': button => applyReleaseUpdate(button),
+  //By leewheel 2026年11月6日 强制更新 = 从 GitHub 重新下载最新 zip 覆盖安装（不看版本号）
+  'release-force-remote': button => guard(async () => {
+    if (button) button.disabled = true;
+    toast('正在从 GitHub 重新下载更新包…');
+    try {
+      const result = await App.api.releaseForceRemote({ deleteAfter: true, importSql: true });
+      toast(`强制更新完成：${result?.version || ''}`, 'success');
+      App.state.releaseRun = null;
+      showReleaseUpdate();
+    } catch (error) {
+      toast(`强制更新失败：${String(error?.message || error)}`, 'warning');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }),
+  //By leewheel 2026年11月6日 强制更新（本地包）：GitHub 没 zip 资产、或版本号相同但文件坏了时，
+  // 选一个 CoA-Update-*.zip 直接重装，跳过版本比较（今天这种启动不了的情况就靠它救）。
+  'release-local': button => guard(async () => {
+    const file = await App.api.releaseLocalPick();
+    if (!file) return;
+    if (button) button.disabled = true;
+    toast('开始强制更新…');
+    try {
+      const result = await App.api.releaseLocalZip({ path: file, importSql: true });
+      toast(`强制更新完成：${result?.version || ''}`, 'success');
+      App.state.releaseRun = null;
+      showReleaseUpdate();
+    } catch (error) {
+      toast(`强制更新失败：${String(error?.message || error)}`, 'warning');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }),
   'release-page': () => { const url = App.state.releaseInfo?.latest?.url; if (url && App.api.openUrl) App.api.openUrl(url).catch(() => {}); },
   'release-history': () => showReleaseHistory(),
   'verify-copy': button => guard(async () => { await App.api.copyVersions(); toast(t('verify.copied', 'Versions copied: paste them on Discord.'), 'success'); }, button),
