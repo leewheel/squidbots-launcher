@@ -99,6 +99,11 @@ function validate(raw) {
     feedUrl: serviceUrl(raw.feedUrl, 'feedUrl', trusted, { optional: true }),
     launcherUpdateKey: raw.launcherUpdateKey ? (publicKey(raw.launcherUpdateKey), String(raw.launcherUpdateKey)) : '',
     discordUrl: raw.discordUrl && /^https:\/\/(discord\.gg|discord\.com\/invite)\/[A-Za-z0-9-]{2,32}$/.test(raw.discordUrl) ? raw.discordUrl : '',
+    //By leewheel 2026年11月6日 BUG 反馈：上传点与产品名（参考启动器要求 product 必须是 COA，填别的会被拒）
+    bugReport: {
+      endpoint: typeof raw.bugReport?.endpoint === 'string' && /^https?:\/\//i.test(raw.bugReport.endpoint) ? raw.bugReport.endpoint : 'http://www.shboxi.com.cn:8081/api/bugreport',
+      product: String(raw.bugReport?.product || 'COA').slice(0, 20) || 'COA',
+    },
     trustedLocalHosts: [...trusted],
     game: {
       id: 'game',
@@ -128,12 +133,20 @@ function mergeConfig(base, own) {
   return out;
 }
 
-function loadConfig(bundledFile, userFile) {
+function loadConfig(bundledFile, userFiles) {
   let source = 'bundled';
   let raw = JSON.parse(fs.readFileSync(bundledFile, 'utf8'));
   // COA_LAUNCHER_CONFIG (tests, visits) replaces the whole file.
   if (process.env.COA_LAUNCHER_CONFIG && fs.existsSync(process.env.COA_LAUNCHER_CONFIG)) { raw = JSON.parse(fs.readFileSync(process.env.COA_LAUNCHER_CONFIG, 'utf8')); source = process.env.COA_LAUNCHER_CONFIG; }
-  else if (userFile && fs.existsSync(userFile)) { raw = mergeConfig(raw, JSON.parse(fs.readFileSync(userFile, 'utf8').replace(/^﻿/, ''))); source = userFile; }
+  //By leewheel 2026年11月4日 覆盖文件可以是一串（先整合包自带的 Server\configs，再 %APPDATA%），按顺序合并。
+  else {
+    for (const userFile of (Array.isArray(userFiles) ? userFiles : [userFiles]).filter(Boolean)) {
+      if (!fs.existsSync(userFile)) continue;
+      raw = mergeConfig(raw, JSON.parse(fs.readFileSync(userFile, 'utf8').replace(/^\uFEFF/, '')));
+      source = userFile;
+    }
+  }
+  //End By leewheel
   const config = validate(raw);
   config.source = source;
   // Keys are parsed once so a bad key fails at start, not in the middle of an update.

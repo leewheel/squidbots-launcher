@@ -14,6 +14,9 @@ const { ClientUpdater } = require('./client-updater.cjs');
 const { AddonManager } = require('./addons.cjs');
 const { requireGameClosed, configureRealmlist, realmlistStatus, launch } = require('./game.cjs');
 const { ServerControl, portOpen } = require('./server-control.cjs');
+//By leewheel 2026-11-05 启动时的目录布局体检（中文路径 / Client、Server 缺失或空目录）
+const { checkLayout } = require('./layout-check.cjs');
+//End By leewheel
 const { ServerConfig } = require('./server-config.cjs');
 const { ServerBackup } = require('./server-backup.cjs');
 const { ServerUpgrade, inspect: inspectRepack, suggestFolder } = require('./server-upgrade.cjs');
@@ -42,9 +45,53 @@ const { mysqlLender } = require('./mysql-lender.cjs');
 const { fixManage } = require('./manage-fix.cjs');
 //By leewheel 2026-11-03 服务端/客户端更新 + 首次运行目录整形
 const releaseUpdate = require('./release-update.cjs');
+//By leewheel 2026年11月6日 BUG 反馈：格式对齐参考启动器（product 必须是 COA）
+const bugReport = require('./bug-report.cjs');
 const { normalizeLayout, readMarker: readLayoutMarker, isNormalized: isLayoutNormalized } = require('./layout-fix.cjs');
+//By leewheel 2026年11月4日 配置文件随整合包放在 Server\configs，启动时没有就生成默认；目录一律相对启动器所在目录
+const portableConfig = require('./portable-config.cjs');
+const { portableDir, ensureConfigFile, settingsFileOf, migrateSettings } = portableConfig;
 let releaseBusy = false;
+//By leewheel 2026-11-05 整条补丁队列期间一直占用，防止队列中途被"开始更新"再插一个补丁进来
+let releaseQueueBusy = false;
+//End By leewheel
 let releaseAbort = null;
+//By leewheel 2026年11月5日 更新状态必须由主进程记住：界面关掉再打开时靠它判断“是不是正在更新/已经更新完”，
+// 否则重开界面还能再点一次“开始更新”，重复下载甚至重复归档（老大明确说这绝对不行）。
+const releaseState = { busy: false, version: '', phase: '', message: '', pct: 0, done: false, error: '', result: null, at: '' };
+
+//By leewheel 2026年11月5日 SQL 待办（数据库没起来时先记下来，之后自动补导）
+function pendingSqlFile(root) { return path.join(root, '.coa-launcher', 'pending-sql.json'); }
+async function savePendingSql(root, sqlRoot, version) {
+  try {
+    await fs.mkdir(path.join(root, '.coa-launcher'), { recursive: true });
+    await fs.writeFile(pendingSqlFile(root), JSON.stringify({ sqlRoot, version, at: new Date().toISOString() }, null, 2), 'utf8');
+  } catch { /* 记不下来也不能影响更新本身 */ }
+}
+async function clearPendingSql(root) {
+  try { await fs.rm(pendingSqlFile(root), { force: true }); } catch { /* 忽略 */ }
+}
+async function retryPendingSql() {
+  const root = launcherRootFolder();
+  const serverRoot = path.join(root, 'Server');
+  let pending = null;
+  try { pending = JSON.parse(await fs.readFile(pendingSqlFile(root), 'utf8')); } catch { return null; }
+  if (!pending?.sqlRoot || !fs_exists(pending.sqlRoot)) { await clearPendingSql(root); return null; }
+  const conns = releaseUpdate.readDbConfig(serverRoot);
+  try { const control = serverControl(); if (control) await control.start('mysql'); } catch { /* 起不来就再等下次 */ }
+  try {
+    const done = await releaseUpdate.importSqlTree(serverRoot, pending.sqlRoot, {
+      conns, waitMs: 45000,
+      onLine: line => send('repack:notice', { key: 'sql.pending', text: String(line).slice(0, 200) }),
+    });
+    await clearPendingSql(root);
+    send('repack:notice', { key: 'sql.pendingDone', text: `待办的数据库脚本已补导（${done.length} 个）` });
+    return done;
+  } catch (error) {
+    send('repack:notice', { key: 'sql.pendingWait', text: `数据库脚本仍待补导：${error.message}` });
+    return null;
+  }
+}
 // The repack's own updates (squidbots-updates releases): the signed list, the run in progress, its last result.
 const update = { manifest: null, error: null, busy: false, phase: null, last: null };
 let feed = null;
@@ -92,6 +139,12 @@ if (process.platform === 'win32') app.setAppUserModelId('org.coa.launcher-lite')
 protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
 let config;
+//By leewheel 2026年11月4日 自动查更新的函数在 app ready 块里创建（要用到那里的 serverPath/inspectRepack/netFetch），
+// 但启动定时器在块外：用这个模块级变量转交，别再把函数写在块里然后在外面直接引用（老大实弹报
+// “ReferenceError: autoCheckRelease is not defined”）。
+let autoCheckRelease = null;
+// 同一次运行只查一次（多次调用共用同一个 Promise）
+let releaseAutoPromise = null;
 let settings;
 let settingsFile;
 let window = null;
@@ -118,10 +171,22 @@ function persist(next) {
   return run;
 }
 
-const gamePath = () => settings.installPaths.game || '';
+//By leewheel 2026年11月4日 发布版的客户端与服务端一律相对启动器所在目录解析（规则见 portable-config.cjs）：
+// 设置里存相对名（Client、Server），残留的绝对目录一旦不存在就自动回到同级的 Client\、Server\。
+const PUBLISHED_REL = portableConfig.PUBLISHED_REL;
+const toStoredPath = folder => portableConfig.toStoredPath(folder, launcherRootFolder());
+const areaFolder = area => portableConfig.resolveArea(area, settings?.installPaths?.[area] || '', launcherRootFolder(), fs_exists);
+//By leewheel 2026年11月4日 保存目录统一走这里，发布版内的目录自动落成相对写法
+async function saveInstallPath(area, folder) {
+  await persist({ ...settings, installPaths: { ...settings.installPaths, [area]: toStoredPath(folder) } });
+}
+//End By leewheel
+
+const gamePath = () => areaFolder('game');
+const addonPath = () => areaFolder('addon');
 // The game the server takes its data from: the game folder, or else the client the Play tab shows (server edition).
-const gameDataPath = () => [settings.installPaths.game, settings.installPaths.addon].find(item => item && fs_exists(item)) || '';
-const serverPath = () => settings.installPaths.server || '';
+const gameDataPath = () => [gamePath(), addonPath()].find(item => item && fs_exists(item)) || '';
+const serverPath = () => areaFolder('server');
 const realmlist = () => settings.realmlist || config.game.realmlists[0].address;
 
 //By leewheel 2026-11-02 发布版目录布局：启动器与 Client\、Server\ 两个目录同级。
@@ -142,25 +207,185 @@ function launcherRootFolder() {
   const found = candidates.find(root => fs_exists(path.join(root, 'Client')) || fs_exists(path.join(root, 'Server')));
   return found || candidates[0];
 }
-const publishedFolders = () => {
+//By leewheel 2026-11-05 启动时的目录体检，结果缓存一次，随 bootstrap 交给主页显示
+// 便携版只认 PORTABLE_EXECUTABLE_DIR 给出的真实目录：Electron 会把 exe 解压到 %TEMP% 下运行，
+// 用那个临时路径判断中文（用户目录常带中文）会误报，也会把 Client/Server 误判成缺失。
+let layoutCheck = null;
+function startupLayout() {
+  if (layoutCheck) return layoutCheck;
   const root = launcherRootFolder();
-  return { game: path.join(root, 'Client'), addon: path.join(root, 'Client'), server: path.join(root, 'Server') };
-};
+  const paths = [root];
+  if (process.env.PORTABLE_EXECUTABLE_DIR) paths.push(path.resolve(process.env.PORTABLE_EXECUTABLE_DIR));
+  layoutCheck = checkLayout({
+    paths: [...new Set(paths)],
+    folders: { Client: path.join(root, 'Client'), Server: path.join(root, 'Server') },
+  });
+  return layoutCheck;
+}
+//End By leewheel
+const publishedFolders = () => Object.fromEntries(Object.entries(PUBLISHED_REL).map(([area, rel]) => [area, path.join(launcherRootFolder(), rel)]));
+
+//By leewheel 2026年11月5日 数据库自动更新必须关掉：开着时服务端启动会去跑 SQL 更新器，
+// 更新器一失败（待办目录缺失/权限/库版本对不上）整个服务端就起不来——老大实弹。
+// 老大点名的三个参数（只改这三个）：
+//   worldserver.conf      → Updates.EnableDatabases = 0
+//   authserver.conf       → Updates.EnableDatabases = 0
+//   modules\playerbots.conf → Playerbots.Updates.EnableDatabases = 0
+// 调用点：启动器启动、自动更新完成、点“启动服务器”、点“启动数据库”。
+const DB_UPDATE_RULES = [
+  { file: ['configs', 'worldserver.conf'], keys: ['Updates.EnableDatabases'] },
+  { file: ['configs', 'authserver.conf'], keys: ['Updates.EnableDatabases'] },
+  { file: ['configs', 'modules', 'playerbots.conf'], keys: ['Playerbots.Updates.EnableDatabases'] },
+];
+//By leewheel 2026年11月5日 游戏内时间设置：读/写 configs\modules\coa.conf 的 CoA.Clock.*
+// mode 0 = 跟随电脑本地时间；mode 1 = 每天固定时刻（hour:minute）。改完重启服务器生效。
+function clockConfFile(serverRoot) { return path.join(serverRoot, 'configs', 'modules', 'coa.conf'); }
+function clockValue(text, key, fallback) {
+  const match = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*([^\\r\\n#]+)`, 'm').exec(text);
+  if (!match) return fallback;
+  const value = Number(String(match[1]).trim());
+  return Number.isFinite(value) ? value : fallback;
+}
+async function readClock(serverRoot) {
+  let text = '';
+  try { text = await fs.readFile(clockConfFile(serverRoot), 'utf8'); } catch { return { mode: 0, hour: 8, minute: 0, configured: false }; }
+  return {
+    mode: clockValue(text, 'CoA.Clock.Mode', 0) === 1 ? 1 : 0,
+    hour: clockValue(text, 'CoA.Clock.Hour', 8),
+    minute: clockValue(text, 'CoA.Clock.Minute', 0),
+    configured: true,
+  };
+}
+async function writeClock(serverRoot, options) {
+  const file = clockConfFile(serverRoot);
+  let text = '';
+  try { text = await fs.readFile(file, 'utf8'); } catch { throw new Error('找不到 configs\\modules\\coa.conf'); }
+  const hadBom = text.charCodeAt(0) === 0xFEFF;
+  let body = hadBom ? text.slice(1) : text;
+  const mode = Number(options.mode) === 1 ? 1 : 0;
+  const hour = Math.min(23, Math.max(0, Number.isFinite(Number(options.hour)) ? Number(options.hour) : 8));
+  const minute = Math.min(59, Math.max(0, Number.isFinite(Number(options.minute)) ? Number(options.minute) : 0));
+  const put = (source, key, value) => {
+    const pattern = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=.*$`, 'm');
+    if (pattern.test(source)) return source.replace(pattern, `${key} = ${value}`);
+    return `${source.replace(/\s*$/, '')}\r\n${key} = ${value}\r\n`;
+  };
+  body = put(body, 'CoA.Clock.Mode', mode);
+  body = put(body, 'CoA.Clock.Hour', hour);
+  body = put(body, 'CoA.Clock.Minute', minute);
+  await fs.writeFile(file, body, 'utf8');
+  return { mode, hour, minute, configured: true };
+}
+
+async function enforceDbUpdatesOff(serverRoot, { notify = true } = {}) {
+  const changed = [];
+  for (const rule of DB_UPDATE_RULES) {
+    const file = path.join(serverRoot, ...rule.file);
+    let text = '';
+    try { text = await fs.readFile(file, 'utf8'); } catch { continue; }
+    //By leewheel 2026年11月5日 顺手去掉 UTF-8 BOM：带 BOM 时世界服启动会报
+    // “Config::LoadFile: Failure to read line number 1”，第一行配置被跳过。
+    const hadBom = text.charCodeAt(0) === 0xFEFF;
+    let next = hadBom ? text.slice(1) : text;
+    if (hadBom) changed.push(`${rule.file[rule.file.length - 1]} → 去掉 UTF-8 BOM`);
+    for (const key of rule.keys) {
+      const pattern = new RegExp(`^(\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*)([^\\r\\n#]+)`, 'm');
+      const match = pattern.exec(next);
+      if (!match) continue;
+      if (match[2].trim() === '0') continue;
+      next = next.replace(pattern, (all, prefix) => `${prefix}0`);
+      changed.push(`${rule.file[rule.file.length - 1]} → ${key} = ${match[2].trim()} ⇒ 0`);
+    }
+    if (next !== (hadBom ? text.slice(1) : text)) {
+      await fs.writeFile(file, next, 'utf8');
+    }
+  }
+  if (changed.length && notify) send('repack:notice', { key: 'db.updatesOff', text: `已关闭数据库自动更新（否则服务端起不来）：${changed.join('；')}` });
+  return changed;
+}
+
+//By leewheel 2026年11月6日 重建机器人（核心内置 mod-playerbots 版）。
+// 参考启动器用的是 CoA-Bots/coa_bots.py purge-bots；我们的机器人编进核心里，没有那个脚本，
+// 所以按模块自带的开关做：AiPlayerbot.DeleteRandomBotAccounts=1 → 启动一次 worldserver 让它删掉随机机器人账号
+// → 轮询 acore_auth.account 直到清空 → 停服 → 开关改回 0。玩家的角色不受影响。
+function builtInBots(serverRoot) {
+  return !!serverRoot && !config.server?.bots && fs_exists(path.join(serverRoot, 'configs', 'modules', 'playerbots.conf'));
+}
+async function writeConfValue(file, key, value) {
+  const text = await fs.readFile(file, 'utf8');
+  const pattern = new RegExp(`^([ \\t]*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*=[ \\t]*).*$`, 'm');
+  if (!pattern.test(text)) throw new Error(`${path.basename(file)} 里没有 ${key}`);
+  await fs.writeFile(file, text.replace(pattern, (all, head) => `${head}${value}`), 'utf8');
+}
+function confNumber(text, key, fallback) {
+  const match = new RegExp(`^[ \\t]*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*=[ \\t]*([^\\r\\n#]+)`, 'm').exec(text);
+  const value = match ? Number(String(match[1]).trim().replace(/^"|"$/g, '')) : NaN;
+  return Number.isFinite(value) ? value : fallback;
+}
+async function purgeBuiltInBots() {
+  const root = serverPath();
+  const confFile = path.join(root, 'configs', 'modules', 'playerbots.conf');
+  const conf = await fs.readFile(confFile, 'utf8');
+  const conns = releaseUpdate.readDbConfig(root);
+  const quote = text => (text.match(/^\s*AiPlayerbot\.RandomBotAccountPrefix\s*=\s*"([^"]*)"/m) || [])[1] || 'RNDBOT';
+  const prefix = quote(conf).replace(/'/g, "''");
+  const count = async () => {
+    const value = await releaseUpdate.mysqlQuery(root, `SELECT COUNT(*) FROM acore_auth.account WHERE username LIKE '${prefix}%'`, conns.auth || conns.world);
+    return Number(value) || 0;
+  };
+  const control = requireControl();
+  const world = control.services.find(service => /world/i.test(service.id));
+  // 这里已经在 withMysql() 里跑（MySQL 由启动器自动拉起，跑完按“原来没开就关掉”的规则还原），
+  // 所以只需要再启动一次 worldserver 让它执行删除动作。
+  const before = await count().catch(() => -1);
+  send('repack:notice', { key: 'bots.purgeStart', text: `正在重建机器人：当前随机机器人账号 ${before < 0 ? '未知' : before} 个` });
+  if (before === 0) {
+    await writeConfValue(confFile, 'AiPlayerbot.DeleteRandomBotAccounts', '0');
+    send('repack:notice', { key: 'bots.purgeDone', text: '没有随机机器人账号需要删除；重新启动服务器会生成新的机器人' });
+    return { before, after: 0 };
+  }
+  await writeConfValue(confFile, 'AiPlayerbot.DeleteRandomBotAccounts', '1');
+  let after = before;
+  try {
+    await control.start(world.id);
+    const deadline = Date.now() + 45 * 60 * 1000;
+    let last = before;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      const now = await count().catch(() => last);
+      if (now !== last) { last = now; send('repack:notice', { key: 'bots.purgeProgress', text: `正在删除随机机器人账号：还剩 ${now} 个` }); }
+      if (now === 0) break;
+      const state = (await control.status()).find(service => service.id === world.id);
+      if (!state || state.state === 'stopped') break;   // 世界服自己退出/挂掉就别死等
+    }
+    after = await count().catch(() => -1);
+  } finally {
+    await control.stop(world.id).catch(() => {});
+    await writeConfValue(confFile, 'AiPlayerbot.DeleteRandomBotAccounts', '0');
+  }
+  send('repack:notice', { key: 'bots.purgeDone', text: `机器人已重建：删除 ${before < 0 ? '?' : before} 个随机机器人账号（剩余 ${after < 0 ? '?' : after}）；重新启动服务器后会生成新的机器人` });
+  return { before, after };
+}
+
 const isPublishedFolder = folder => !!folder && Object.values(publishedFolders()).some(item => path.resolve(item).toLowerCase() === path.resolve(folder).toLowerCase());
 // 首次运行时，把同级的 Client、Server 自动填进设置（玩家已经手动选过的不覆盖）。
+//By leewheel 2026年11月4日 一律按 resolveArea 的结果落盘：换盘、改目录名、来自另一份整合包的旧绝对路径，
+// 都会在启动时修回相对写法；哪儿都找不到的目录保持原样，页面才能提示玩家目录不存在。
 async function detectPublishedFolders() {
-  const wanted = publishedFolders();
   const paths = { ...settings.installPaths };
   let changed = false;
   for (const area of ['game', 'addon', 'server']) {
-    if (paths[area] || !fs_exists(wanted[area])) continue;
-    paths[area] = path.normalize(wanted[area]);
-    changed = true;
+    const stored = paths[area] || '';
+    const effective = areaFolder(area);
+    if (!effective || !fs_exists(effective)) continue;
+    const portableForm = toStoredPath(effective);
+    if (portableForm !== stored) { paths[area] = portableForm; changed = true; }
   }
   if (!changed) return false;
   await persist({ ...settings, installPaths: paths }).catch(() => {});
   return true;
 }
+//End By leewheel
 
 function upgradeNotify(update) {
   if (update.line !== undefined) { upgradeState.log.push(update.line); if (upgradeState.log.length > 400) upgradeState.log.shift(); }
@@ -300,7 +525,8 @@ async function serverInfo() {
     botsBuiltIn: !!folder && !config.server.bots && fs_exists(path.join(folder, 'configs', 'modules', 'playerbots.conf')),
     //By leewheel 2026-11-03 机器人版本：读 playerbots.conf 固定行（打包时由 sync-bot-version.cjs 写入）
     botVersion: folder ? playerbotsConfVersion(folder) : '',
-    canPurgeBots: !!config.server.commands.purgeBots,
+    //By leewheel 2026年11月6日 内置机器人的“重建机器人”也要能用：没有外部命令时走模块自带的一次性删除开关
+    canPurgeBots: !!config.server.commands.purgeBots || builtInBots(folder),
     // The extra realms whose world runs or starts: the home page counts the server as running with them alone.
     realmsOn: folder ? (await realms.status(folder, { live: false }).catch(() => ({ realms: [] }))).realms.filter(realm => ['running', 'starting'].includes(realm.state)).map(realm => ({ key: realm.key, state: realm.state })) : [],
   };
@@ -432,7 +658,9 @@ function handle(channel, action) {
 }
 
 function registerIpc() {
-  handle('bootstrap', async () => ({ config: publicConfig(), settings, client: await clientInfo(), version: app.getVersion(), launcherUpdate: launcherUpdates.status, smoke: !!smokeDir, whatsNew: whatsNew() }));
+  //By leewheel 2026-11-05 smoke 测试跑在临时英文目录、也没有 Client/Server，不能让启动告警干扰截图测试
+  handle('bootstrap', async () => ({ config: publicConfig(), settings, client: await clientInfo(), version: app.getVersion(), launcherUpdate: launcherUpdates.status, smoke: !!smokeDir, whatsNew: whatsNew(), layout: smokeDir ? { chinesePath: false, badFolders: [] } : startupLayout() }));
+  //End By leewheel
   handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: app.getVersion() }); return true; });
   handle('window', action => {
     if (action === 'minimize') window.minimize();
@@ -462,7 +690,7 @@ function registerIpc() {
     assertFolder(folder);
     if (!(await statOrNull(path.join(folder, config.game.clientExecutable)))?.isFile()) throw new Error(`This folder does not contain ${config.game.clientExecutable}.`);
     await safePath(folder, 'Interface/AddOns/.probe', { internal: true });
-    await persist({ ...settings, installPaths: { ...settings.installPaths, game: folder } });
+    await saveInstallPath('game', folder);
     return clientInfo();
   });
   handle('client:chooseInstall', async () => {
@@ -474,7 +702,7 @@ function registerIpc() {
     const entries = await fs.readdir(folder);
     if (entries.length && !entries.some(name => name.toLowerCase() === config.game.clientExecutable.toLowerCase() || name === '.coa-launcher')) throw new Error(`Choose an empty folder, or an existing game folder containing ${config.game.clientExecutable}.`);
     if (serverPath() && path.resolve(serverPath()).toLowerCase() === folder.toLowerCase()) throw new Error('The server and the game need two different folders.');
-    await persist({ ...settings, installPaths: { ...settings.installPaths, game: folder } });
+    await saveInstallPath('game', folder);
     return clientInfo();
   });
   handle('client:check', async force => {
@@ -512,8 +740,7 @@ function registerIpc() {
   });
   handle('client:restoreSettings', async id => exclusiveFiles(async () => clientTools.restoreSettings(await gameFolder(), text(id, 40))));
   handle('client:clearCache', async () => exclusiveFiles(async () => clientTools.clearCache(await gameFolder())));
-  handle('client:openFolder', async () => {
-    if (!gamePath()) throw new Error('No game folder selected yet.');
+  handle('client:openFolder', async () => {    if (!gamePath()) throw new Error('No game folder selected yet.');
     const error = await shell.openPath(gamePath());
     if (error) throw new Error(error);
   });
@@ -632,7 +859,7 @@ function registerIpc() {
     if (!status.running) throw new Error('Start the dashboard first.');
     // The game folder chosen in "Your game" goes along (?client=), so the dashboard can fill it in (map extraction).
     const page = new URL(status.url);
-    if (settings.installPaths.addon && fs_exists(settings.installPaths.addon)) page.searchParams.set('client', settings.installPaths.addon);
+    if (addonPath() && fs_exists(addonPath())) page.searchParams.set('client', addonPath());
     // A realm's card opens the dashboard on that realm (dashboard 2.8 and later; older ones ignore it).
     if (/^[a-z]{3,12}$/.test(String(realm || ''))) page.searchParams.set('realm', realm);
     // In the player's own browser (bookmarks, tabs); the launcher's window only if Windows cannot open one.
@@ -680,7 +907,7 @@ function registerIpc() {
     if (gamePath() && path.resolve(gamePath()).toLowerCase() === folder.toLowerCase()) throw new Error('The server and the game need two different folders.');
     // The folder left and the one chosen both stay in the list of instances.
     settings.instances = [...new Set([serverPath(), folder].filter(Boolean).map(item => path.normalize(item)).concat(settings.instances))].slice(0, 12);
-    await persist({ ...settings, installPaths: { ...settings.installPaths, server: folder } });
+    await saveInstallPath('server', folder);
     return serverInfo();
   });
   // ---- instances: several server folders, one current. A new one starts in an empty folder; with
@@ -720,7 +947,7 @@ function registerIpc() {
     }
     remember(serverPath());
     remember(folder);
-    await persist({ ...settings, installPaths: { ...settings.installPaths, server: folder } });
+    await saveInstallPath('server', folder);
     return { info: await serverInfo(), ports };
   });
   handle('instance:switch', async folder => {
@@ -729,7 +956,7 @@ function registerIpc() {
     const target = path.normalize(text(folder, 400));
     if (!settings.instances.includes(target)) throw new Error('Unknown instance.');
     remember(serverPath());
-    await persist({ ...settings, installPaths: { ...settings.installPaths, server: target } });
+    await saveInstallPath('server', target);
     return serverInfo();
   });
   handle('instance:forget', async folder => {
@@ -780,7 +1007,7 @@ function registerIpc() {
       await installPackage(target);
       await network.applyNetwork(target).catch(() => {});
       settings.instances = [...new Set([serverPath(), target].filter(Boolean).map(item => path.normalize(item)).concat(settings.instances))].slice(0, 12);
-      await persist({ ...settings, installPaths: { ...settings.installPaths, server: target } });
+      await saveInstallPath('server', target);
     } finally { busyFiles = false; }
     // No game data in the package: it is taken from the player's client now (the folder stays installed if this fails).
     if (assembler.state(target).needed && gameDataPath()) await assembleServer().catch(error => send('assemble:progress', { event: 'error', message: error.message }));
@@ -857,8 +1084,8 @@ function registerIpc() {
         else await bots.install(folder);
       }
       // The game the data came from is the game of this server: its addon (SquidBots Lite) goes in it now.
-      if (!settings.installPaths.addon) await persist({ ...settings, installPaths: { ...settings.installPaths, addon: client } });
-      if (settings.installPaths.addon === client) {
+      if (!addonPath()) await saveInstallPath('addon', client);
+      if (addonPath() && path.resolve(addonPath()).toLowerCase() === path.resolve(client).toLowerCase()) {
         send('assemble:progress', { event: 'step', step: 'bots', text: 'Installing the SquidBots Lite addon' });
         await addonSync.install(folder, client, path.join(app.getPath('userData'), 'addon-backups')).catch(error => send('assemble:progress', { event: 'log', text: `Addon not installed: ${error.message}` }));
       }
@@ -937,7 +1164,7 @@ function registerIpc() {
       const version = await components.install(serverPath(), offer, dirs);
       let game = '';
       // The addon goes on into the game, as at every start (only when the game is closed).
-      if (id === 'addon' && settings.installPaths.addon) game = await addonSync.gameRunning() ? 'running' : (await addonInstall().then(() => 'installed').catch(() => 'failed'));
+      if (id === 'addon' && addonPath()) game = await addonSync.gameRunning() ? 'running' : (await addonInstall().then(() => 'installed').catch(() => 'failed'));
       if (restart) await dashboard.start(serverPath()).catch(() => {});
       componentsBusy = false;
       return { version, game, state: componentsState() };
@@ -1005,7 +1232,7 @@ function registerIpc() {
       let result = await runUpdateTool(folder, update.manifest.package.folder, 'check', []);
       if (!result.code) {
         phase('apply');
-        const client = settings.installPaths.addon && fs_exists(settings.installPaths.addon) ? ["--client", settings.installPaths.addon] : ['--no-addon'];
+        const client = addonPath() && fs_exists(addonPath()) ? ["--client", addonPath()] : ['--no-addon'];
         result = await runUpdateTool(folder, update.manifest.package.folder, 'apply', client);
       }
       update.last = result;
@@ -1061,18 +1288,18 @@ function registerIpc() {
   // The game client where the SquidBots addon goes (Interface\AddOns): chosen once, remembered. Choosing
   // Interface or AddOns by mistake is understood (the folder above is taken).
   async function pickClient() {
-    const result = await dialog.showOpenDialog(window, { title: '选择你的游戏客户端目录（内有 Ascension.exe 或 Wow.exe）', properties: ['openDirectory'], defaultPath: settings.installPaths.addon || undefined });
+    const result = await dialog.showOpenDialog(window, { title: '选择你的游戏客户端目录（内有 Ascension.exe 或 Wow.exe）', properties: ['openDirectory'], defaultPath: addonPath() || undefined });
     let folder = result.filePaths?.[0];
     if (!folder) return null;
     for (let up = 0; up < 2 && !addonSync.isClient(folder); up++) folder = path.dirname(folder);
     if (!addonSync.isClient(folder)) throw new Error('This folder has no Ascension.exe or Wow.exe: choose the folder of your game client.');
-    await persist({ ...settings, installPaths: { ...settings.installPaths, addon: folder } });
+    await saveInstallPath('addon', folder);
     return folder;
   }
-  handle('update:pickClient', async () => (await pickClient()) ?? (settings.installPaths.addon || ''));
+  handle('update:pickClient', async () => (await pickClient()) ?? (addonPath() || ''));
   // Play: starts the game client of this PC (the folder chosen for the addon), asked once when none is known.
   handle('game:play', async options => {
-    const known = settings.installPaths.addon;
+    const known = addonPath();
     const client = known && addonSync.isClient(known) ? known : await pickClient();
     if (!client) return { started: false };
     const exe = ['Ascension.exe', 'Wow.exe', 'WoW.exe'].map(name => path.join(client, name)).find(file => fs_exists(file));
@@ -1126,7 +1353,7 @@ function registerIpc() {
   };
   const addonStatus = async () => {
     // The game folder chosen for the server stands for the addon's game until one is chosen for the addon itself.
-    const chosen = settings.installPaths.addon || gamePath();
+    const chosen = addonPath() || gamePath();
     const status = addonSync.status(serverPath(), chosen);
     //By leewheel 2026-11-02 发布版：服务器里没有 CoA-Bots\Client 的插件源，游戏目录本身就算“已知客户端”，
     // 这样“开始游戏”和 realmlist 修复不需要玩家再单独选一次目录。
@@ -1139,7 +1366,7 @@ function registerIpc() {
     return { ...status, realmlist: await clientRealmlist(status.client), clientOutdated: outdated, clientTooNew: tooNew };
   };
   const addonInstall = async () => {
-    const installed = await addonSync.install(serverPath(), settings.installPaths.addon, path.join(app.getPath('userData'), 'addon-backups'));
+    const installed = await addonSync.install(serverPath(), addonPath() || gamePath(), path.join(app.getPath('userData'), 'addon-backups'));
     return { installed, status: await addonStatus() };
   };
   handle('addon:status', () => addonStatus());
@@ -1157,7 +1384,7 @@ function registerIpc() {
     const found = serverControl();
     return found ? (await found.status()).some(service => /world/i.test(service.id) && ['running', 'starting', 'stopping'].includes(service.state)) : false;
   };
-  const modulesStatus = async () => ({ ...(await modules.status(serverPath(), { squidbots: settings.modules?.squidbots !== false, client: settings.installPaths.addon || '' })), worldRunning: await worldRunning(),
+  const modulesStatus = async () => ({ ...(await modules.status(serverPath(), { squidbots: settings.modules?.squidbots !== false, client: addonPath() || '' })), worldRunning: await worldRunning(),
     // Screenshot tours only (--smoke): a module of a later CoA Bots shown as installed.
     ...(smokeDir && process.env.COA_SMOKE_DUNGEON ? { dungeonclear: { available: true, enabled: true, difficulties: ['normal', 'heroic', 'mythic'], difficultyKnown: true } } : {}),
     ...(smokeDir && process.env.COA_SMOKE_ENCHANTER ? { enchanter: { available: true, enabled: false, tiers: ['60'], costs: { 60: 1, 70: 5, 80: 10 } } } : {}) });
@@ -1236,7 +1463,7 @@ function registerIpc() {
   // The Manastorm files of the game, from the zip named in the signed feed (game closed).
   handle('modules:manastormClient', async () => {
     if (await addonSync.gameRunning()) throw new Error('Close the game first.');
-    return manastormClient.install({ client: settings.installPaths.addon, entry: feed?.manastormClient, cacheDir: path.join(app.getPath('userData'), 'downloads'), backupDir: path.join(app.getPath('userData'), 'manastorm-backups'), fetchImpl: netFetch });
+    return manastormClient.install({ client: addonPath(), entry: feed?.manastormClient, cacheDir: path.join(app.getPath('userData'), 'downloads'), backupDir: path.join(app.getPath('userData'), 'manastorm-backups'), fetchImpl: netFetch });
   });
   handle('modules:squidbots', async on => {
     if (await worldRunning()) throw new Error('Stop the server first: the bots are chosen when it starts.');
@@ -1274,7 +1501,7 @@ function registerIpc() {
     return modules.runScript(serverPath(), on === true ? 'on' : 'off', false);
   });
   handle('modules:clientPatch', async on => {
-    const client = settings.installPaths.addon;
+    const client = addonPath();
     if (!client) throw new Error('Choose your game folder first (SquidBots addon card).');
     if (await addonSync.gameRunning()) throw new Error('Close the game first.');
     await modules.setClientPatch(client, on === true);
@@ -1316,7 +1543,7 @@ function registerIpc() {
   // First click: the game folder (the one the bots installer used is offered), then the addon is copied.
   handle('addon:setup', async useSuggested => {
     const suggested = (await addonStatus()).suggested;
-    if (useSuggested === true && suggested) await persist({ ...settings, installPaths: { ...settings.installPaths, addon: suggested } });
+    if (useSuggested === true && suggested) await saveInstallPath('addon', suggested);
     else if (!(await pickClient())) return { installed: [], status: await addonStatus() };
     return addonInstall();
   });
@@ -1362,8 +1589,30 @@ function registerIpc() {
     await realms.clearOffline(serverPath(), { coa }).catch(() => {});
   };
   const prepareStart = async () => { await fixManage(serverPath()).catch(() => {}); await applyCards(serverPath()).catch(() => {}); await network.applyNetwork(serverPath()).catch(() => {}); await modules.keepRotationOff(serverPath()); await quietLogs(serverPath()); };
+  //By leewheel 2026年11月4日 老大规则：只要检测到 CoA 的世界服已经在跑（启动器起的、脚本起的、外面手动起的都算），
+  // 勾了"随服务器启动"（realm.json 的 autostart）的国度就要跟着起来。
+  // 以前只有首页"启动全部"才会带国度：单独启动世界服、或世界服从别处拉起来时，国度一直停着（老大实弹：
+  // 03:48 主服已监听 8085，reborn/wildcard/dawnrise 三个国度全是灰的）。
+  // armed 在"世界服没跑"时复位（世界服停一次再起，国度会再跟一次）；running 防重入；
+  // startEverything 自己会带国度，所以它开头先解除武装，避免两处并发启动同一个国度。
+  const realmsAuto = { armed: true, running: false };
+  const followWorldStart = async state => {
+    if (state !== 'running') { realmsAuto.armed = true; return; }
+    if (!realmsAuto.armed || realmsAuto.running) return;
+    realmsAuto.armed = false;
+    realmsAuto.running = true;
+    try {
+      await realms.queueMarked(serverPath()).catch(() => {});
+      const failed = await realms.startMarked(serverPath()).catch(error => [{ key: '', error: error.message }]);
+      if (failed.length) send('realms:failed', failed);
+      await realmsOnline().catch(() => {});
+      await applyCardNames(serverPath(), await realmCards.read(serverPath())).catch(() => {});
+    } finally { realmsAuto.running = false; }
+  };
+  //End By leewheel
   const startEverything = async () => {
     baseByRealm = false;
+    realmsAuto.armed = false; // 这个流程自己会调 startMarked，别让轮询再起一次
     await prepareStart();
     // CoA left out of "Start all" when the player chose so and a realm starts with the server: MySQL and the authserver only.
     const skipCoa = await realms.skipCoaAtStart(serverPath()).catch(() => false);
@@ -1382,7 +1631,17 @@ function registerIpc() {
     await startEverything();
     return serverInfo();
   });
-  handle('repack:start', async id => { assertServerFree(); if (assembler.state(serverPath()).needed) throw new Error('Prepare the game data from your client first (home page).'); if (id === 'all') await startEverything(); else { await prepareStart(); await requireControl().start(text(id, 30)); if (text(id, 30) === 'auth') await realmsOnline(); } return serverInfo(); });
+  handle('repack:start', async id => {
+    assertServerFree();
+    if (assembler.state(serverPath()).needed) throw new Error('Prepare the game data from your client first (home page).');
+    //By leewheel 2026年11月5日 点“启动服务器 / 启动数据库”前先关掉数据库自动更新，否则服务端起不来
+    await enforceDbUpdatesOff(serverPath(), { notify: true }).catch(() => {});
+    //By leewheel 2026年11月5日 启动服务器时先把“待办的数据库脚本”补导（上次更新时库没起来过），
+    // 导完再拉起服务，避免玩家带着没导的 SQL 进游戏。
+    await retryPendingSql().catch(() => {});
+    if (id === 'all') await startEverything(); else { await prepareStart(); await requireControl().start(text(id, 30)); if (text(id, 30) === 'auth') await realmsOnline(); }
+    return serverInfo();
+  });
   // The repack's manager only stops everything (stop-all): one service alone is stopped by the launcher itself.
   const stopCoaWorld = async () => {
     const world = requireControl().services.find(service => /world/i.test(service.id));
@@ -1412,7 +1671,7 @@ function registerIpc() {
     const deadline = Date.now() + 60000;
     while (Date.now() < deadline && await portOpen(service.port)) await new Promise(resolve => setTimeout(resolve, 1000));
   };
-  handle('repack:stop', async id => { if (id === 'all') { baseByRealm = false; await realms.stopAll(serverPath()); await requireControl().stopAll(); } else await stopOne(text(id, 30)); return serverInfo(); });
+  handle('repack:stop', async id => { if (id === 'all') { baseByRealm = false; await stopAllServices(); } else await stopOne(text(id, 30)); return serverInfo(); });
   handle('repack:tail', id => requireControl().tail(text(id, 30)));
   // ---- extra realms (Wildcard, Warcraft Reborn, Free Pick) beside the CoA realm: same MySQL, authserver and bot worldserver
   // The CoA realm (the repack's own world) beside the extra ones, for the Realms page.
@@ -1628,9 +1887,14 @@ function registerIpc() {
   });
   handle('repack:purgeBots', async () => {
     const found = requireControl();
-    if (!config.server.commands.purgeBots || !inspectRepack(serverPath()).bots) throw new Error('The bots are not installed in this server.');
-    if ((await found.status()).some(service => service.id === 'world' && service.state !== 'stopped')) throw new Error('Stop the worldserver first.');
-    return onePurge('Conquest of Azeroth', () => found.run(config.server.commands.purgeBots, 'purge-bots'));
+    const builtIn = builtInBots(serverPath());
+    if (!config.server.commands.purgeBots && !builtIn) throw new Error('这个服务端里没有安装机器人。');
+    if (!inspectRepack(serverPath()).bots && !builtIn) throw new Error('这个服务端里没有安装机器人。');
+    if ((await found.status()).some(service => service.id === 'world' && service.state !== 'stopped')) throw new Error('请先停止世界服务器。');
+    //By leewheel 2026年11月6日 有外部命令就照参考启动器的方式跑；核心内置版改走 purgeBuiltInBots()
+    return onePurge('Conquest of Azeroth', () => config.server.commands.purgeBots
+      ? found.run(config.server.commands.purgeBots, 'purge-bots')
+      : purgeBuiltInBots());
   });
 
   // ---- the bot package ----
@@ -1833,7 +2097,7 @@ function registerIpc() {
     if (!previous?.path || !inspectRepack(previous.path).repack) throw new Error('The previous version is no longer there.');
     const found = requireControl();
     if ((await found.status()).some(service => service.state !== 'stopped' && service.state !== 'foreign')) await found.stopAll();
-    await persist({ ...settings, installPaths: { ...settings.installPaths, server: path.resolve(previous.path) } });
+    await saveInstallPath('server', path.resolve(previous.path));
     return serverInfo();
   });
   handle('upgrade:run', async options => {
@@ -1905,7 +2169,7 @@ function registerIpc() {
 
       upgradeNotify({ step: 'switch' });
       await fs.writeFile(path.join(target, '.coa-launcher', 'previous.json'), JSON.stringify({ path: oldRoot, release: old.release, switchedAt: new Date().toISOString() }, null, 2));
-      await persist({ ...settings, installPaths: { ...settings.installPaths, server: target } });
+      await saveInstallPath('server', target);
       say(`The launcher now uses ${target}. The previous version stays in ${oldRoot}.`);
       upgradeNotify({ step: 'done' });
       return { ok: true, folder: target, previous: oldRoot, warnings, info: await serverInfo() };
@@ -2005,7 +2269,7 @@ function registerIpc() {
       await fs.mkdir(path.join(target, '.coa-launcher'), { recursive: true });
       await fs.writeFile(path.join(target, '.coa-launcher', 'previous.json'), JSON.stringify({ path: old, release: before.release, switchedAt: new Date().toISOString(), reinstall: true }, null, 2));
       settings.instances = [...new Set([old, target].map(item => path.normalize(item)).concat(settings.instances))].slice(0, 12);
-      await persist({ ...settings, installPaths: { ...settings.installPaths, server: target } });
+      await saveInstallPath('server', target);
       switched = true;
 
       upgradeNotify({ step: 'prepare' });
@@ -2056,7 +2320,7 @@ function registerIpc() {
       if (switched) {
         await Promise.resolve(assembler.stopMmaps(target)).catch(() => {});
         await requireControl().stopAll().catch(() => {});
-        await persist({ ...settings, installPaths: { ...settings.installPaths, server: old } });
+        await saveInstallPath('server', old);
         say(`The launcher is back on ${old}: nothing was changed there. The unfinished install stays in ${target} for the support.`);
       }
       throw error;
@@ -2220,27 +2484,100 @@ function registerIpc() {
     }
     return { count: items.length, items, configs: configsDir };
   });
+  //By leewheel 2026-11-05 本机核心的编译时间：发布包里的 worldserver.exe 时间戳。
+  // 用途：补丁发布时间早于这个时间，说明补丁内容早就编进当前整合包了，不能再提示“有新版本”。
+  const coreBuiltAt = async () => {
+    const root = serverPath();
+    if (!root) return 0;
+    const relative = String(require('./layout.cjs').serverLayout(root).world || 'worldserver.exe');
+    const stat = await fs.stat(path.join(root, ...relative.split('/'))).catch(() => null);
+    return stat ? stat.mtimeMs : 0;
+  };
+  //End By leewheel
   handle('release:check', async () => {
     const root = launcherRootFolder();
     const installed = await releaseUpdate.installedVersion(root);
     const coreRelease = serverPath() ? String(inspectRepack(serverPath()).release || '') : '';
+    const history = await releaseUpdate.readHistory(root);
+    const current = installed || coreRelease;
+    const builtAt = await coreBuiltAt();
     let releases = [];
     let error = '';
-    try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '' }); } catch (caught) { error = caught.message; }
+    //By leewheel 2026-11-05 多取一些 release（最多 30 个），否则只装最新一个会漏掉中间的补丁
+    try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); } catch (caught) { error = caught.message; }
+    //End By leewheel
     const latest = releases[0] || null;
     return {
-      current: installed || coreRelease,
+      current,
+      builtAt,
       latest,
       asset: latest ? releaseUpdate.pickAsset(latest) : null,
+      //By leewheel 2026-11-05 待装补丁队列：按发布顺序【旧 → 新】，供界面一次装齐
+      pending: releaseUpdate.pendingReleases({ releases, history, current, builtAt }),
+      //End By leewheel
       releases: releases.slice(0, 10),
-      history: await releaseUpdate.readHistory(root),
+      history,
       updateDir: path.join(root, 'Update'),
       error,
     };
   });
   handle('release:history', () => releaseUpdate.readHistory(launcherRootFolder()));
+  //By leewheel 2026年11月4日 每次打开启动器自动查一次新版本：只读 releases 元数据（不下载、不改文件），
+  // 没网就静默失败。函数赋值给模块级变量，供块外的启动定时器调用（见文件顶部 autoCheckRelease 声明）。
+  autoCheckRelease = () => {
+    if (releaseAutoPromise) return releaseAutoPromise;
+    releaseAutoPromise = (async () => {
+      const note = line => {
+        //By leewheel 2026年11月4日 自动查更新留一行痕，出问题（比如都被墙）时能查：
+        // 只写 userData\release-check.log，超过 64KB 就清空重来，不堆文件。
+        // 注意：本文件的 fs 是 node:fs/promises，同步 API 要单独 require，否则这里静默失败（踩过）。
+        try {
+          const fsSync = require('node:fs');
+          const file = path.join(app.getPath('userData'), 'release-check.log');
+          const stat = fsSync.statSync(file, { throwIfNoEntry: false });
+          if (stat && stat.size > 64 * 1024) fsSync.rmSync(file, { force: true });
+          fsSync.appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+        } catch {}
+      };
+      try {
+        const root = launcherRootFolder();
+        const installed = await releaseUpdate.installedVersion(root);
+        const current = installed || (serverPath() ? String(inspectRepack(serverPath()).release || '') : '');
+        const history = await releaseUpdate.readHistory(root);
+        //By leewheel 2026-11-05 自检改按"还缺几个补丁"判断：第一次运行 history 为空时要能发现全部补丁，
+        // 而不是只看最新一个；全部装完后 pending 为空就不会再弹更新。
+        const releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 });
+        const pending = releaseUpdate.pendingReleases({ releases, history, current, builtAt: await coreBuiltAt() });
+        const latest = pending.length ? pending[pending.length - 1] : (releases[0] || null);
+        if (!latest) { note(`已是最新（未发布任何版本） current=${current || '?'}`); send('release:available', { found: false, current }); return null; }
+        const asset = latest.asset || releaseUpdate.pickAsset(latest);
+        const newer = pending.length > 0;
+        const info = newer ? {
+          version: latest.version, current, pendingCount: pending.length,
+          notes: String(latest.notes || '').slice(0, 4000),
+          publishedAt: latest.publishedAt, url: latest.url,
+          asset,
+        } : null;
+        note(newer ? `发现 ${pending.length} 个待装补丁，最新 ${latest.version}（当前 ${current || '?'}，资源 ${asset?.name || '无'}）` : `已是最新 current=${current || '?'} 待装 0 个`);
+        //End By leewheel
+        send('release:available', info ? { found: true, info } : { found: false, current, latest: latest.version });
+        return info;
+      } catch (error) {
+        note(`检查失败：${String(error.message || error).slice(0, 160)}`);
+        send('release:available', { found: false, error: String(error.message || error).slice(0, 200) });
+        return null;
+      }
+    })();
+    return releaseAutoPromise;
+  };
+  handle('release:autoCheck', async () => { const info = await autoCheckRelease(); return { found: !!info, info }; });
+  //By leewheel 2026年11月4日 定时器就放在定义旁边（同一作用域），不再从别处引用函数名——
+  // 之前把定时器写在 main 末尾、函数写在这里，跨作用域拿不到就是 ReferenceError。
+  if (!smokeDir) setTimeout(() => autoCheckRelease().catch(() => {}), 3000).unref();
   handle('release:cancel', () => { try { releaseAbort?.abort(); } catch {} return true; });
-  handle('release:apply', async options => {
+  //By leewheel 2026-11-05 单个补丁的安装流程抽成函数：队列与单独安装共用同一段实现。
+  // queue = { index, total, last } 时表示处于队列中，中间补丁不发"完成"进度，避免界面提前收工。
+  async function applyOnePatch(options, queue = null) {
     if (releaseBusy) throw new Error('更新正在进行中，请等它完成。');
     if (!options?.asset?.url) throw new Error('没有可用的更新包。');
     const root = launcherRootFolder();
@@ -2250,28 +2587,82 @@ function registerIpc() {
     if (!fs_exists(serverRoot) || !fs_exists(clientRoot)) throw new Error('先把目录整理成 Server 与 Client 两个目录（启动器会自动整理）。');
     releaseBusy = true;
     releaseAbort = new AbortController();
+    Object.assign(releaseState, { busy: true, version, phase: 'download', message: '准备中', pct: 0, done: false, error: '', result: null, at: new Date().toISOString() });
     const folder = path.join(root, 'Update', version);
     const zip = path.join(folder, options.asset.name || 'update.zip');
     const extract = path.join(folder, 'extracted');
-    const progress = payload => send('release:progress', payload);
+    // 每一次进度都同步进主进程状态：界面关了再打开，也能拿到“现在到哪一步了”
+    const progress = payload => {
+      //By leewheel 2026-11-05 队列里只有最后一个补丁才允许报"完成"，中间改为"第 n/N 个完成，继续下一个"
+      const actual = queue && !queue.last && payload.phase === 'done'
+        ? { ...payload, phase: 'apply', pct: null, message: `第 ${queue.index}/${queue.total} 个补丁完成，继续下一个` }
+        : payload;
+      Object.assign(releaseState, {
+        busy: true,
+        version,
+        phase: actual.phase || releaseState.phase,
+        message: actual.message || releaseState.message,
+        pct: typeof actual.pct === 'number' ? actual.pct : releaseState.pct,
+      });
+      send('release:progress', actual);
+      //End By leewheel
+    };
     try {
       await fs.rm(folder, { recursive: true, force: true });
       await fs.mkdir(folder, { recursive: true });
       progress({ phase: 'download', version, message: `正在下载 ${options.asset.name}`, pct: 0 });
-      await releaseUpdate.download(options.asset.url, zip, {
+      //By leewheel 2026年11月4日 下载走“国内镜像优先、GitHub 最后”（镜像列表在 launcher.config.json 的 downloadMirrors）
+      const fetched = await releaseUpdate.download(options.asset.url, zip, {
         fetchImpl: netFetch,
         signal: releaseAbort.signal,
+        mirrors: config.downloadMirrors,
         onProgress: (done, total) => progress({ phase: 'download', version, done, total, pct: total ? Math.floor((done / total) * 100) : null, message: '正在下载' }),
       });
+      progress({ phase: 'download', version, pct: 100, message: fetched.mirror ? `下载完成（镜像 ${fetched.mirror}）` : '下载完成（GitHub 直连）' });
       progress({ phase: 'extract', version, message: '正在解压', pct: null });
       await releaseUpdate.extractZip(zip, extract, line => progress({ phase: 'extract', version, message: String(line).slice(0, 200), pct: null }));
       progress({ phase: 'apply', version, message: '正在归位到 Server / Client', pct: null });
+      //By leewheel 2026年11月4日 归位前必须先停服：SQL 要导库、exe/配置/MPQ 要被覆盖，
+      // 世界服还在跑会锁住文件、还会往库里写数据。国度与主服世界服先停（各自存角色），
+      // 然后把 MySQL 拉起来，保证按库名导入 SQL 用的是活的数据库连接。
+      progress({ phase: 'apply', version, message: '正在停止服务器（世界服要存角色，可能要 1~2 分钟）', pct: null });
+      await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null })).catch(() => {});
+      await (serverControl()?.start('mysql') || Promise.resolve()).catch(() => {});
+      //By leewheel 2026年11月5日 端口不猜：直接读 worldserver.conf 的三条连接串（世界服连哪个库就导哪个库）。
+      // 等不到库也不再中断更新：文件照常归位，SQL 记成待办，下次启动服务器时自动补导。
+      const dbConns = releaseUpdate.readDbConfig(serverRoot);
+      progress({ phase: 'sql', version, message: '正在等待数据库就绪', pct: null });
+      const mysqlReady = await releaseUpdate.waitForMysql(serverRoot, {
+        conn: dbConns.world || dbConns.auth || dbConns.characters || null,
+        timeoutMs: 120000,
+        onLine: line => progress({ phase: 'sql', version, message: String(line).slice(0, 200), pct: null }),
+      });
+      //By leewheel 2026年11月5日 兜底：worldserver.conf 那套账号连不上时，再用 mysql/admin-client.ini
+      // （trinity 账号）试一次；两条都通不了才转“待办”，无论如何都不让玩家去手动开库。
+      let usableConns = dbConns;
+      if (!mysqlReady) {
+        const adminReady = await releaseUpdate.waitForMysql(serverRoot, {
+          conn: null,
+          timeoutMs: 20000,
+          onLine: line => progress({ phase: 'sql', version, message: String(line).slice(0, 200), pct: null }),
+        });
+        if (adminReady) { usableConns = null; progress({ phase: 'sql', version, message: '数据库已就绪（改用 admin-client.ini 的连接）', pct: null }); }
+        else progress({ phase: 'sql', version, message: '数据库暂未就绪：先归位文件，SQL 转为待办，下次启动服务器时自动补导', pct: null });
+      }
       const result = await releaseUpdate.applyUpdate({
         root, world: extract, serverRoot, clientRoot,
         onPhase: phase => progress({ phase, version, message: `正在处理：${phase}`, pct: null }),
         onLine: line => progress({ phase: 'apply', version, message: String(line).slice(0, 300), pct: null }),
         importSqlFiles: options.importSql !== false,
+        conns: usableConns,
+        waitMs: mysqlReady || usableConns === null ? 15000 : 5000,
       });
+      //By leewheel 2026年11月5日 没导成的 SQL 记成待办（.coa-launcher/pending-sql.json），
+      // 下次启动服务器 / 下次开启动器时自动补导，绝不要求玩家手动开库。
+      if (result.sqlPending) await savePendingSql(root, result.sqlPending, options.version || version);
+      else await clearPendingSql(root);
+      //By leewheel 2026年11月5日 更新包会覆盖 configs：更新完成后必须再把数据库自动更新关掉
+      await enforceDbUpdatesOff(serverRoot, { notify: false }).catch(() => {});
       const entry = { version: options.version || version, tag: options.tag || '', asset: options.asset.name, at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings };
       await releaseUpdate.recordVersion(root, entry);
       // 更新完是否删除 Update 临时目录（玩家在界面上勾选）
@@ -2282,10 +2673,145 @@ function registerIpc() {
         progress({ phase: 'done', version, message: `更新完成，临时文件保留在 ${folder}`, pct: 100, result: entry, kept: folder });
       }
       return { ...entry, folder: options.deleteAfter !== false ? '' : folder };
+    } catch (error) {
+      const message = String(error?.message || error);
+      Object.assign(releaseState, { busy: false, done: false, error: message, message: '更新失败' });
+      //By leewheel 2026年11月5日 老大要能复制失败原因：除了界面可选中，再落一份日志文件，随时能打开/发人。
+      try {
+        const dir = path.join(app.getPath('userData'), 'logs');
+        await fs.mkdir(dir, { recursive: true });
+        const errorLog = path.join(dir, `release-error-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
+        const text = [
+          `时间：${new Date().toLocaleString('zh-CN')}`,
+          `版本：${releaseState.version || '(未知)'}`,
+          `阶段：${releaseState.phase || '(未知)'}`,
+          `信息：${message}`,
+          '',
+          String(error?.stack || ''),
+        ].join('\n');
+        await fs.writeFile(errorLog, text, 'utf8');
+        releaseState.errorLog = errorLog;
+        send('release:progress', { phase: releaseState.phase || 'apply', message: `更新失败：${message}`, error: message, errorLog, pct: releaseState.pct });
+      } catch { /* 日志写不了也不能盖住原始错误 */ }
+      throw error;
     } finally {
       releaseBusy = false;
       releaseAbort = null;
+      //By leewheel 2026-11-05 队列中只有最后一个补丁才把整轮标成完成，中间保持"进行中"；失败一律停
+      releaseState.busy = !!(queue && !queue.last && !releaseState.error);
+      if (!releaseState.error && (!queue || queue.last)) { releaseState.done = true; releaseState.phase = 'done'; releaseState.pct = 100; }
+      releaseState.result = { version: releaseState.version, done: releaseState.done, error: releaseState.error };
+      //End By leewheel
     }
+  }
+  //By leewheel 2026-11-05 补丁队列：按发布顺序【旧 → 新】算出还缺哪些，再逐个下载/归位/记录版本。
+  // 一个成功才进下一个，任何一个失败立刻停止（已装的不回滚，下次重开只会补剩下的）。
+  handle('release:apply', async options => {
+    if (releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    return applyOnePatch(options);
+  });
+  handle('release:applyAll', async options => {
+    if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    const root = launcherRootFolder();
+    // 优先用界面确认过的队列，避免检查之后又有新 release 插队；没传就现场重算一次
+    let queue = Array.isArray(options?.queue) ? options.queue.filter(item => item?.asset?.url) : [];
+    if (!queue.length) {
+      const history = await releaseUpdate.readHistory(root);
+      const installed = await releaseUpdate.installedVersion(root);
+      const current = installed || (serverPath() ? String(inspectRepack(serverPath()).release || '') : '');
+      let releases = [];
+      try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); }
+      catch (error) { throw new Error(`读取 GitHub 更新列表失败：${error.message}`); }
+      queue = releaseUpdate.pendingReleases({ releases, history, current, builtAt: await coreBuiltAt() });
+    }
+    if (!queue.length) throw new Error('没有需要安装的补丁。');
+    releaseQueueBusy = true;
+    const applied = [];
+    try {
+      for (let i = 0; i < queue.length; i++) {
+        const item = queue[i];
+        const step = { index: i + 1, total: queue.length, last: i === queue.length - 1 };
+        send('release:progress', { phase: 'download', version: item.version, message: `正在安装第 ${step.index}/${step.total} 个补丁：${item.version}`, pct: 0 });
+        applied.push(await applyOnePatch({
+          version: item.version, tag: item.tag, asset: item.asset,
+          deleteAfter: options?.deleteAfter !== false, importSql: options?.importSql !== false,
+        }, step));
+      }
+      const last = applied[applied.length - 1] || {};
+      return { applied, total: queue.length, version: last.version || '', files: last.files, dbc: last.dbc, sql: last.sql, warnings: last.warnings };
+    } finally { releaseQueueBusy = false; }
+  });
+  //End By leewheel
+  //By leewheel 2026年11月5日 界面重开/重载后先问主进程：正在更新？已经更新完？——据此决定给不给“开始更新”按钮
+  handle('release:state', () => ({ ...releaseState }));
+  //By leewheel 2026年11月5日 界面/自检也能主动关一次数据库自动更新（三个参数），并回报改了哪些
+  handle('repack:dbUpdatesOff', async () => enforceDbUpdatesOff(serverPath() || launcherRootFolder(), { notify: false }));
+  //By leewheel 2026年11月5日 游戏内时间：读写 configs\modules\coa.conf 里的 CoA.Clock.Mode/Hour/Minute
+  handle('clock:get', async () => readClock(serverPath()));
+  handle('clock:set', async options => writeClock(serverPath(), options || {}));
+
+  //By leewheel 2026年11月6日 BUG 反馈（对齐参考启动器 PlusLauncherGeneralVersion）：
+  // 产品名必须写 COA，否则上传点不认；zip 里放 BUG信息.txt / 环境信息.json / 截图 / 日志尾部。
+  handle('bugreport:preview', async () => {
+    const root = launcherRootFolder();
+    const serverRoot = path.join(root, 'Server');
+    const clientRoot = path.join(root, 'Client');
+    const running = (await serverControl()?.status().catch(() => []) || []).some(service => /world/i.test(service.id) && service.state === 'running');
+    const env = bugReport.collectEnv({ root, serverRoot, clientRoot, launcherVersion: app.getVersion(), running });
+    return {
+      endpoint: config.bugReport?.endpoint || bugReport.DEFAULT_ENDPOINT,
+      product: config.bugReport?.product || bugReport.DEFAULT_PRODUCT,
+      env,
+    };
+  });
+  handle('bugreport:pickScreenshots', async () => {
+    const result = await dialog.showOpenDialog(window, {
+      title: '选择 BUG 截图（可多选）',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'bmp', 'gif'] }],
+    });
+    return result.canceled ? [] : result.filePaths;
+  });
+  handle('bugreport:submit', async options => {
+    const root = launcherRootFolder();
+    const serverRoot = path.join(root, 'Server');
+    const clientRoot = path.join(root, 'Client');
+    const endpoint = config.bugReport?.endpoint || bugReport.DEFAULT_ENDPOINT;
+    const product = config.bugReport?.product || bugReport.DEFAULT_PRODUCT;
+    send('bugreport:progress', { phase: 'collect', pct: 5, message: '正在收集环境信息…' });
+    const running = (await serverControl()?.status().catch(() => []) || []).some(service => /world/i.test(service.id) && service.state === 'running');
+    const built = await bugReport.buildArchive({
+      root, serverRoot, clientRoot,
+      launcherVersion: app.getVersion(),
+      running,
+      options: options || {},
+    });
+    send('bugreport:progress', { phase: 'zip', pct: 20, message: `已打包（${built.zipName}），正在上传…` });
+    try {
+      const result = await bugReport.submit({
+        endpoint, product,
+        zipPath: built.zipPath, zipName: built.zipName,
+        env: built.env, payload: built.payload,
+        onProgress: payload => send('bugreport:progress', payload),
+      });
+      return { ...result, zipName: built.zipName };
+    } finally {
+      await fs.rm(built.zipPath, { force: true }).catch(() => {});
+    }
+  });
+  //By leewheel 2026年11月5日 SQL 待办：更新时数据库没起来就先记下来（.coa-launcher/pending-sql.json），
+  // 下次启动服务器/下次开启动器时自动补导——绝不让玩家“手动启动 MySQL 再重试”。
+  retryPendingSql().catch(() => {});
+  //By leewheel 2026年11月5日 启动器一启动就把数据库自动更新关掉（三份配置）
+  if (serverPath()) enforceDbUpdatesOff(serverPath()).catch(() => {});
+  //By leewheel 2026年11月5日 更新失败时老大要能把原因发出来：给界面“复制到剪贴板”和“打开文件”两个通用接口
+  handle('clipboard:write', text => { clipboard.writeText(String(text ?? '')); return true; });
+  handle('shell:openPath', async target => {
+    const file = String(target || '');
+    if (!file) throw new Error('没有可打开的文件');
+    const error = await shell.openPath(file);
+    if (error) throw new Error(error);
+    return true;
   });
   // 首次运行把根目录整理成 启动器 + Client + Server（只做一次，结果写 .coa-launcher/layout.json）
   handle('layout:normalize', async () => {
@@ -2447,7 +2973,7 @@ const DEMO_MANIFEST = { version: '2.4', release: 'main-20261020-0123abcd', from:
 function repackUpdateState() {
   if (demoUpdate()) return { busy: update.busy, phase: update.phase, last: update.last, state: update.last && !update.last.error ? 'current' : demoUpdate(), here: { release: 'main-20261014-ad8370da', bots: '2.3' }, manifest: DEMO_MANIFEST };
   const folder = serverPath();
-  const base = { busy: update.busy, phase: update.phase, last: update.last, listError: update.error, addonClient: settings.installPaths.addon || '' };
+  const base = { busy: update.busy, phase: update.phase, last: update.last, listError: update.error, addonClient: addonPath() || '' };
   let diskFree = null;
   try { const disk = require('node:fs').statfsSync(folder); diskFree = disk.bavail * disk.bsize; } catch {}
   return folder && fs_exists(folder) ? { ...base, diskFree, ...repackUpdate.status(folder, update.manifest) } : { ...base, state: 'noserver', manifest: update.manifest };
@@ -2665,14 +3191,32 @@ async function anyServiceRunning() {
 function closingLog(line) {
   try { require('node:fs').appendFileSync(path.join(app.getPath('userData'), 'closing.log'), `${new Date().toISOString()} ${line}\n`); } catch {}
 }
+//By leewheel 2026年11月4日 停服（国度 + 主服）统一入口：国度和主服世界服【同时】停（两边各自存角色，互不依赖），
+// authserver 随后，MySQL 最后——世界服存角色要用数据库。以前是"国度全停完(最多300秒) → 再停主服(最多300秒)"，
+// 串起来最坏十分钟，老大反馈"停止服务器特别慢"就是这个。返回 { realmsFailed } 让调用方决定还能不能停库。
+async function stopAllServices(log = () => {}) {
+  const root = serverPath();
+  const control = serverControl();
+  const worldStop = control
+    ? control.stop('world').then(() => log('主服世界服已停'), error => log('主服世界服停机失败: ' + error.message))
+    : Promise.resolve();
+  let realmsFailed = false;
+  if (root) await realms.stopAll(root).then(() => log('国度已停'), error => { realmsFailed = true; log('国度停机失败: ' + error.message); });
+  await worldStop;
+  if (control) {
+    await control.stop('auth').catch(error => log('登录服停机失败: ' + error.message));
+    // 国度还在存角色时绝不能停库，否则角色数据直接丢。
+    if (realmsFailed) log('国度仍在存角色：数据库保持运行');
+    else await control.stop('mysql').catch(error => log('数据库停机失败: ' + error.message));
+  }
+  return { realmsFailed };
+}
 async function stopEverything() {
   const root = serverPath();
   closingLog(`stopEverything: root=${root} realms=${typeof realms?.stopAll} control=${!!serverControl()}`);
-  // 先停国度（世界服要保存角色），再停主服（auth → world → MySQL），最后面板
-  if (root) await realms.stopAll(root).then(() => closingLog('国度已停'), error => closingLog('国度停机失败: ' + error.message));
-  const control = serverControl();
-  if (control) await control.stopAll().then(() => closingLog('主服已停'), error => closingLog('主服停机失败: ' + error.message));
+  await stopAllServices(closingLog);
   try { dashboard.stop(); } catch {}
+  const control = serverControl();
   const left = control ? (await control.status().catch(() => [])).filter(service => service.state !== 'stopped' && service.state !== 'foreign') : [];
   closingLog('剩余服务: ' + JSON.stringify(left.map(service => `${service.id}:${service.state}`)));
 }
@@ -2722,10 +3266,22 @@ function whatsNew() {
 }
 
 async function main() {
-  config = loadConfig(path.join(__dirname, '../launcher.config.json'), path.join(app.getPath('userData'), 'launcher.config.json'));
-  settingsFile = path.join(app.getPath('userData'), 'settings.json');
+  //By leewheel 2026年11月4日 配置跟着整合包走：<root>\Server\configs\（启动时没有就按默认生成一份）。
+  // 先整理根目录（散文件 → Client\ / Server\），再定配置与设置文件的位置；目录不可写时退回 %APPDATA%。
+  const portableAllowed = app.isPackaged && !smokeDir && !process.env.COA_LAUNCHER_PROFILE;
+  const launchRoot = launcherRootFolder();
+  if (portableAllowed && !(await isLayoutNormalized(launchRoot))) {
+    await normalizeLayout(launchRoot, { log: line => send('repack:notice', { key: 'layout.move', text: line }) }).catch(error => send('repack:notice', { key: 'layout.failed', text: `目录整理失败：${error.message}` }));
+  }
+  const portable = portableAllowed ? portableDir(launchRoot) : '';
+  const bundledConfig = path.join(__dirname, '../launcher.config.json');
+  config = loadConfig(bundledConfig, [ensureConfigFile(portable, bundledConfig), path.join(app.getPath('userData'), 'launcher.config.json')]);
+  settingsFile = settingsFileOf(portable, path.join(app.getPath('userData'), 'settings.json'));
+  // 老版本把设置锁在 %APPDATA%：便携文件还没有时先搬过来，玩家原来的选择不丢。
+  if (!fs_exists(settingsFile)) migrateSettings(settingsFile, path.join(app.getPath('userData'), 'settings.json'));
   const firstRun = !(await statOrNull(settingsFile).catch(() => null));
   settings = await readSettings(settingsFile);
+  //End By leewheel
   // A fresh install of the server edition starts with the classic skin and its emblem.
   if (firstRun && config.edition === 'server') settings.theme = 'abyss';
   // A fresh install has nothing « new » to show: this version counts as seen.
@@ -2739,14 +3295,9 @@ async function main() {
   // Windows shows notifications only for an app with its own id (the installer's appId; the exe itself when run from the sources).
   if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? (config.edition === 'server' ? 'org.squidbots.server' : 'org.coa.launcher-lite') : process.execPath);
   //By leewheel 2026-11-02 同级的 Client\ 与 Server\ 自动识别，玩家不需要再手动指目录
-  //By leewheel 2026-11-03 首次运行先整理根目录结构（散文件 → Server\ / Client\）；只在打包版做，开发模式不动源码目录
-  if (app.isPackaged && !smokeDir) {
-    const root = launcherRootFolder();
-    if (!(await isLayoutNormalized(root))) {
-      await normalizeLayout(root, { log: line => send('repack:notice', { key: 'layout.move', text: line }) }).catch(error => send('repack:notice', { key: 'layout.failed', text: `目录整理失败：${error.message}` }));
-    }
-  }
   await detectPublishedFolders();
+  //By leewheel 2026年11月4日 设置文件也随包生成：首次启动没有 launcher-settings.json 时写出默认配置（目录为相对写法）
+  if (!fs_exists(settingsFile)) await writeSettings(settingsFile, settings).catch(() => {});
   createUpdaters();
   launcherUpdates = createLauncherUpdates(app, { feedUrl: config.launcherUpdateUrl, key: config.launcherUpdateKey, fetchImpl: netFetch }, status => send('launcher:update', status), async () => {
     if (busyFiles || updater?.busy) throw new Error('Wait for the current operation to finish.');
@@ -2797,9 +3348,15 @@ async function main() {
   window.on('closed', () => { window = null; });
   await window.loadURL(APP_URL);
   if (smokeDir) { runSmoke().catch(error => { console.error(error); app.exit(1); }); return; }
+  //By leewheel 2026年11月4日 世界服状态每 5 秒问一次：一旦它"在跑"，就把勾选随服务器启动的国度带起来。
+  // 状态查询不再只在窗口可见/未最小化时才做（最小化到托盘时国度也要能跟着启动），推送界面仍沿用原来的可见性判断。
   setInterval(async () => {
     const found = serverControl();
-    if (window && window.isVisible() && !window.isMinimized() && found) send('repack:services', await found.status().catch(() => []));
+    if (!found) return;
+    const services = await found.status().catch(() => []);
+    if (window && window.isVisible() && !window.isMinimized()) send('repack:services', services);
+    const world = services.find(service => /world/i.test(service.id));
+    if (world) followWorldStart(world.state).catch(() => {});
   }, 5000).unref();
   //By leewheel 2026-11-02 退出（托盘/系统关机/窗口关闭）前先优雅停止服务器，避免世界服来不及保存角色数据
   let quittingServer = false;

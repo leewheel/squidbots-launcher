@@ -97,7 +97,9 @@ test('settings keep a valid realmlist only', () => {
   assert.equal(sanitize({ realmlist: '192.168.1.20' }).realmlist, '192.168.1.20');
   assert.equal(sanitize({ realmlist: 'play.example.org:3725' }).realmlist, 'play.example.org:3725');
   assert.equal(sanitize({ realmlist: 'x"; del C:' }).realmlist, '');
-  assert.deepEqual(sanitize({ installPaths: { game: 'C:\\Games\\CoA', 'bad key': 'C:\\x', server: 'relative' } }).installPaths, { game: path.normalize('C:\\Games\\CoA') });
+  //By leewheel 2026年11月4日 目录允许相对写法（跟着整合包走），但 .. 越界的相对路径一律丢掉
+  assert.deepEqual(sanitize({ installPaths: { game: 'C:\\Games\\CoA', 'bad key': 'C:\\x', server: 'Client', addon: 'Data/Interface', ahbot: '..\\Windows', mysql: 'a/../b' } }).installPaths,
+    { game: path.normalize('C:\\Games\\CoA'), server: 'Client', addon: path.join('Data', 'Interface') });
 });
 
 test('the support report is a real zip and holds no password', async () => {

@@ -73,5 +73,11 @@
     "multirace": false
   },
   "edition": "server",
-  "feedUrl": ""
+  "feedUrl": "",
+  "downloadMirrors": [
+    "https://ghfast.top/",
+    "https://ghproxy.net/",
+    "https://github.moeyy.xyz/",
+    "https://hub.gitmirror.com/"
+  ]
 }

@@ -311,19 +311,20 @@ function homeView() {
     const direct = repack?.sha256 && repack?.bytes;
     const gameOk = !!s.client?.path;
     const packageVersion = (/\d+\.\d+(?:\.\d+)?/.exec(repack?.name || '') || [])[0] || repack?.release || '';
-    const first = direct
-      ? `<button class="split-button update" data-action="install-server" ${p || !gameOk ? 'disabled' : ''}><span class="split-main">${icon('download')}<span><strong>${esc(t('install.title', 'Install the server'))}</strong><small>${esc(t('install.package', 'SquidBots {version} · {size}', { version: packageVersion, size: formatBytes(repack.bytes) }))}</small><small class="muted">${esc(t('install.hint', 'Downloaded and installed by the launcher, in an empty folder you choose.'))}</small></span></span></button>${progress}`
-      : `<button class="split-button ready" data-tab="server"><span class="split-main">${icon('download')}<span><strong>${esc(t('home.install', 'Install'))}</strong></span></span></button>`;
-    return `<div class="page classic home-page"><section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1><p class="status-line">${esc(direct ? t('assemble.noServer', 'No server yet: the launcher downloads our server (about 150 MB, without any game data), then takes the game data from your own client.') : t('home.noServer', 'No server yet: install the CoA repack with its bots in a few clicks, or show the folder of the one you have.'))}</p>
+    //By leewheel 2026-11-05 老大要求：删除"安装服务器"和"我已经有服务器文件夹"两个按钮，
+    // 完整整合包只从百度网盘下载；这里改成常驻引导文案，不再给在线安装/导入入口。
+    const first = `<p class="status-line warn">请从百度网盘下载完整整合包</p><p class="muted small">解压后请保持 Client 与 Server 两个文件夹原样，再重新启动启动器。</p>`;
+    //End By leewheel
+    return `<div class="page classic home-page">${releaseBanner()}<section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1><p class="status-line">${esc(direct ? t('assemble.noServer', 'No server yet: the launcher downloads our server (about 150 MB, without any game data), then takes the game data from your own client.') : t('home.noServer', 'No server yet: install the CoA repack with its bots in a few clicks, or show the folder of the one you have.'))}</p>
       ${direct ? `<ol class="setup-steps">
         <li class="${gameOk ? 'done' : 'current'}"><span class="step-num">${gameOk ? icon('check') : '1'}</span><div class="step-body"><strong>${esc(t('setup.game', 'Your game'))}</strong><small>${esc(gameOk ? s.client.path : t('setup.gameHint', 'The server takes its game data from your own CoA client.'))}</small></div><button class="button ${gameOk ? 'ghost small' : 'primary'}" data-action="client-locate">${icon('folder')}${esc(gameOk ? t('setup.change', 'Change') : t('setup.pickGame', 'Choose the game folder'))}</button></li>
         <li class="${gameOk ? 'current' : 'locked'}"><span class="step-num">2</span><div class="step-body">${first}${gameOk ? '' : `<small class="muted">${esc(t('setup.gameFirst', 'Choose your game folder first.'))}</small>`}</div></li>
       </ol>` : `<div class="button-row">${first}</div>`}
-      <details class="other-ways"><summary>${esc(t('setup.otherWays', 'Other ways to install…'))}</summary><div class="button-row"><button class="button ghost" data-action="server-choose">${icon('folder')}${esc(t('home.haveServer', 'I already have a server folder'))}</button></div></details></div></section><div class="fresh-extras">${feedNewsRow()}</div></div>`;
+      </div></section><div class="fresh-extras">${feedNewsRow()}</div></div>`;
   }
   // A server without game data: prepared from the player's own client before anything else.
   const asm = info.assembly;
-  if (asm?.applies && asm.needed) return `<div class="page classic home-page"><section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1>${assemblyCard(asm)}</div></section></div>`;
+  if (asm?.applies && asm.needed) return `<div class="page classic home-page">${releaseBanner()}<section class="hero classic-hero"><div class="classic-main"><h1>${esc(t('home.title', 'My server'))}</h1>${assemblyCard(asm)}</div></section></div>`;
   const services = info.services || [];
   // CoA world stopped, one or more realms running on MySQL and the login: the server runs, with them.
   const realmsOn = (info.realmsOn || []).filter(realm => realm.state === 'running');
@@ -334,18 +335,20 @@ function homeView() {
   const all = (services.length && running === services.length) || realmsOnly;
   const worldOn = services.some(service => /world/i.test(service.id) && service.state === 'running');
   const foreign = services.find(service => service.state === 'foreign');
-  // The world runs but its console does not answer (bots being created at a first start): stopping would only
-  // time out, so the button waits.
+  //By leewheel 2026-11-05 卡死由后端综合判定（RA 探测失败 + 世界日志停刷 + 持续 20 分钟）
+  // 只要机器人日志还在刷，世界主循环就活着：控制台无应答只是 RA 通道的问题，
+  // 既不能显示"它卡住了"，也不能禁用正常的"停止服务器"按钮。
   const busy = all && !realmsOnly && s.live?.running && s.live.consoleBusy;
-  // Silent for more than 20 minutes: not bot creation any more, the world is stuck (a shutdown that never ends).
-  const stuck = busy && s.live.busyFor > 20 * 60 * 1000;
+  const stuck = busy && s.live.stuck;
+  const waiting = busy && !s.live.worldAlive && !stuck;
+  //End By leewheel
   const button = moving ? ['refresh', moving.state === 'starting' ? t('server.startingAll', 'Starting the server…') : t('server.stoppingAll', 'Stopping the server…'), '', 'busy']
     : stuck ? ['warning', t('home.forceStop', 'Force the world to stop'), 'world-force-stop', 'ready']
-    : busy ? ['refresh', t('home.botsCreating', 'Bots on the way…'), '', 'busy']
+    : waiting ? ['refresh', t('home.botsCreating', 'Bots on the way…'), '', 'busy']
     // The big button follows the world: MySQL alone (a crash of the world, a database task) still offers to start.
     : worldOn || realmsOnly ? ['pause', t('home.stop', 'Stop the server'), 'service-stop-all', 'ready'] : ['play', t('home.start', 'Start the server'), 'service-start-all', 'update'];
-  const status = App.state.stoppingAll ? t('server.stoppingAll', 'Stopping the server…') : App.state.startingAll ? t('server.startingAll', 'Starting the server…') : stuck ? t('home.stuckText', 'The world has not answered for {n} minutes: it is stuck. Force it to stop, then start the server again.', { n: Math.round(s.live.busyFor / 60000) })
-    : busy ? t('home.botsCreatingText', 'The server is creating its bots (about 10 minutes at a first start). Do not close it: it can be stopped as soon as it answers again.')
+  const status = App.state.stoppingAll ? t('server.stoppingAll', 'Stopping the server…') : App.state.startingAll ? t('server.startingAll', 'Starting the server…') : stuck ? t('home.stuckText', 'The world has not answered for {n} minutes: it is stuck. Force it to stop, then start the server again.', { n: Math.round((s.live.stuckFor || s.live.busyFor || 0) / 60000) })
+    : waiting ? t('home.botsCreatingText', 'The server is creating its bots (about 10 minutes at a first start). Do not close it: it can be stopped as soon as it answers again.')
     : foreign ? t('home.foreign', '{name}: port {port} is taken by another program.', { name: foreign.name, port: foreign.port })
     // The address the players use: this PC, or the one given in "Who can join" when the server is open.
     : all ? t(realmsOnly ? 'home.runningRealms' : 'home.runningAt', realmsOnly ? 'Your server is running ({realms}). Players connect to {address}.' : 'Your server is running. Players connect to {address}.', { realms: realmsOn.map(realm => realmTitle(realm.key)).join(', '), address: `${s.network?.mode === 'open' ? s.network.address : '127.0.0.1'}${info.ports?.auth && info.ports.auth !== 3724 ? `:${info.ports.auth}` : ''}` }) : running ? t('server.partial', '{n} of {total} services running', { n: running, total: services.length }) : t('server.allStopped', 'The server is stopped');
@@ -357,9 +360,11 @@ function homeView() {
     // A light for each realm whose world runs or starts.
     + (info.realmsOn || []).map(realm => `<span class="mini-service"><span class="light ${realm.state === 'running' && !App.state.stoppingAll ? 'on' : 'busy'}"></span>${esc(realmShort(realm.key))}</span>`).join('');
   // Something runs without the world (MySQL alone...): it can be stopped from here.
-  const menu = [...(running && !worldOn && !realmsOnly ? [['service-stop-all', '', t('home.menuStopRest', 'Stop what is running ({n} of {total})', { n: running, total: services.length })]] : []), ['srv-tab', 'services', t('home.menuServices', 'Services one by one')], ['srv-tab', 'backups', t('srv.tab.backups', 'Backups')], ['server-folder', '', t('home.menuFolder', 'Open the server folder')],
-    ['instance-new', '', t('home.menuNew', 'Create a new server (clean instance)…')], ['instance-add', '', t('home.menuAdd', 'Add a repack folder I unpacked…')], ['instance-pick', '', t('home.menuSwitch', 'My servers…')]];
-  return `<div class="page classic home-page">${asm?.applies ? clientBanner(asm) + mmapsBanner(asm.mmaps) : ''}${info.mmapsRestart ? `<div class="update-banner"><i class="dot"></i><span>${esc(t('assemble.mmapsRestart', 'The navigation maps of the bots are ready. Restart the server so it uses all of them.'))}</span><button class="button primary small" data-action="server-restart">${icon('refresh')}${esc(t('assemble.restart', 'Restart the server'))}</button></div>` : ''}
+  //By leewheel 2026-11-05 老大要求：单机整合包不需要"创建/添加/切换服务器实例"入口，
+  // 下拉只保留服务管理、备份和打开文件夹，删掉"创建新服务器""添加整合包文件夹""我的服务器"三项。
+  const menu = [...(running && !worldOn && !realmsOnly ? [['service-stop-all', '', t('home.menuStopRest', 'Stop what is running ({n} of {total})', { n: running, total: services.length })]] : []), ['srv-tab', 'services', t('home.menuServices', 'Services one by one')], ['srv-tab', 'backups', t('srv.tab.backups', 'Backups')], ['server-folder', '', t('home.menuFolder', 'Open the server folder')]];
+  //End By leewheel
+  return `<div class="page classic home-page">${releaseBanner()}${asm?.applies ? clientBanner(asm) + mmapsBanner(asm.mmaps) : ''}${info.mmapsRestart ? `<div class="update-banner"><i class="dot"></i><span>${esc(t('assemble.mmapsRestart', 'The navigation maps of the bots are ready. Restart the server so it uses all of them.'))}</span><button class="button primary small" data-action="server-restart">${icon('refresh')}${esc(t('assemble.restart', 'Restart the server'))}</button></div>` : ''}
     <section class="hero classic-hero server-hero">${homeLinks()}
       <div class="classic-main">
         <h1>${esc(t('home.heroTitle', 'My server'))}</h1>
@@ -385,8 +390,131 @@ function homeView() {
     </section>
     ${feedNewsRow(false)}
     ${!App.state.feed?.news?.length && (s.news || []).filter(item => item.area !== 'client').length ? `<section class="news-row"><h2>${esc(t('classic.news', 'Latest news'))}</h2><div class="news-grid">${newsCards((s.news || []).filter(item => item.area !== 'client'))}</div></section>` : ''}
+    ${freeBannerView()}
     ${logPanelView()}
   </div>`;
+}
+
+//By leewheel 2026-11-04 主页 hero 与日志窗口之间的空档：一条免费声明横幅。
+// 视觉走 HUD 风：网格底纹 + 扫描光带 + 四角括号 + 霓虹辉光，样式在 css/coa.css 的 .free-banner 段。
+//By leewheel 2026年11月6日 老大要求：这句话不能再以明文出现在源码/界面里（会被倒卖狗改成他们的广告）。
+// 现在文字只以字节数组形式存在（UTF-8 逐字节异或），运行时解码后画进 canvas，DOM 里没有可搜索的文本；
+// 字号也从 16.5px 提到 20px。改文案就重新生成这两行字节数组，不要把明文写回来。
+const FREE_NOTICE_BYTES = [188,227,8,47,70,178,222,214,29,66,85,89,242,131,218,96,47,66,28,173,135,133,7,61,54,73,135,174,218,7,85,87,65,246,196,213,104,58,85,25,158,221,137,31,13,51,180,136,174,214,36];
+const FREE_META_BYTES = [21,57,226,133,167,93,125,125,64,16,236,23,129,155,134,11,34,41,105,154,216,195,41,68,120,123,60,131,209,171,87,115,123,249,233,203,107,51,74,24,175,209];
+function decodeFreeNotice(bytes) {
+  const plain = bytes.map((value, index) => value ^ ((index * 37 + 0x5A) & 0xFF));
+  return new TextDecoder('utf-8').decode(new Uint8Array(plain));
+}
+function drawFreeNotice() {
+  const canvas = document.getElementById('free-notice-canvas');
+  const holder = canvas?.parentElement;
+  if (!canvas || !holder) return;
+  const ratio = window.devicePixelRatio || 1;
+  const width = Math.max(240, holder.clientWidth || 640);
+  const height = 34;
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const meta = document.getElementById('free-notice-meta');
+  if (meta && !meta.textContent) meta.textContent = decodeFreeNotice(FREE_META_BYTES);
+  paintFreeNotice(ctx, ratio, width, height, performance.now());
+  startFreeNoticeGlitch();
+}
+
+//By leewheel 2026年11月6日 老大要求保留“杂波干扰”特效：canvas 里按帧重画——随机色散重影、
+// 横向切片错位、扫描噪点、亮度闪烁，节奏沿用原来 CSS 的两组 glitch（3.7s / 4.3s）+ 6.5s 闪一下。
+// 关掉系统动画偏好（prefers-reduced-motion）时只画一帧静态。
+let freeNoticeRaf = 0;
+let freeNoticeStatic = false;
+function paintFreeNotice(ctx, ratio, width, height, now) {
+  const text = decodeFreeNotice(FREE_NOTICE_BYTES);
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  const family = getComputedStyle(document.body).fontFamily || 'system-ui';
+  ctx.font = `700 20px ${family}`;
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
+  ctx.textBaseline = 'middle';
+  const middle = height / 2;
+  // 两组独立的 glitch 节奏：各自每 period 触发一次，持续 duration
+  const burst = (clock, period, duration, range) => {
+    const phase = clock % period;
+    if (reduced || phase > duration) return 0;
+    return (Math.random() * 2 - 1) * range;
+  };
+  const clock = now / 1000;
+  const shiftA = burst(clock, 3.7, 0.16, 3.2);
+  const shiftB = burst(clock, 4.3, 0.13, 2.6);
+  // 色散重影（红/青各一层，位置随机抖）
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = 'rgba(255,60,120,.9)';
+  ctx.fillText(text, 1.4 + shiftA, middle + 0.5 + shiftB * 0.3);
+  ctx.fillStyle = 'rgba(0,229,255,.9)';
+  ctx.fillText(text, -1.4 - shiftB, middle - 0.5 - shiftA * 0.3);
+  // 主体：霓虹辉光 + 每 6.5 秒一次亮度跳动
+  ctx.globalAlpha = !reduced && clock % 6.5 > 6.36 ? 0.55 : 1;
+  ctx.shadowColor = 'rgba(0,229,255,.75)';
+  ctx.shadowBlur = 14;
+  ctx.fillStyle = '#eaffff';
+  ctx.fillText(text, shiftA * 0.6, middle);
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  if (reduced) return;
+  // 横向切片错位：挑一条窄带把已画好的像素整体平移，像信号撕裂
+  const slices = Math.random() < 0.22 ? 2 : 1;
+  for (let index = 0; index < slices; index++) {
+    if (Math.random() > 0.35) continue;
+    const top = Math.random() * height;
+    const band = 2 + Math.random() * 7;
+    const dx = (Math.random() * 2 - 1) * 9;
+    try {
+      ctx.drawImage(ctx.canvas, 0, top * ratio, width * ratio, band * ratio, dx, top, width, band);
+    } catch { /* 画布还没准备好就跳过这一条 */ }
+  }
+  // 扫描噪点：几个随机亮/暗小段
+  for (let index = 0; index < 3; index++) {
+    if (Math.random() > 0.5) continue;
+    const y = Math.random() * height;
+    const x = Math.random() * width;
+    const w = 6 + Math.random() * 42;
+    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(126,243,255,.35)' : 'rgba(255,60,120,.25)';
+    ctx.fillRect(x, y, w, 1);
+  }
+}
+function startFreeNoticeGlitch() {
+  freeNoticeStatic = !!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  if (freeNoticeStatic || freeNoticeRaf) return;
+  let lastPaint = 0;
+  const step = now => {
+    const canvas = document.getElementById('free-notice-canvas');
+    if (!canvas) { freeNoticeRaf = 0; return; }           // 离开主页就停，别留后台循环
+    // 约 20 帧/秒就够了：像老电视的干扰，也不用一直吃 GPU
+    if (now - lastPaint >= 48) {
+      lastPaint = now;
+      const ratio = window.devicePixelRatio || 1;
+      const ctx = canvas.getContext('2d');
+      if (ctx) paintFreeNotice(ctx, ratio, canvas.width / ratio, canvas.height / ratio, now);
+    }
+    freeNoticeRaf = requestAnimationFrame(step);
+  };
+  freeNoticeRaf = requestAnimationFrame(step);
+}
+
+function freeBannerView() {
+  return `<section class="free-banner" id="free-banner" role="note" aria-label="free">
+    <span class="fb-scan" aria-hidden="true"></span>
+    <span class="fb-corner tl" aria-hidden="true"></span>
+    <span class="fb-corner tr" aria-hidden="true"></span>
+    <span class="fb-corner bl" aria-hidden="true"></span>
+    <span class="fb-corner br" aria-hidden="true"></span>
+    <span class="fb-badge" aria-hidden="true"><b>FREE</b><small>¥0.00</small></span>
+    <span class="fb-text"><canvas id="free-notice-canvas" class="fb-canvas" aria-hidden="true"></canvas></span>
+    <span class="fb-meta" id="free-notice-meta" aria-hidden="true"></span>
+  </section>`;
 }
 
 //By leewheel 2026-11-03 主页下半部分的半透明日志窗口：直接看 worldserver 在干什么（加载数据、生成机器人、报错）。
@@ -503,8 +631,9 @@ App.actions['game-play'] = button => guard(async () => {
 }, button);
 
 // News written by the realm owner in the feed (feed.json on the download server).
+//By leewheel 2026年11月5日 “机器人帮助”已挪到“检查”页的“机器人”标题旁（内容内嵌），这里不再放入口。
 function homeLinks() {
-  return `<span class="news-links"><button class="link-button" data-action="source-link" data-id="botsHelp">${icon('book')}${esc(t('home.botsHelp', 'Bots help'))}</button>${App.state.feed?.discord?.invite ? `<button class="link-button" data-action="feed-open" data-kind="discord">${icon('discord')}${esc(t('home.discordJoin', 'Join the Discord'))}</button>` : ''}</span>`;
+  return `<span class="news-links">${App.state.feed?.discord?.invite ? `<button class="link-button" data-action="feed-open" data-kind="discord">${icon('discord')}${esc(t('home.discordJoin', 'Join the Discord'))}</button>` : ''}</span>`;
 }
 
 function feedNewsRow(links = true) {
@@ -781,12 +910,14 @@ function launcherBanner() {
 
 //By leewheel 2026-11-03 服务端 / 客户端更新窗口（从 GitHub releases 读取；含下载进度、dbc 注入、SQL 导入）
 App.state.releaseInfo = null;
-let releaseUnsubscribe = null;
+//By leewheel 2026年11月5日 进度订阅改成全局单例（ensureReleaseProgressWatch），不再按弹窗维护 unsubscribe
 
 function releaseVersionsHtml(info) {
   const current = info.current || t('update.none', '未知');
   const latest = info.latest?.version || '';
-  const newer = latest && (!info.current || (typeof compareVersions === 'function' ? compareVersions(latest, info.current) > 0 : latest !== info.current));
+  //By leewheel 2026-11-05 是否有新版本只认主进程算好的「待装队列」：队列为空就是已是最新，
+  // 不再拿两个命名体系不同的版本号硬比大小（会有“补丁早编进包里还提示更新”的误报）。
+  const newer = (info.pending?.length || 0) > 0;
   const badge = newer
     ? `<span class="pill warn">${esc(t('release.newer', '有新版本'))}</span>`
     : `<span class="pill ok">${esc(t('release.current', '已是最新'))}</span>`;
@@ -795,9 +926,30 @@ function releaseVersionsHtml(info) {
 
 function showReleaseUpdate() {
   dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${skeleton(3)}</div>`);
-  App.api.releaseCheck().then(info => {
+  //By leewheel 2026年11月5日 以主进程状态为准：正在更新/已更新完时，不再显示“开始更新”按钮
+  const statePromise = App.api.releaseState ? App.api.releaseState().catch(() => null) : Promise.resolve(null);
+  Promise.all([App.api.releaseCheck(), statePromise]).then(([info, state]) => {
     App.state.releaseInfo = info;
+    if (state && (state.busy || state.done || state.error)) {
+      App.state.releaseRun = { phase: state.phase, pct: state.pct, message: state.message, done: !!state.done, error: state.error || '', version: state.version, errorLog: state.errorLog || '' };
+    }
     const asset = info.asset;
+    //By leewheel 2026-11-05 "开始更新"按待装补丁队列依次执行，不再只装最新一个；
+    // 弹窗列出待装数量与顺序（旧 → 新），按钮也只在队列非空时出现。
+    const pending = info.pending || [];
+    const order = pending.slice(0, 8).map(item => item.version).join(' → ') + (pending.length > 8 ? ' → …' : '');
+    const pendingHtml = pending.length > 1
+      ? `<p class="status-line">${icon('info')}共 ${pending.length} 个补丁待安装，将按发布顺序依次安装：${esc(order)}</p>`
+      : '';
+    //End By leewheel
+    //By leewheel 2026年11月5日 老大反馈：关掉再打开，按钮又能按、能重复下载。
+    // 现在整段更新状态存在 App.state.releaseRun 里，重开弹窗时按状态渲染：进行中→只显示进度，已完成→不再给“开始更新”。
+    const run = App.state.releaseRun;
+    const running = !!(run && run.phase && !run.done && !run.error);
+    const finished = !!(run && run.done);
+    const failed = !!(run && run.error && !finished);
+    // 保证整个进程有且只有一个进度订阅（关窗也不断，状态与横幅一直更新）
+    ensureReleaseProgressWatch();
     const notes = String(info.latest?.notes || '').slice(0, 4000);
     const history = (info.history || []).slice(-3).reverse();
     const historyHtml = history.length
@@ -805,10 +957,17 @@ function showReleaseUpdate() {
       : '';
     const body = info.error
       ? `<p class="conf-warn">${icon('warning')}<span>${esc(info.error)}</span></p>`
-      : !info.latest
-        ? `<p class="status-line">${esc(t('release.empty', '上游仓库还没有发布任何版本（releases 为空），发布后这里就会显示更新。'))}</p><p class="muted small">${esc(t('release.scope', '这里检查的是服务端与客户端的内容更新，不是启动器自身的版本。'))}</p>`
-        : `${releaseVersionsHtml(info)}
-          ${notes ? `<h3>${esc(t('release.notes', '更新说明'))}</h3><pre class="log">${esc(notes)}</pre>` : ''}
+      : running
+        ? `<div id="release-progress">${releaseRunView(run)}</div><p class="muted small">更新正在进行，请等它跑完；关闭这个窗口不会中断更新。</p>`
+        : finished
+          ? `<div class="release-finished"><p><strong>已更新到 ${esc(run.version || info.latest?.version || '')}</strong></p><p class="muted small">服务器现在是停止状态，回首页点“启动”即可。</p></div>${notes ? `<h3>${esc(t('release.notes', '更新说明'))}</h3><div class="patch-notes release-notes">${markdownLite(notes)}</div>` : ''}`
+          : failed
+            ? `<div id="release-progress">${releaseRunView(run)}</div><p class="muted small">上面的错误信息可以直接选中复制，也可以点「复制错误信息」；带日志的话点「打开日志」把文件发出来。</p>`
+            : !info.latest
+            ? `<p class="status-line">${esc(t('release.empty', '上游仓库还没有发布任何版本（releases 为空），发布后这里就会显示更新。'))}</p><p class="muted small">${esc(t('release.scope', '这里检查的是服务端与客户端的内容更新，不是启动器自身的版本。'))}</p>`
+            : `${releaseVersionsHtml(info)}
+          ${pendingHtml}
+          ${notes ? `<h3>${esc(t('release.notes', '更新说明'))}</h3><div class="patch-notes release-notes">${markdownLite(notes)}</div>` : ''}
           ${asset ? `<p class="muted small">${esc(t('release.asset', '更新包'))}：${esc(asset.name)} · ${esc(formatBytes(asset.size))}</p>` : `<p class="conf-warn">${icon('warning')}<span>${esc(t('release.noAsset', '这个版本没有附带 zip 更新包。'))}</span></p>`}
           <div id="release-progress"></div>
           <label class="check"><input type="checkbox" id="release-delete" checked><span>${esc(t('release.deleteAfter', '更新完成后自动删除 Update 临时目录'))}</span></label>
@@ -817,45 +976,147 @@ function showReleaseUpdate() {
       ${info.latest?.url ? `<button class="button ghost" data-action="release-page">${icon('external')}${esc(t('release.page', '发布页'))}</button>` : ''}
       <button class="button ghost" data-action="release-history">${esc(t('release.history', '更新记录'))}</button>
       <button class="button ghost" data-action="dialog-close">${esc(t('common.close', '关闭'))}</button>
-      ${info.latest && asset ? `<button class="button primary" data-action="release-apply">${icon('download')}${esc(t('release.start', '开始更新'))}</button>` : ''}
+      ${finished ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}${esc(t('release.recheck', '重新检查'))}</button>` : ''}
+      ${failed ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}重新检查</button>` : ''}
+      ${pending.length && !running && !finished && !failed ? `<button class="button primary" data-action="release-apply">${icon('download')}${esc(pending.length > 1 ? `开始更新（${pending.length} 个补丁）` : t('release.start', '开始更新'))}</button>` : ''}
     </footer>`;
-    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${historyHtml}</div>${footer}`);
+    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${running || finished || failed ? '' : historyHtml}</div>${footer}`);
+    // 重开时如果正在更新/失败，把进度条按当前状态画出来（CSP 下宽度用 CSSOM 设）
+    const box = document.getElementById('release-progress');
+    if (box && running) { box.innerHTML = releaseRunView(run); applyBars(box); }
   }).catch(error => {
     dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content"><p class="conf-warn">${icon('warning')}<span>${esc(translateError(error.message))}</span></p></div><footer class="dialog-foot"><button class="button primary" data-action="dialog-close">${esc(t('common.close', '关闭'))}</button></footer>`);
   });
 }
 
+//By leewheel 2026年11月5日 更新进度：老大要求“看得见完成没完成”。原来只有下载/完成两个阶段画进度条，
+// 中间停服、替换文件、注入 MPQ、导库几分钟里界面毫无反应。现在：整段都有百分比 + 每一步的状态清单。
+const RELEASE_STEPS = [
+  ['download', '下载更新包', 0, 40],
+  ['extract', '解压', 40, 45],
+  ['apply', '停止服务器（保存角色）', 45, 50],
+  ['server', '写入服务端文件', 50, 60],
+  ['configs', '覆盖配置', 60, 63],
+  ['client', '写入客户端文件', 63, 70],
+  ['mpq-entries', '注入客户端补丁档', 70, 85],
+  ['dbc', '处理 DBC', 85, 90],
+  ['sql', '导入数据库', 90, 99],
+  ['done', '完成', 100, 100],
+];
+function releaseStepLabel(phase) {
+  const step = RELEASE_STEPS.find(item => item[0] === phase);
+  return step ? step[1] : String(phase || '');
+}
+function releaseRunView(run) {
+  const pct = Math.max(0, Math.min(100, Math.round(run.pct || 0)));
+  const currentIndex = RELEASE_STEPS.findIndex(item => item[0] === run.phase);
+  const steps = RELEASE_STEPS.filter(item => item[0] !== 'done').map((item, index) => {
+    const state = run.error ? (item[0] === run.phase ? 'bad' : '') : (currentIndex > index || run.done ? 'done' : item[0] === run.phase ? 'doing' : '');
+    return `<li class="${state}">${item[1]}</li>`;
+  }).join('');
+  const status = run.error
+    ? `<p class="release-status bad">${icon('warning')}<span>更新失败：${esc(run.error)}</span></p>`
+    : run.done
+      ? `<p class="release-status ok">${icon('check')}<span>更新完成，可以重新启动服务器了。</span></p>`
+      : `<p class="release-status">${esc(releaseStepLabel(run.phase))}${run.message ? ` · ${esc(run.message)}` : ''}</p>`;
+  //By leewheel 2026年11月5日 失败原因要能复制：单独一块可选中的文本 + 复制按钮 + 打开日志
+  const errorBlock = run.error ? `<div class="error-wrap">
+      <pre class="error-box" id="update-error-text">${esc(run.error)}</pre>
+      <div class="error-actions">
+        <button class="button small" data-action="release-copy-error">${icon('copy')}复制错误信息</button>
+        ${run.errorLog ? `<button class="button ghost small" data-action="release-error-log">${icon('folder')}打开日志</button>` : ''}
+        <button class="button ghost small" data-action="release-retry">重试</button>
+      </div>
+    </div>` : '';
+  return `<div class="release-run">
+    <div class="release-bar"><span data-pct="${pct}"></span></div>
+    <div class="release-pct">${pct}%</div>
+    ${status}
+    <ol class="release-steps">${steps}</ol>
+    ${errorBlock}
+  </div>`;
+}
+//By leewheel 2026年11月5日 老大反馈：关掉更新窗口再打开，进度条和百分比不动。
+// 根因：老代码一找不到 #release-progress 就 return，连 App.state.releaseRun 都不更新；
+// 重开后的“进行中”视图又没有这个容器 → 永远冻结。现在：先更新状态，再刷新所有正在显示的视图。
 function releaseProgress(payload) {
-  const box = document.getElementById('release-progress');
-  if (!box) return;
-  const pct = payload.pct;
-  if (payload.phase === 'download' || payload.phase === 'done') {
-    box.innerHTML = `<div class="hero-progress"><div class="progress${pct === null || pct === undefined ? ' indeterminate' : ''}"><span data-pct="${pct ?? 30}"></span></div><span>${pct === null || pct === undefined ? '' : `${pct}%`}</span></div>`;
-    applyBars(box);
+  const run = App.state.releaseRun || (App.state.releaseRun = { phase: '', pct: 0, message: '', done: false, error: '' });
+  run.phase = payload.phase || run.phase;
+  run.message = payload.message || '';
+  // 主进程推来的失败信息与日志路径也要记住（否则重开窗口就只剩一句话）
+  if (payload.error) { run.error = String(payload.error); run.done = false; }
+  if (payload.errorLog) run.errorLog = payload.errorLog;
+  if (payload.phase === 'done') { run.done = true; run.pct = 100; run.error = ''; }
+  const step = RELEASE_STEPS.find(item => item[0] === payload.phase);
+  if (step) {
+    // 下载有真实百分比；其它阶段按权重推进，到阶段起点为止
+    if (payload.phase === 'download' && typeof payload.pct === 'number') run.pct = Math.min(step[3], step[2] + (step[3] - step[2]) * (payload.pct / 100));
+    else run.pct = Math.max(run.pct || 0, step[2]);
   }
-  const line = document.createElement('p');
-  line.className = 'muted small';
-  line.textContent = payload.done && payload.total ? `${payload.message}（${formatBytes(payload.done)} / ${formatBytes(payload.total)}）` : payload.message;
-  box.appendChild(line);
-  box.scrollTop = box.scrollHeight;
+  // 1) 更新窗口开着：刷新容器（CSP 会挡内联 style，宽度必须用 CSSOM 设）
+  const box = document.getElementById('release-progress');
+  if (box) { box.innerHTML = releaseRunView(run); applyBars(box); }
+  // 2) 首页横幅的百分比
+  const label = document.getElementById('release-banner-progress');
+  if (label) label.textContent = `${Math.round(run.pct || 0)}%`;
+}
+
+// 全进程只订阅一次进度事件：窗口关着也照样记状态、更新首页横幅
+let releaseWatchReady = false;
+function ensureReleaseProgressWatch() {
+  if (releaseWatchReady || !App.api.onReleaseProgress) return;
+  releaseWatchReady = true;
+  App.api.onReleaseProgress(payload => releaseProgress(payload));
 }
 
 function applyReleaseUpdate(button) {
   const info = App.state.releaseInfo;
-  if (!info?.asset) { toast(t('release.noAsset', '这个版本没有附带 zip 更新包。')); return; }
+  //By leewheel 2026-11-05 一次调用把缺失补丁按发布顺序全部装完；队列为空就不给开始
+  const pending = info?.pending || [];
+  if (!pending.length) { toast('没有需要安装的补丁。'); return; }
+  //End By leewheel
+  //By leewheel 2026年11月5日 双保险：界面自己记住“已经在跑”，再加上主进程的 releaseBusy 拦截
+  if (App.state.releaseBusyNow) { toast(t('release.busy', '更新正在进行中，请等它完成。')); return; }
+  App.state.releaseBusyNow = true;
   const deleteAfter = document.getElementById('release-delete')?.checked !== false;
-  if (releaseUnsubscribe) releaseUnsubscribe();
-  releaseUnsubscribe = App.api.onReleaseProgress(payload => releaseProgress(payload));
+  App.state.releaseRun = { phase: 'download', pct: 0, message: '准备中', done: false, error: '' };
+  // 单例订阅：关窗、重开都用同一个，不重复、不断链
+  ensureReleaseProgressWatch();
   const box = document.getElementById('release-progress');
-  if (box) box.innerHTML = '';
+  if (box) { box.innerHTML = releaseRunView(App.state.releaseRun); applyBars(box); }
+  if (button) { button.disabled = true; button.dataset.busy = '1'; }
+  releaseProgress({ phase: 'download', pct: 0, message: '准备中' });
   guard(async () => {
-    const result = await App.api.releaseApply({ version: info.latest.version, tag: info.latest.tag, asset: info.asset, deleteAfter });
-    if (releaseUnsubscribe) { releaseUnsubscribe(); releaseUnsubscribe = null; }
-    const injected = (result.dbc || []).length;
-    toast(t('release.doneToast', '更新完成：服务端 {s} 个文件、客户端 {c} 个文件、注入 {d} 张表', { s: result.files?.server ?? 0, c: result.files?.client ?? 0, d: injected }), 'success');
-    dialog.close();
-    App.reloadAll();
-    return result;
+    try {
+      //By leewheel 2026-11-05 队列一次装齐：第一次运行装全部，缺 3 个就只装那 3 个（旧 → 新）
+      const result = await App.api.releaseApplyAll({ queue: pending, deleteAfter });
+      //End By leewheel
+      App.state.releaseRun = { ...(App.state.releaseRun || {}), phase: 'done', pct: 100, done: true, error: '', version: result.version || info.latest.version };
+      releaseProgress({ phase: 'done', pct: 100, message: '更新完成' });
+      toast(`已按发布顺序依次安装 ${result.total || pending.length} 个补丁，更新完成`, 'success');
+      const done = document.getElementById('release-progress');
+      if (done) {
+        done.insertAdjacentHTML('beforeend', `<div class="release-finished">
+          <p><strong>已更新到 ${esc(result.version || info.latest.version)}</strong></p>
+          <p class="muted small">共 ${result.total || pending.length} 个补丁已按发布顺序依次安装完成${result.files ? ` · 最后一个补丁：服务端 ${result.files.server ?? 0} 个文件 / 客户端 ${result.files.client ?? 0} 个` : ''}</p>
+          <p class="muted small">服务器现在是停止状态，回首页点“启动”即可。</p>
+        </div>`);
+      }
+      App.reloadAll();
+      return result;
+    } catch (error) {
+      const run = App.state.releaseRun || { phase: 'download', pct: 0 };
+      run.error = String(error?.message || error);
+      run.done = false;
+      App.state.releaseRun = run;
+      // 主进程会把完整堆栈写进日志文件，这里补上路径供“打开日志”使用
+      try { const state = await App.api.releaseState(); if (state?.errorLog) run.errorLog = state.errorLog; } catch {}
+      releaseProgress({ phase: run.phase, message: '' });
+      throw error;
+    } finally {
+      App.state.releaseBusyNow = false;
+      if (button) { button.disabled = false; delete button.dataset.busy; }
+    }
   }, button);
 }
 
@@ -869,10 +1130,65 @@ function showReleaseHistory() {
   }).catch(() => toast(t('release.noHistory', '还没有更新记录。')));
 }
 
+//By leewheel 2026年11月4日 首页最上方的“有新版本”横幅：启动器每次打开都会自动查一次，
+// 查到就推给页面（不自动下载）。点“开始更新”进入同一个更新弹窗，玩家不用自己翻菜单。
+function releaseBanner() {
+  //By leewheel 2026年11月5日 更新进行中 / 已完成也要在首页看得见（关掉更新窗口也不丢信息）
+  const run = App.state.releaseRun;
+  if (run && run.phase && !run.done && !run.error) {
+    return `<div class="update-banner release-banner release-running" role="status" data-action="release-open">
+      <i class="dot"></i>
+      <span><strong>正在更新${run.version ? ` ${esc(run.version)}` : ''}</strong> · <span id="release-banner-progress">${Math.round(run.pct || 0)}%</span> · ${esc(releaseStepLabel(run.phase))}</span>
+      <button class="button primary small" data-action="release-open">查看进度</button>
+    </div>`;
+  }
+  if (run && run.done) {
+    return `<div class="update-banner release-banner release-finished-banner" role="status">
+      <i class="dot"></i>
+      <span><strong>已更新${run.version ? `到 ${esc(run.version)}` : '完成'}</strong> · 服务器当前是停止状态，回首页点“启动”即可</span>
+      <button class="button ghost small" data-action="release-recheck">${icon('refresh')}重新检查</button>
+    </div>`;
+  }
+  const info = App.state.releaseAvailable;
+  if (!info || !info.version) return '';
+  return `<div class="update-banner release-banner" role="status">
+    <i class="dot"></i>
+    <span><strong>${esc(t('release.newer', '有新版本'))} ${esc(info.version)}</strong> · ${esc(t('release.currentVersion', '当前版本'))} ${esc(info.current || '—')}${info.publishedAt ? ` · ${esc(formatDate(info.publishedAt))}` : ''}${info.pendingCount > 1 ? ` · 共 ${info.pendingCount} 个补丁待依次安装` : ''}</span>
+    <button class="button primary small" data-action="release-open">${icon('download')}${esc(t('release.start', '开始更新'))}</button>
+  </div>`;
+}
+
 App.pages.home = {
   render: homeView,
   mount() {
+    //By leewheel 2026年11月4日 启动器启动时会自动查更新（main 进程），结果从这里接住：
+    // 有新版本就记到 state 里，让首页横幅出现；查失败就静默，不打扰玩家。
+    if (App.api.onReleaseAvailable && !App.state.releaseWatch) {
+      App.state.releaseWatch = App.api.onReleaseAvailable(payload => {
+        App.state.releaseAvailable = payload?.found && payload.info?.version ? payload.info : null;
+        if (App.state.tab === 'home') App.refresh('home');
+      });
+    }
+    //By leewheel 2026年11月5日 进度订阅统一走 ensureReleaseProgressWatch()：
+    // 它同时更新 App.state.releaseRun、更新弹窗里的进度条、首页横幅百分比（关窗也不断）。
+    ensureReleaseProgressWatch();
+    // 界面重载后从主进程补一次状态（防止“重开又能点开始更新”）
+    if (App.api.releaseState && !App.state.releaseStateRead) {
+      App.state.releaseStateRead = true;
+      App.api.releaseState().then(state => {
+        if (state && (state.busy || state.done || state.error)) {
+          App.state.releaseRun = { phase: state.phase, pct: state.pct, message: state.message, done: !!state.done, error: state.error || '', version: state.version };
+          if (App.state.tab === 'home') App.refresh('home');
+        }
+      }).catch(() => {});
+    }
     if (!App.state.server) App.api.serverInfo().then(info => { App.state.server = info; App.refresh('home'); }).catch(() => {});
+    //By leewheel 2026年11月6日 免费声明画在 canvas 上（源码里没有明文），每次进主页重画一遍，改窗口大小也跟着重画
+    drawFreeNotice();
+    if (!App.state.freeNoticeResize) {
+      App.state.freeNoticeResize = true;
+      window.addEventListener('resize', () => { if (App.state.tab === 'home') drawFreeNotice(); });
+    }
     if (!App.state.dashboard) refreshDashboard();
     if (!App.state.network && App.state.server?.path) App.api.networkInfo().then(data => { App.state.network = data.network; if (App.state.tab === 'home') App.render(); }).catch(() => {});
     if (!App.state.verify && !App.state.verifying && App.state.server?.path && !App.state.server.assembly?.needed) runVerify(false);
@@ -881,26 +1197,58 @@ App.pages.home = {
   },
 };
 
-// A very small Markdown reader for changelogs: headings, bullets, bold; everything else is plain text.
+// A very small Markdown reader: headings, bullets, ordered lists, tables, code fences, bold, inline code.
+//By leewheel 2026年11月5日 机器人帮助要用表格和代码块，这里补齐（表格/``` 代码块/有序列表/分隔线），
+// 其余仍是纯文本；所有内容先 esc()，不执行任何 HTML。
 function markdownLite(text) {
   const inline = line => esc(line).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  const lines = String(text).split(/\r?\n/);
   const out = [];
-  let list = false;
+  let list = null;         // 'ul' | 'ol'
   let paragraph = false;
-  for (const raw of String(text).split(/\r?\n/)) {
+  let fence = null;        // 代码块缓冲
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (let index = 0; index < lines.length; index++) {
+    const raw = lines[index];
     const line = raw.trimEnd();
+    // 代码块
+    if (/^\s*```/.test(line)) {
+      if (fence) { out.push(`<pre><code>${esc(fence.join('\n'))}</code></pre>`); fence = null; }
+      else { closeList(); fence = []; }
+      paragraph = false;
+      continue;
+    }
+    if (fence) { fence.push(raw); continue; }
+    // 表格：当前行有 |，下一行是 |---|
+    if (/\|/.test(line) && index + 1 < lines.length && /^\s*\|?[\s:-]*\|[\s:|-]*$/.test(lines[index + 1]) && /-/.test(lines[index + 1])) {
+      closeList();
+      const cells = row => row.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(cell => cell.trim());
+      const head = cells(line);
+      const body = [];
+      index += 2;
+      while (index < lines.length && /\|/.test(lines[index]) && lines[index].trim()) { body.push(cells(lines[index])); index++; }
+      index--;
+      out.push(`<table><thead><tr>${head.map(cell => `<th>${inline(cell)}</th>`).join('')}</tr></thead><tbody>${body.map(row => `<tr>${row.map(cell => `<td>${inline(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+      paragraph = false;
+      continue;
+    }
     const bullet = line.match(/^\s*[-*] (.*)$/);
-    if (list && !bullet && !/^\s{2,}\S/.test(line)) { out.push('</ul>'); list = false; }
-    if (/^#{1,2} /.test(line)) out.push(`<h3>${inline(line.replace(/^#+ /, ''))}</h3>`);
-    else if (/^#{3,} /.test(line)) out.push(`<h4>${inline(line.replace(/^#+ /, ''))}</h4>`);
-    else if (bullet) { if (!list) { out.push('<ul>'); list = true; } out.push(`<li>${inline(bullet[1])}</li>`); }
+    const ordered = line.match(/^\s*\d+[.)] (.*)$/);
+    if (list === 'ul' && !bullet && !/^\s{2,}\S/.test(line)) closeList();
+    if (list === 'ol' && !ordered && !/^\s{2,}\S/.test(line)) closeList();
+    if (/^#{1,2} /.test(line)) { closeList(); out.push(`<h3>${inline(line.replace(/^#+ /, ''))}</h3>`); }
+    else if (/^#{3,} /.test(line)) { closeList(); out.push(`<h4>${inline(line.replace(/^#+ /, ''))}</h4>`); }
+    else if (/^\s*(---|\*\*\*)\s*$/.test(line)) { closeList(); out.push('<hr>'); }
+    else if (bullet) { if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; } out.push(`<li>${inline(bullet[1])}</li>`); }
+    else if (ordered) { if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol'; } out.push(`<li>${inline(ordered[1])}</li>`); }
     else if (list && /^\s{2,}\S/.test(line)) out[out.length - 1] = out[out.length - 1].replace(/<\/li>$/, ` ${inline(line.trim())}</li>`);
     // Lines of the same paragraph (wrapped in the file) are joined back.
     else if (line.trim() && paragraph) out[out.length - 1] = out[out.length - 1].replace(/<\/p>$/, ` ${inline(line.trim())}</p>`);
     else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
-    paragraph = !!line.trim() && !bullet && !/^#/.test(line) && !list;
+    paragraph = !!line.trim() && !bullet && !ordered && !/^#/.test(line) && !list;
   }
-  if (list) out.push('</ul>');
+  if (fence) out.push(`<pre><code>${esc(fence.join('\n'))}</code></pre>`);
+  closeList();
   return out.join('');
 }
 
@@ -1088,6 +1436,25 @@ Object.assign(App.actions, {
   'log-toggle': () => { const body = document.getElementById('server-log-body'); if (body) body.hidden = !body.hidden; },
   //By leewheel 2026-11-03 「检查更新」= 检查【服务端与客户端】的新版本（GitHub releases），并可直接下载安装
   'verify-update': () => showReleaseUpdate(),
+  //By leewheel 2026年11月4日 首页横幅上的“立即更新”：直接打开同一个更新弹窗
+  'release-open': () => showReleaseUpdate(),
+  // 更新完成后重新检查：清掉“已完成”状态，重新走一遍检查流程
+  'release-recheck': () => { App.state.releaseRun = null; showReleaseUpdate(); },
+  //By leewheel 2026年11月5日 更新失败：错误可复制、可打开日志、可重试（老大要求）
+  'release-copy-error': async () => {
+    const text = String(document.getElementById('update-error-text')?.textContent || App.state.releaseRun?.error || '').trim();
+    if (!text) { toast('没有可复制的错误信息'); return; }
+    let done = false;
+    try { if (App.api.copyText) { await App.api.copyText(text); done = true; } } catch { done = false; }
+    if (!done) { try { await navigator.clipboard.writeText(text); done = true; } catch { done = false; } }
+    toast(done ? '错误信息已复制，直接粘贴发出来即可' : '复制失败：请用鼠标选中错误文本，按 Ctrl+C', done ? 'success' : 'warning');
+  },
+  'release-error-log': () => {
+    const target = App.state.releaseRun?.errorLog;
+    if (!target) { toast('这次没有生成日志文件'); return; }
+    guard(async () => { await App.api.openPath(target); });
+  },
+  'release-retry': () => { App.state.releaseRun = null; showReleaseUpdate(); },
   'release-apply': button => applyReleaseUpdate(button),
   'release-page': () => { const url = App.state.releaseInfo?.latest?.url; if (url && App.api.openUrl) App.api.openUrl(url).catch(() => {}); },
   'release-history': () => showReleaseHistory(),
@@ -1199,4 +1566,6 @@ function friendsLine() {
 document.addEventListener('input', event => { if (event.target.id === 'net-address') friendsLine(); });
 
 // "main-20261018-0ab739f5" reads "main-20261018" on the home cards (the full id stays in Verification).
-function shortRelease(release) { return String(release || '').replace(/-[0-9a-f]{7,40}$/i, ''); }
+//By leewheel 2026-11-05 原本只想砍掉末尾的 git 提交哈希（如 -a1b2c3d），但 [0-9a-f]{7,40} 把纯数字日期也吃了，
+// 于是 “coa-publish-20261105” 被显示成 “coa-publish”，版本号看不全。现在要求末尾必须含 a-f 字母才算哈希。
+function shortRelease(release) { return String(release || '').replace(/-(?=[0-9a-f]{7,40}$)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}$/i, ''); }

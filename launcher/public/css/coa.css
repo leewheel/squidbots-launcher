@@ -1,0 +1,334 @@
+/* 征服艾泽拉斯 单机启动器 —— 品牌与主页装饰（本文件最后加载，用于覆盖前面的样式）
+   By leewheel 2026-11-02
+   1) 顶部正中：换成《征服艾泽拉斯》奇幻金色徽章（assets/emblem.png）
+   2) 主页下半部分：北郡修道院背景（assets/northshire.jpg）
+   */
+
+/* ---------- 1. 顶部正中的徽章 ---------- */
+
+/* 旧的 SVG 徽标不再使用；这里是真正的徽章图片 */
+.brand .logo.emblem { display: none; }
+
+:root[data-theme="classic"] .brand .logo.emblem {
+  display: block;
+  width: 112px;
+  height: 112px;
+  object-fit: contain;
+  margin: 4px 0 -54px;
+  filter: drop-shadow(0 8px 14px rgba(0, 0, 0, .85)) drop-shadow(0 0 18px rgba(224, 160, 80, .45));
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+/* 徽章下面的一点暖光，让它看起来像悬在标题栏上 */
+:root[data-theme="classic"] .brand::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -34px;
+  width: 150px;
+  height: 34px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at 50% 0%, rgba(224, 160, 80, .30), rgba(224, 160, 80, 0) 70%);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* 窗口很矮时不挡住内容 */
+@media (max-height: 720px) {
+  :root[data-theme="classic"] .brand .logo.emblem { width: 92px; height: 92px; margin-bottom: -44px; }
+}
+
+/* ---------- 2. 所有页面的背景：北郡修道院 ---------- */
+
+/* 固定在窗口里的装饰层（在深海/星点画布之上、界面之下）：
+   顶部用蒙版淡出，下半部分是修道院照片，不挡任何点击。 */
+body::after {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 84vh;
+  background:
+    linear-gradient(180deg, rgba(12, 7, 4, .58) 0%, rgba(12, 7, 4, .40) 26%, rgba(10, 6, 4, .54) 62%, rgba(8, 5, 3, .74) 100%),
+    url("../assets/northshire.jpg") center bottom / cover no-repeat;
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, .22) 24%, rgba(0, 0, 0, .68) 50%, #000 74%);
+  mask-image: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, .22) 24%, rgba(0, 0, 0, .68) 50%, #000 74%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/*By leewheel 2026-11-03 主页下半部分的日志窗口：半透明、等宽、自己滚，随时能看世界服在干嘛 */
+.log-panel {
+  margin-top: 18px;
+  border: 1px solid rgba(224, 160, 80, .22);
+  border-radius: 14px;
+  background: rgba(10, 6, 4, .62);
+  backdrop-filter: blur(6px);
+  overflow: hidden;
+}
+.log-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(224, 160, 80, .14);
+  background: rgba(20, 12, 7, .55);
+}
+.log-title { display: inline-flex; align-items: center; gap: 6px; font: 600 12.5px var(--body); color: var(--text); }
+.log-title svg { width: 15px; height: 15px; color: var(--accent); }
+.log-meta { font: 11px var(--mono); color: var(--faint); }
+.log-stale {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(224, 160, 80, .12);
+  background: rgba(224, 160, 80, .08);
+  color: var(--warn);
+  font: 12px/1.5 var(--body);
+}
+.log-stale svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
+.log-body {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 260px;
+  min-height: 120px;
+  overflow: auto;
+  font: 11.5px/1.55 var(--mono);
+  color: #d9c9b4;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: transparent;
+}
+.log-picker {
+  font: 11.5px var(--body);
+  color: var(--text);
+  background: rgba(20, 12, 7, .9);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 3px 6px;
+  max-width: 180px;
+}
+.log-body::-webkit-scrollbar { width: 8px; }
+.log-body::-webkit-scrollbar-thumb { border-radius: 8px; background: rgba(224, 160, 80, .35); }
+
+/*By leewheel 2026-11-03 状态色不许被调色板暖化（abyss.css 会把 --ok 也映射成橙色，
+   于是"运行中"的灯看着像警告）。这里在最后一份样式里钉死语义色：绿=运行、红=错误、橙=进行中。 */
+:root,
+:root[data-palette="abyss"],
+:root[data-theme="classic"] {
+  --ok: #4fd06a !important;
+  --bad: #e2563c !important;
+}
+
+/* 国度设置页顶部：这个国度单独改过哪些设置（明细列表） */
+.realm-changes {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: rgba(14, 9, 6, .72);
+  padding: 10px 14px;
+}
+.realm-changes > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font: 600 13px var(--body);
+  color: var(--text);
+  list-style: none;
+}
+.realm-changes > summary::-webkit-details-marker { display: none; }
+.realm-changes > summary svg { width: 16px; height: 16px; color: var(--accent); }
+.realm-change-list {
+  margin: 10px 0 4px;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+.realm-change-list li { line-height: 1.5; }
+.realm-change-list code { color: var(--accent); font: 12px var(--mono); }
+.realm-change-list strong { color: var(--text); font-weight: 600; }
+
+/* 图片上的文字要看得清：卡片与整行提示都垫一层底色 */
+.news-card,
+.side-card,
+.realm-badge,
+.task-line { background-color: rgba(14, 9, 6, .84); }
+
+.task-line { border-radius: 10px; padding: 8px 12px; }
+
+/* ---------- 3. 检查页的小按钮排布 ---------- */
+
+.verify-head .button-row { flex-wrap: wrap; }
+
+/* ---------- 4. 主页免费声明横幅（科技感 HUD） ---------- */
+/*By leewheel 2026-11-04 主页 hero 与日志窗口之间那条空档：一句大白话做成高科技声明条。
+   效果构成：旋转的霓虹描边 + 网格底纹 + 横向扫描光带 + 文字故障重影 + 呼吸的 FREE 徽标。 */
+.free-banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 16px 26px;
+  border-radius: 14px;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    linear-gradient(180deg, rgba(6, 22, 30, .82), rgba(4, 10, 16, .92));
+  box-shadow: inset 0 0 32px rgba(0, 208, 255, .10), 0 0 22px rgba(0, 180, 240, .14);
+}
+
+/* 旋转的霓虹描边：用两层伪元素，外层是转动的锥形渐变，内层盖住只留一圈边 */
+.free-banner::before {
+  content: "";
+  position: absolute;
+  inset: -60%;
+  z-index: -2;
+  background: conic-gradient(from 0deg,
+    rgba(0, 229, 255, 0) 0deg, rgba(0, 229, 255, .85) 55deg, rgba(120, 255, 230, .9) 90deg,
+    rgba(0, 229, 255, 0) 150deg, rgba(0, 229, 255, 0) 210deg, rgba(224, 160, 80, .8) 265deg,
+    rgba(0, 229, 255, 0) 330deg);
+  animation: fb-orbit 7s linear infinite;
+}
+.free-banner::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: -1;
+  border-radius: 13px;
+  background:
+    /* 细网格底纹 */
+    linear-gradient(rgba(0, 229, 255, .06) 1px, transparent 1px) 0 0 / 100% 22px,
+    linear-gradient(90deg, rgba(0, 229, 255, .06) 1px, transparent 1px) 0 0 / 22px 100%,
+    linear-gradient(180deg, rgba(6, 22, 30, .98), rgba(4, 10, 16, .98));
+}
+
+/* 扫描光带单独一层，避免和网格底纹抢 background */
+.free-banner .fb-scan {
+  position: absolute;
+  top: -20%;
+  bottom: -20%;
+  left: -30%;
+  width: 26%;
+  z-index: 0;
+  transform: skewX(-18deg);
+  background: linear-gradient(90deg,
+    rgba(0, 229, 255, 0) 0%, rgba(0, 229, 255, .10) 35%, rgba(190, 255, 255, .42) 50%,
+    rgba(0, 229, 255, .10) 65%, rgba(0, 229, 255, 0) 100%);
+  animation: fb-scan 5.2s cubic-bezier(.45, 0, .55, 1) infinite;
+  pointer-events: none;
+}
+@keyframes fb-scan { 0% { left: -30%; opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { left: 130%; opacity: 0; } }
+
+/* 文字与徽标压在光带之上，扫过去的时候像被光照亮 */
+.free-banner .fb-badge,
+.free-banner .fb-text,
+.free-banner .fb-meta,
+.free-banner .fb-corner { z-index: 1; }
+
+.free-banner .fb-corner { position: absolute; width: 16px; height: 16px; border: 2px solid rgba(0, 229, 255, .85); pointer-events: none; }
+.free-banner .fb-corner.tl { top: 8px; left: 8px; border-right: 0; border-bottom: 0; }
+.free-banner .fb-corner.tr { top: 8px; right: 8px; border-left: 0; border-bottom: 0; }
+.free-banner .fb-corner.bl { bottom: 8px; left: 8px; border-right: 0; border-top: 0; }
+.free-banner .fb-corner.br { bottom: 8px; right: 8px; border-left: 0; border-top: 0; }
+.free-banner .fb-corner { animation: fb-corner 2.6s ease-in-out infinite; }
+
+/* FREE 徽标：黑底霓虹框，上下呼吸 */
+.free-banner .fb-badge {
+  display: grid;
+  place-content: center;
+  gap: 1px;
+  flex: none;
+  padding: 7px 13px;
+  border: 1px solid rgba(0, 229, 255, .65);
+  border-radius: 9px;
+  background: rgba(0, 24, 34, .85);
+  box-shadow: 0 0 14px rgba(0, 229, 255, .35), inset 0 0 12px rgba(0, 229, 255, .18);
+  animation: fb-breathe 3.2s ease-in-out infinite;
+}
+.free-banner .fb-badge b { font: 800 15px/1 var(--mono); letter-spacing: .22em; color: #7ef3ff; text-shadow: 0 0 9px rgba(0, 229, 255, .8); }
+.free-banner .fb-badge small { font: 600 10.5px/1 var(--mono); letter-spacing: .14em; color: var(--gold); }
+
+/* 正文：画在 canvas 上（源码里不存明文），故障重影由 canvas 自己画 */
+.free-banner .fb-text {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: block;
+  line-height: 0;
+}
+.free-banner .fb-canvas { display: block; width: 100%; height: 34px; }
+
+/* 右侧小字状态行：一条竖线隔开，字号小、字距大，像设备铭牌 */
+.free-banner .fb-meta {
+  flex: none;
+  padding-left: 16px;
+  border-left: 1px solid rgba(0, 229, 255, .28);
+  white-space: nowrap;
+  font: 11px/1.4 var(--mono);
+  letter-spacing: .16em;
+  color: rgba(126, 243, 255, .78);
+  text-transform: uppercase;
+}
+
+@keyframes fb-orbit { to { transform: rotate(360deg); } }
+@keyframes fb-breathe { 50% { box-shadow: 0 0 26px rgba(0, 229, 255, .6), inset 0 0 18px rgba(0, 229, 255, .3); } }
+@keyframes fb-corner { 50% { border-color: rgba(224, 160, 80, .9); } }
+@keyframes fb-flicker { 0%, 88%, 100% { opacity: 1; } 89% { opacity: .35; } 91% { opacity: 1; } 93% { opacity: .55; } 94% { opacity: 1; } }
+@keyframes fb-glitch-a { 0%, 84%, 100% { clip-path: inset(0 0 100% 0); } 86% { clip-path: inset(12% 0 58% 0); transform: translate(-4px, 0); } 90% { clip-path: inset(62% 0 8% 0); transform: translate(3px, 0); } 94% { clip-path: inset(0 0 100% 0); } }
+@keyframes fb-glitch-b { 0%, 78%, 100% { clip-path: inset(0 0 100% 0); } 80% { clip-path: inset(48% 0 22% 0); transform: translate(4px, 0); } 85% { clip-path: inset(6% 0 76% 0); transform: translate(-3px, 0); } 89% { clip-path: inset(0 0 100% 0); } }
+
+/* 窗口窄的时候不挤：小字换行、字号收一点 */
+@media (max-width: 1180px) {
+  .free-banner { flex-wrap: wrap; padding: 14px 18px; }
+  .free-banner .fb-text { font-size: 15px; }
+  .free-banner .fb-meta { font-size: 10px; letter-spacing: .1em; border-left: 0; padding-left: 0; white-space: normal; }
+}
+
+/* 关掉系统动画偏好时只留静态辉光，不做扫描与闪烁 */
+@media (prefers-reduced-motion: reduce) {
+  .free-banner::before,
+  .free-banner .fb-scan,
+  .free-banner .fb-corner,
+  .free-banner .fb-badge,
+  .free-banner .fb-text,
+  .free-banner .fb-text::before,
+  .free-banner .fb-text::after { animation: none; }
+}
+/*End By leewheel*/
+
+
+/*By leewheel 2026年11月4日 主页：上（英雄区）中（免费横幅）下（日志窗）三栏之间的间隙改小，
+   并且主页不显示整页滚动条（滚轮仍然能滚，内容不会被截掉）。
+   注意：这里只收 grid 的 gap，绝不改 #view/.page 的显示模式——上一版把主页改成 flex 列，
+   日志窗内容很高，flex 把负空间摊给了英雄区和横幅，两栏被压扁、内容溢出来糊了一屏。*/
+#view:has(> .home-page) { scrollbar-width: none; }
+#view:has(> .home-page)::-webkit-scrollbar { display: none; }
+.page.home-page { gap: 10px; }
+.page.home-page > .log-panel { margin-top: 0; }
+/*End By leewheel*/
+
+/*By leewheel 2026-11-05 启动布局告警：常驻置顶、红金高对比，任何页面都盖不住。
+   .app 是 grid(auto 1fr)，告警显示时补成三行，横幅自然把顶栏往下推，不遮挡窗口按钮。*/
+#layout-alert[hidden] { display: none; }
+#layout-alert {
+  display: flex; align-items: center; gap: 14px; padding: 10px 22px;
+  background: linear-gradient(90deg, #4a0d0d, #8f1e12 45%, #4a0d0d);
+  border-bottom: 2px solid #ffb648;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .6), inset 0 0 26px rgba(255, 90, 40, .22);
+  color: #fff3e0; position: relative; z-index: 200;
+}
+#layout-alert > svg { width: 28px; height: 28px; flex: none; color: #ffd166; }
+.layout-alert-lines { display: grid; gap: 2px; min-width: 0; }
+.layout-alert-line { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.layout-alert-line strong { font-size: 17px; font-weight: 700; letter-spacing: .02em; color: #ffe3a8; }
+.layout-alert-line small { font-size: 12px; color: #ffc9a8; }
+body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
+.dialog-content .layout-alert-line { padding: 8px 0; border-bottom: 1px solid var(--line); }
+/*End By leewheel*/

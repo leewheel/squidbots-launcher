@@ -8,10 +8,14 @@
   <link rel="stylesheet" href="css/forge.css">
   <link rel="stylesheet" href="css/classic.css">
   <link rel="stylesheet" href="css/abyss.css">
+  <link rel="stylesheet" href="css/coa.css">
 </head>
 <body>
   <canvas id="ocean" aria-hidden="true"></canvas>
   <div class="app">
+    <!--By leewheel 2026-11-05 启动布局告警：常驻置顶，隐藏时不占网格行-->
+    <div id="layout-alert" hidden></div>
+    <!--End By leewheel-->
     <header class="topbar">
       <div class="brand"><span class="crest" aria-hidden="true"><span>🦑</span></span><strong id="app-name">CoA Launcher Lite</strong></div>
       <nav class="tabs" id="tabs"></nav>
@@ -38,6 +42,7 @@
   <script src="js/module-art.js"></script>
   <script src="js/server.js"></script>
   <script src="js/serverhome.js"></script>
+  <script src="js/bot-help.js"></script>
   <script src="js/realms.js"></script>
   <script src="js/wizard.js"></script>
   <script src="js/update.js"></script>

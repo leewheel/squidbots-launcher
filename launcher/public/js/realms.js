@@ -131,14 +131,16 @@ function realmCard(realm, busy) {
        <button class="link-button" data-action="realm-purge" data-key="${realm.key}" ${on || busy ? 'disabled' : ''} title="${esc(t('realms.purgeHint', 'Deletes the random bots of this realm only; they are made again at its next start.'))}">${icon('refresh')}${esc(t('realms.purge', 'New bots'))}</button>
        <button class="link-button" data-action="realm-disable" data-key="${realm.key}" ${busy ? 'disabled' : ''} title="${esc(t('realms.disableHint', 'Stops it and takes it out of the realm list; nothing is deleted.'))}">${icon('close')}${esc(t('realms.disable', 'Switch off'))}</button></span>`;
   return `<article class="realm-card realm-${realm.key}${on ? ' on' : ''}">${head}${stats}
-    <div class="realm-buttons">${startStop}<button class="button ghost small" data-action="realm-settings" data-key="${realm.key}">${icon('settings')}${esc(t('realms.settings', 'Settings'))}${realm.changed ? `<em class="count" title="${esc(t('realms.ownHint', 'Settings changed for this realm only'))}">${realm.changed}</em>` : ''}</button><button class="button ghost small" data-action="realm-console" data-key="${realm.key}" ${realm.state === 'running' ? '' : 'disabled'}>${icon('terminal')}${esc(t('realms.console', 'Console'))}</button>${App.state.dashboard?.available ? `<button class="button ghost small" data-action="realm-dashboard" data-key="${realm.key}">${icon('chart')}${esc(t('realms.dashboard', 'Dashboard'))}</button>` : ''}</div>
+    <div class="realm-buttons">${startStop}<button class="button ghost small" data-action="realm-settings" data-key="${realm.key}">${icon('settings')}${esc(t('realms.settings', 'Settings'))}${realm.changed ? `<em class="count" title="${esc(t('realms.ownHint', '这个国度单独改过 {n} 项设置，点开设置可看明细', { n: realm.changed }))}">${realm.changed}</em>` : ''}</button><button class="button ghost small" data-action="realm-console" data-key="${realm.key}" ${realm.state === 'running' ? '' : 'disabled'}>${icon('terminal')}${esc(t('realms.console', 'Console'))}</button>${App.state.dashboard?.available ? `<button class="button ghost small" data-action="realm-dashboard" data-key="${realm.key}">${icon('chart')}${esc(t('realms.dashboard', 'Dashboard'))}</button>` : ''}</div>
     <footer class="realm-more">${more}</footer>
   </article>`;
 }
 
 function realmsPage() {
   const head = `<div class="page-head"><div><p class="eyebrow">${esc(t('server.eyebrow', 'On this PC'))}</p><h1>${esc(t('tab.realms', 'Realms'))} <span class="pill warn">${esc(t('realms.beta', 'Beta'))}</span></h1></div></div>`;
-  if (!App.state.server?.path) return `<div class="page classic">${head}${emptyState('globe', t('modules.noServer', 'No server yet'), t('modules.noServerText', 'Install or choose your server first.'))}</div>`;
+  //By leewheel 2026-11-02 服务器信息还没读回来时先显示骨架，别闪一下"尚无服务器"
+  if (!App.state.server) return `<div class="page classic">${head}${skeleton(3)}</div>`;
+  if (!App.state.server.path) return `<div class="page classic">${head}${emptyState('globe', t('modules.noServer', 'No server yet'), t('modules.noServerText', 'Install or choose your server first.'))}</div>`;
   const r = App.state.realms;
   if (!r) return `<div class="page classic">${head}${skeleton(3)}</div>`;
   if (r.error) return `<div class="page classic">${head}${emptyState('warning', t('realms.error', 'The realms cannot be read'), r.error)}</div>`;

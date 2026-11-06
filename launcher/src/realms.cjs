@@ -231,7 +231,10 @@ function imposed(key, saved) {
   const out = {};
   for (const [file, keys] of Object.entries(m.keys)) out[file] = { ...keys };
   // Its own world and console ports; SOAP and the bots' command server (8888) off: a realm never takes a port of CoA.
-  out['worldserver.conf'] = { ...out['worldserver.conf'], RealmID: String(saved?.id ?? m.id), WorldServerPort: String(saved?.worldPort ?? ''), 'Ra.Port': String(saved?.raPort ?? ''), 'Ra.IP': '127.0.0.1', 'SOAP.Enabled': '0' };
+  //By leewheel 2026-11-05 国度配置是从主服 configs 整目录复制来的，必须强制打开 RA，
+  // 否则主服 conf 里一个 Ra.Enable = 0 会连带让国度控制台、国度停服命令全部失灵。
+  out['worldserver.conf'] = { ...out['worldserver.conf'], RealmID: String(saved?.id ?? m.id), WorldServerPort: String(saved?.worldPort ?? ''), 'Ra.Enable': '1', 'Ra.Port': String(saved?.raPort ?? ''), 'Ra.IP': '127.0.0.1', 'SOAP.Enabled': '0' };
+  //End By leewheel
   // What a mode does not have (checked in the core 2.6): the rotation assistant only knows the CoA specializations;
   // Manastorm has rules for Wildcard but nothing for Reborn; the added races are not made for these class models.
   // The auction house bot works everywhere: it makes its seller in each realm's characters database (AHBOT account).

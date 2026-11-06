@@ -14,6 +14,44 @@ const SERVICE_ID = /^[a-z][a-z0-9-]{1,20}$/;
 const ACCOUNT = /^[A-Za-z0-9]{3,17}$/;
 const PASSWORD = /^[\x21-\x7E]{6,16}$/;
 
+//By leewheel 2026-11-05 启动世界服前自动修复远程控制台（RA）配置
+// 发布版主服 worldserver.conf 把 Ra.Enable 留成了 0，3443 端口根本没有监听：
+// 启动器控制台每条命令都报 "The world console is not reachable"，主页也取不到 server info，
+// 上一轮"卡住了"误报的真正源头同样在这里。国度服每次启动又从主服 configs 复制配置，会被一起关掉。
+// 这里在 worldserver 读取配置之前，把 Ra.Enable / Ra.Port / Ra.IP 对齐 Settings/repack.json：
+// 只改不一致的键、改前留一份备份，玩家已经装好的旧目录重启一次即可恢复，不必手动改配置。
+async function ensureWorldConsole(root) {
+  const layout = require('./layout.cjs');
+  const L = layout.serverLayout(root);
+  const file = L.path(`${L.configs}/worldserver.conf`);
+  let text;
+  try { text = await fsp.readFile(file, 'utf8'); } catch { return; }
+  const settings = layout.readJson(L.path('Settings/repack.json')) || {};
+  const port = Number(settings.raPort) > 0 ? String(Number(settings.raPort)) : '3443';
+  // RA 只给本机启动器用：绑回环地址，不对局域网开放
+  const wanted = { 'Ra.Enable': '1', 'Ra.Port': port, 'Ra.IP': '"127.0.0.1"' };
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  let next = text;
+  let changed = false;
+  for (const [key, value] of Object.entries(wanted)) {
+    const pattern = new RegExp(`^([ \\t]*${key.replace(/\./g, '\\.')}[ \\t]*=[ \\t]*)(.*)$`, 'm');
+    const match = pattern.exec(next);
+    const plain = value.replace(/"/g, '');
+    if (match) {
+      if (String(match[2]).trim().replace(/"/g, '') === plain) continue;
+      next = next.replace(pattern, (_, head) => `${head}${value}`);
+    } else {
+      // 配置里缺这个键（被注释或旧版模板）：补在文件末尾，位置不影响核心读取
+      next = `${next.replace(/\s*$/, '')}${eol}${eol}# 由启动器补齐：远程控制台（仅本机）${eol}${key} = ${value}${eol}`;
+    }
+    changed = true;
+  }
+  if (!changed) return;
+  await fsp.copyFile(file, `${file}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  await fsp.writeFile(file, next);
+}
+//End By leewheel
+
 // A command is a program inside the repack plus its arguments, e.g. a repack's own manager script.
 function validateCommand(value, label) {
   if (!value) return null;
@@ -107,6 +145,27 @@ class ServerControl {
     return file;
   }
 
+  //By leewheel 2026年11月4日 这个服务“自己的 exe”到底是哪几个文件：主 exe + 带机器人等替代 exe。
+  // MySQL 只有 Server\mysql\bin\mysqld.exe 一个；系统里、别的项目里装的 mysqld.exe 不在名单上。
+  serviceExes(service) {
+    const list = [];
+    const add = relative => { if (relative) try { list.push(path.resolve(this.root, relative).toLowerCase()); } catch {} };
+    add(service.exe);
+    for (const alternative of service.alternatives || []) add(alternative.start?.exe);
+    return [...new Set(list)];
+  }
+
+  // 端口后面的进程是不是本服务自己的 exe（不是“在本包目录里的任意同名程序”）。
+  ownsExe(service, file) {
+    if (!file) return false;
+    const target = path.resolve(file).toLowerCase();
+    const exes = this.serviceExes(service);
+    if (exes.length) return exes.includes(target);
+    // 由管理脚本启动、没有直接 exe 的服务：仍要求在本包目录内。
+    return target.startsWith(this.root.toLowerCase() + path.sep);
+  }
+  //End By leewheel
+
   logFile(id) { return path.join(this.root, 'logs', `launcher-${id}.log`); }
 
   // Who listens on a port: { pid, file, inside } (inside = a program of this repack). Several
@@ -131,8 +190,11 @@ class ServerControl {
   async processAlive(id) {
     try {
       const record = JSON.parse(fs.readFileSync(path.join(this.root, '.state', `${id}.json`), 'utf8'));
-      if (!record?.pid || !String(record.exe || '').toLowerCase().startsWith(this.root.toLowerCase())) return false;
-      process.kill(Number(record.pid), 0);
+      if (!record?.pid || !String(record.exe || '').toLowerCase().startsWith(this.root.toLowerCase())) { this.forget(id); return false; }
+      //By leewheel 2026年11月4日 记录里的进程已经没了就是过期记录：当场删掉，
+      // 否则下一次启动/关服时还会拿这个死 PID 去问“是不是在加载”。
+      try { process.kill(Number(record.pid), 0); } catch { this.forget(id); return false; }
+      //End By leewheel
       if (process.platform !== 'win32') return true;
       // Windows gives a number again once its process ended (the launcher itself got MySQL's old one): the process
       // must still be the program the repack started.
@@ -148,6 +210,27 @@ class ServerControl {
     } catch { return false; }
   }
 
+  //By leewheel 2026年11月4日 单一备份：<file> 顶成 <file>.1，同名覆盖，永远只有一份上一次的日志。
+  rotateLog(file) {
+    try {
+      if (fs.existsSync(file) && fs.statSync(file).size > 0) fs.renameSync(file, `${file}.1`);
+      else fs.rmSync(`${file}.1`, { force: true });
+    } catch {}
+  }
+  //End By leewheel
+
+  //By leewheel 2026年11月4日 在整合包目录里找同名 exe 的进程（不管是谁起的），只用于把“加载中”判对：
+  // 端口还没开 + 进程已在 ⇒ starting；进程都不在 ⇒ 才是真的 stopped。
+  async strayProcess(service) {
+    if (!service.exe) return null;
+    const rows = await runningInside();
+    //By leewheel 2026年11月4日 只认本服务自己的 exe（MySQL 就是 Server\mysql\bin\mysqld.exe），
+    // 包内别处的同名程序不再算成“本服务正在加载”。
+    return rows.find(row => this.ownsExe(service, row.file)) || null;
+    //End By leewheel
+  }
+  //End By leewheel
+
   //By leewheel 2026-11-02 三个服务并行查询：原来的串行写法在慢机器上要 5 秒，首页会一直空着
   async status() {
     const results = await Promise.all(this.services.map(async service => {
@@ -158,10 +241,19 @@ class ServerControl {
       // the service is loading (a first world start with bots takes minutes), not stopped.
       // While it stops, the world closes its port first and saves for a few seconds more: still « stopping ».
       if (state === 'stopped' && await this.processAlive(service.id)) state = transient === 'stopping' ? 'stopping' : 'starting';
+      //By leewheel 2026年11月4日 不是启动器拉起的实例（脚本、手动、上一个启动器实例）没有 .state 记录：
+      // 加载期端口还没开时会被判成“已停止”，指示灯一直灰——老大实弹（手动起世界服，绿灯前灰了 2 分钟）。
+      // 这里按“整合包目录内同名 exe 仍在跑”补判为加载中；端口一开自然变“运行中”。
+      if (state === 'stopped' && await this.strayProcess(service)) state = 'starting';
+      //End By leewheel
       let other = '';
       if (state === 'running') {
         const owner = await this.portOwner(service.port);
-        if (owner?.inside === false) { state = 'foreign'; other = owner.file; }
+        //By leewheel 2026年11月4日 端口开着不等于本服务在跑：监听者必须是这个服务自己的 exe。
+        // 系统装的、别的项目里的 mysqld.exe（不在 Server\mysql\bin）以及读不到路径的进程，一律标成
+        // “端口被其他程序占用”，绝不再显示为运行中——老大实弹：别人的 MySQL 被当成自己的数据库。
+        if (owner && !this.ownsExe(service, owner.file)) { state = 'foreign'; other = owner.file || `PID ${owner.pid}（读不到程序路径）`; }
+        //End By leewheel
       }
       return { id: service.id, name: service.name, port: service.port, state, other, variant: this.variant(service), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) };
     }));
@@ -171,7 +263,9 @@ class ServerControl {
   async assertPortFree(service) {
     if (!(await portOpen(service.port))) return false;
     const owner = await this.portOwner(service.port);
-    if (owner?.inside === false) throw new Error(`${service.name}: port ${service.port} is used by another program (${owner.file}). Stop it first.`);
+    //By leewheel 2026年11月4日 占用端口的只要不是本服务自己的 exe 就报“被其他程序占用”，
+    // 不再拿别人的 MySQL 当自己的数据库继续往下跑。
+    if (owner && !this.ownsExe(service, owner.file)) throw new Error(`${service.name}: port ${service.port} is used by another program (${owner.file || `PID ${owner.pid}（读不到程序路径）`}). Stop it first.`);
     return true;
   }
 
@@ -189,6 +283,9 @@ class ServerControl {
   async startOnce(id) {
     const service = this.services.find(item => item.id === id);
     if (!service) throw new Error('Unknown service.');
+    //By leewheel 2026-11-05 世界服读配置之前修好 RA；修不动也不该挡住服务器启动，只留一条中文告警
+    if (/world/i.test(id)) await ensureWorldConsole(this.root).catch(error => console.warn(`[启动器] 远程控制台配置修复失败：${error.message}`));
+    //End By leewheel
     if (this.states.get(id) === 'stopping') throw new Error(`${service.name} is stopping: wait until it is stopped.`);
     if (await this.assertPortFree(service)) return;
     const start = this.startCommand(service);
@@ -205,7 +302,11 @@ class ServerControl {
     const exe = this.resolve(service.exe);
     if (!fs.existsSync(exe)) throw new Error(`${service.name}: ${service.exe} is missing. Install or repair the repack first.`);
     await fsp.mkdir(path.dirname(this.logFile(id)), { recursive: true });
-    const log = fs.openSync(this.logFile(id), 'a');
+    //By leewheel 2026年11月4日 老大规则：日志只保留“上一次启动的一份”备份，绝不按日期堆文件。
+    // 每次启动先把上一次的内容顶到 <日志>.1（同名覆盖），再把当前日志开成空白。
+    this.rotateLog(this.logFile(id));
+    //By leewheel 2026年11月4日 日志面板在没启动时必须是空白，启动后才开始显示（原来 'a' 追加会把旧内容一直留着）。
+    const log = fs.openSync(this.logFile(id), 'w');
     fs.writeSync(log, `\n==== ${new Date().toISOString()} started by the launcher ====\n`);
     //By leewheel 2026-11-03 命令行 --port 必须与状态轮询的端口同源（service.port 是 inspectRepack
     // 覆盖后的实际端口）：以前 config 写 3396、repack.json 存 3395，mysqld 听 3396 而状态查 3395，
@@ -265,10 +366,11 @@ class ServerControl {
     for (const service of order) await this.start(service.id);
   }
 
-  // Finds the process listening on a port and returns it only if it lives in the repack folder.
-  async ownedProcess(port) {
-    const owner = await this.portOwner(port);
-    return owner?.inside ? { pid: owner.pid, file: owner.file } : null;
+  // Finds the process listening on a port and returns it only when it is this service's own exe
+  // （别人的 mysqld/worldserver 绝不返回，免得停服时误杀外来进程）。
+  async ownedProcess(service) {
+    const owner = await this.portOwner(service.port);
+    return owner && this.ownsExe(service, owner.file) ? { pid: owner.pid, file: owner.file } : null;
   }
 
   async stop(id) {
@@ -301,13 +403,16 @@ class ServerControl {
       } else if (child) {
         await exec('taskkill.exe', ['/PID', String(child.pid), '/T'], { windowsHide: true }).catch(() => {});
       } else {
-        const owner = await this.ownedProcess(service.port);
+        const owner = await this.ownedProcess(service);
         if (!owner) throw new Error(`${service.name} was not started from this repack; stop it where it was started.`);
         await exec('taskkill.exe', ['/PID', String(owner.pid), '/T'], { windowsHide: true }).catch(() => {});
       }
-      //By leewheel 2026-11-02 等进程真正退出，而不是只等端口关闭：
+      //By leewheel 2026年11月2日 等进程真正退出，而不是只等端口关闭：
       // worldserver 停机时先关端口、再花几十秒把角色/机器人的查询写完（数据库池），此时若已停 MySQL 就会丢数据。
-      const wait = service.console ? 300 * 1000 : 120 * 1000;
+      //By leewheel 2026年11月4日 没有优雅停机手段的服务（authserver：既无 stopCommand 也无 stopExe）不能等满 120 秒：
+      // 上面 taskkill 不带 /F 只是发 WM_CLOSE，控制台程序根本不理会，以前要白等两分钟才走到兜底强杀
+      // —— 老大反馈"停止服务器特别慢"主要就是这里。现在只给它 15 秒收尾，随后立刻 taskkill /F。
+      const wait = service.console ? 300 * 1000 : (service.stopExe ? 120 * 1000 : 15 * 1000);
       const deadline = Date.now() + wait;
       //By leewheel 2026-11-03 入口时端口还没开（服务正在启动中）≠ 不用优雅停机：
       // 等待期间端口开了（正好就绪），要补做一次优雅停机，而不是傻等到点强杀——
@@ -323,7 +428,7 @@ class ServerControl {
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       if ((await portOpen(service.port)) || this.children.has(id)) {
-        const owner = child ? { pid: child.pid } : await this.ownedProcess(service.port);
+        const owner = child ? { pid: child.pid } : await this.ownedProcess(service);
         if (owner) await exec('taskkill.exe', ['/PID', String(owner.pid), '/T', '/F'], { windowsHide: true }).catch(() => {});
       }
       this.forget(id);
@@ -405,7 +510,13 @@ class ServerControl {
   }
 
   async tail(id, lines = 200) {
-    if (!this.services.some(service => service.id === id)) throw new Error('Unknown service.');
+    const service = this.services.find(item => item.id === id);
+    if (!service) throw new Error('Unknown service.');
+    //By leewheel 2026年11月4日 世界服/登录服/数据库没在跑（也没在加载）时，日志面板必须是空白：
+    // 不能把上一次甚至昨天的旧日志当成本次日志显示给玩家。起来之后（含 loading 阶段）才给内容。
+    const up = (await portOpen(service.port)) || (await this.processAlive(id)) || !!(await this.strayProcess(service));
+    if (!up) return '';
+    //End By leewheel
     const file = this.logFile(id);
     const stat = await fsp.stat(file).catch(() => null);
     if (!stat) return '';
@@ -429,4 +540,26 @@ function listening() {
   return netstatCache.job;
 }
 
-module.exports = { ServerControl, validateServices, validateCommand, portOpen };
+//By leewheel 2026年11月4日 一次问清“世界服/登录服/数据库进程还在不在”：status() 每 5 秒问一次，
+// 逐个 PID 去打 PowerShell 太慢（而且 .state 记录可能根本没有），这里合并成一次查询并缓存 4 秒。
+let insideCache = { at: 0, job: null };
+function runningInside() {
+  if (process.platform !== 'win32') return Promise.resolve([]);
+  if (insideCache.job && Date.now() - insideCache.at < 4000) return insideCache.job;
+  const script = "Get-CimInstance Win32_Process -Filter \"Name='worldserver.exe' OR Name='authserver.exe' OR Name='mysqld.exe'\" | ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ExecutablePath }";
+  insideCache = {
+    at: Date.now(),
+    job: exec('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true, timeout: 15000 })
+      .then(result => String(result.stdout).split(/\r?\n/).map(line => {
+        const at = line.indexOf('|');
+        return at > 0 ? { pid: Number(line.slice(0, at)), file: line.slice(at + 1).trim() } : null;
+      }).filter(row => row && row.pid && row.file))
+      .catch(() => []),
+  };
+  return insideCache.job;
+}
+//End By leewheel
+
+//By leewheel 2026-11-05 导出 RA 配置自愈函数，供回归测试直接验证
+module.exports = { ServerControl, validateServices, validateCommand, portOpen, ensureWorldConsole };
+//End By leewheel

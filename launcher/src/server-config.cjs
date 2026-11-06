@@ -38,6 +38,16 @@ function stamp() {
 }
 const STAMP = /^\d{8}-\d{6}-\d{3}$/;
 
+//By leewheel 2026-11-03 全角数字/标点归一化：中文输入法下 "１．２６"、"－１"、"１，２" 都能当正常值保存
+function normalizeNumber(value) {
+  return String(value ?? '')
+    .replace(/[\uFF10-\uFF19]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/[\uFF0E\u3002]/g, '.')
+    .replace(/[\uFF0D\u2013\u2014\u2212]/g, '-')
+    .replace(/[\uFF0C\u3001]/g, ',')
+    .trim();
+}
+
 // "1", "0.5", "-3" -> a number; 0/1 are also offered as a switch when the documentation says so.
 function inferKind(value) {
   const text = String(value).trim();
@@ -47,18 +57,23 @@ function inferKind(value) {
   return 'text';
 }
 
+//By leewheel 2026-11-03 数值类型的值先做全角→半角归一化（中文输入法常打出"１．２６"），
+// 文本类型保持原样（不能把玩家的中文句号/顿号改掉）。
+const NUMERIC_KINDS = ['bool', 'int', 'float', 'ids'];
 function validate(kind, value, choices) {
-  const text = String(value ?? '').trim();
-  if (/[\r\n]/.test(text)) return 'A value cannot span several lines.';
-  if (text.length > 400) return 'This value is too long.';
+  const text = NUMERIC_KINDS.includes(kind) ? normalizeNumber(value) : String(value ?? '').trim();
+  if (/[\r\n]/.test(text)) return '一个值不能跨多行。';
+  if (text.length > 400) return '这个值太长了。';
   switch (kind) {
-    case 'bool': return ['0', '1'].includes(text) ? null : 'Expected 0 or 1.';
-    case 'int': return /^-?\d{1,12}$/.test(text) ? null : 'Expected a whole number.';
-    case 'float': return /^-?\d{1,12}(\.\d{1,6})?$/.test(text) ? null : 'Expected a number.';
-    case 'ids': return /^(\d+(\s*,\s*\d+)*)?$/.test(text) ? null : 'Expected numbers separated by commas.';
-    case 'quoted': return text.includes('"') ? 'Quotes are added for you: type the text alone.' : null;
-    case 'choice': return (choices || []).some(choice => String(choice.value) === text) ? null : 'Pick one of the listed values.';
-    default: return text.includes('"') && !/^".*"$/.test(text) ? 'Unbalanced quotes.' : null;
+    case 'bool': return ['0', '1'].includes(text) ? null : '只能是 0 或 1。';
+    case 'int': return /^-?\d{1,12}$/.test(text) ? null : '应为整数。';
+    //By leewheel 2026-11-03 小数位从 6 放宽到 10：配置里本身就有 Rate.XP.Kill = 1.0909091 这种 7 位、
+    // Rate.XP.Kill.WotLK = 0.90909094 这种 8 位的值，旧上限会把合法的原值也判成"不是数字"。
+    case 'float': return /^-?\d{1,12}(\.\d{1,10})?$/.test(text) ? null : '应为一个数字。';
+    case 'ids': return /^(\d+(\s*,\s*\d+)*)?$/.test(text) ? null : '应为逗号分隔的数字。';
+    case 'quoted': return text.includes('"') ? '引号会自动加上：只填内容即可。' : null;
+    case 'choice': return (choices || []).some(choice => String(choice.value) === text) ? null : '请从列出的值里选一个。';
+    default: return text.includes('"') && !/^".*"$/.test(text) ? '引号不配对。' : null;
   }
 }
 
@@ -276,19 +291,21 @@ class ServerConfig {
     const errors = {};
     for (const change of changes) {
       const file = files.find(item => item.id === change?.file);
-      if (!file || !KEY.test(change.key || '')) { errors[change?.key || '?'] = 'Unknown setting.'; continue; }
-      if (SECRET.test(change.key)) { errors[change.key] = 'Database credentials are managed by the repack.'; continue; }
-      if (this.managed(file.id).some(rule => rule.keys.includes(change.key))) { errors[change.key] = 'This value is rewritten by the repack at every start.'; continue; }
+      if (!file || !KEY.test(change.key || '')) { errors[change?.key || '?'] = '未知的设置项。'; continue; }
+      if (SECRET.test(change.key)) { errors[change.key] = '数据库账号由整合包统一管理，不能在这里改。'; continue; }
+      if (this.managed(file.id).some(rule => rule.keys.includes(change.key))) { errors[change.key] = '这一项每次启动都会被整合包改写。'; continue; }
       const curated = CATALOG.settings.find(setting => setting.file === file.id && setting.key === change.key);
-      const text = String(change.value ?? '').trim();
-      const kind = curated?.kind || change.kind || inferKind(text);
+      //By leewheel 2026-11-03 数值类型才归一化全角，文本类型原样保留
+      const raw = String(change.value ?? '').trim();
+      const kind = curated?.kind || change.kind || inferKind(raw);
+      const text = NUMERIC_KINDS.includes(kind) ? normalizeNumber(change.value) : raw;
       const problem = validate(['bool', 'int', 'float', 'ids', 'quoted', 'choice', 'text'].includes(kind) ? kind : 'text', text, curated?.choices);
       if (problem) { errors[change.key] = problem; continue; }
       if (!byFile.has(file.id)) byFile.set(file.id, { file, pairs: new Map() });
       byFile.get(file.id).pairs.set(change.key, kind === 'quoted' ? `"${text}"` : text);
     }
     if (Object.keys(errors).length) {
-      const error = new Error(`Some values were refused: ${Object.entries(errors).map(([key, message]) => `${key}: ${message}`).join(' ')}`);
+      const error = new Error(`有些设置没能保存：${Object.entries(errors).map(([key, message]) => `${key}：${message}`).join(' ')}`);
       error.fields = errors;
       throw error;
     }

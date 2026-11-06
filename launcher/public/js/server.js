@@ -48,14 +48,34 @@ function servicesView(info) {
       ${service.state === 'running' ? `<button class="button ghost small" data-action="service-stop" data-id="${esc(service.id)}">${esc(t('server.stop', 'Stop'))}</button>` : `<button class="button ghost small" data-action="service-start" data-id="${esc(service.id)}" ${info.installed && service.state === 'stopped' ? '' : 'disabled'}>${esc(t('server.start', 'Start'))}</button>`}</div>`;
   }).join('');
   const restart = `<label class="check page-option"><input type="checkbox" data-setting="restartWorldOnCrash" data-page-setting="1" ${App.state.settings.restartWorldOnCrash ? 'checked' : ''}><span>${esc(t('settings.restartOnCrash', 'Start the world again after a crash (3 times an hour at most)'))}</span></label>`;
+  //By leewheel 2026年11月5日 进页面先把游戏内时间读出来（只读一次）
+  if (!App.state.clock && App.api.getClock) App.api.getClock().then(clock => { App.state.clock = clock; if (App.state.tab === 'server') App.refresh('server'); }).catch(() => {});
   return `${restart}<div class="grid-2">
     <section class="panel" id="srv-services"><header><h2>${icon('layers')}${esc(t('server.services', 'Services'))}</h2><div class="button-row"><button class="button primary small" data-action="service-start-all" ${info.installed ? '' : 'disabled'}>${icon('play')}${esc(t('server.startAll', 'Start all'))}</button><button class="button ghost small" data-action="service-stop-all" ${any ? '' : 'disabled'}>${icon('pause')}${esc(t('server.stopAll', 'Stop all'))}</button></div></header>
       ${summary}<div class="service-list">${list}</div></section>
     <section class="panel"><header><h2>${icon('user')}${esc(t('server.account', 'Game account'))}</h2></header>
       <p class="muted">${esc(t('server.accountHint', 'Create the account you log in with on your own server. The worldserver must be running.'))}</p>
       <form id="game-account" class="form-grid"><input id="ga-name" maxlength="17" placeholder="${esc(t('server.accountName', 'Account name'))}" autocomplete="off"><input id="ga-password" type="password" maxlength="16" placeholder="${esc(t('server.password', 'Password'))}" autocomplete="new-password"><label class="check"><input type="checkbox" id="ga-gm" class="ga-gm"><span>${esc(t('server.gm', 'Game master'))}</span></label><button class="button primary small" type="submit" ${worldRunning(info) ? '' : 'disabled'}>${esc(t('server.create', 'Create'))}</button><button class="button ghost small" type="button" data-action="account-password" title="${esc(t('server.passwordHint', 'Give this existing account the password typed here'))}" ${worldRunning(info) ? '' : 'disabled'}>${esc(t('server.newPassword', 'New password'))}</button></form>
-      ${info.bots?.installed && info.canPurgeBots ? `<div class="line-action">${icon('bot')}<span>${esc(t('server.purgeHint', 'Bots acting strangely after an update? Recreate them: your own characters stay.'))}</span><button class="button ghost small" data-action="purge-bots" ${worldRunning(info) ? 'disabled' : ''}>${esc(t('server.purge', 'Recreate the bots'))}</button>${worldRunning(info) ? `<small class="muted purge-stop">${esc(t('server.purgeStop', 'Stop the server first.'))}</small>` : ''}</div>` : ''}
+      ${(info.bots?.installed || info.botsBuiltIn) && info.canPurgeBots ? `<div class="line-action">${icon('bot')}<span>${esc(t('server.purgeHint', 'Bots acting strangely after an update? Recreate them: your own characters stay.'))}</span><button class="button ghost small" data-action="purge-bots" ${worldRunning(info) ? 'disabled' : ''}>${esc(t('server.purge', 'Recreate the bots'))}</button>${worldRunning(info) ? `<small class="muted purge-stop">${esc(t('server.purgeStop', 'Stop the server first.'))}</small>` : ''}</div>` : ''}
+      ${clockView(info)}
     </section></div>`;
+}
+
+//By leewheel 2026年11月5日 游戏内时间设置（老大要求放在“设置 → 服务 → 游戏账号”下面）：
+// 玩家多在下班后玩，游戏里一直是晚上；这里可选“跟随电脑本地时间”或“固定时刻”（例如 08:00 白天），
+// 写进 configs\modules\coa.conf 的 CoA.Clock.*，重启服务器后登录即按新时间。
+function clockView(info) {
+  const clock = App.state.clock || { mode: 0, hour: 8, minute: 0 };
+  const fixed = Number(clock.mode) === 1;
+  const time = `${String(clock.hour ?? 8).padStart(2, '0')}:${String(clock.minute ?? 0).padStart(2, '0')}`;
+  return `<div class="clock-box">
+    <h3>${icon('clock')}${esc(t('server.clock', '游戏内时间'))}</h3>
+    <p class="muted small">${esc(t('server.clockHint', '玩家晚上上线也能看到白天：改完重启服务器生效；默认跟随电脑本地时间。'))}</p>
+    <label class="check"><input type="radio" name="clock-mode" value="0" data-action="clock-mode" ${fixed ? '' : 'checked'}><span>${esc(t('server.clockLocal', '跟随电脑本地时间'))}</span></label>
+    <label class="check"><input type="radio" name="clock-mode" value="1" data-action="clock-mode" ${fixed ? 'checked' : ''}><span>${esc(t('server.clockFixed', '固定时刻（每天这个时间开始）'))}</span></label>
+    <div class="clock-row"><input type="time" id="clock-time" value="${esc(time)}" ${fixed ? '' : 'disabled'}><button class="button primary small" data-action="clock-save">${esc(t('server.clockSave', '保存'))}</button></div>
+    <p class="muted small">${esc(t('server.clockRestart', '保存后需要重启服务器才会生效。'))}</p>
+  </div>`;
 }
 
 // ---------------------------------------------------------------- installation
@@ -79,12 +99,15 @@ function importView(info) {
 }
 
 function directInstallCard(working, p) {
+  //By leewheel 2026-11-05 老大要求：删除"安装服务器"和"我已经有服务器文件夹"两个按钮，
+  // 发布版只从百度网盘提供完整整合包；仅在玩家还没选游戏文件夹时保留"选择游戏文件夹"。
   const gameOk = !!App.state.client?.path;
   const downloading = p?.phase === 'download' ? `<p class="muted small">${esc(t('install.downloading', 'Downloading the server… {done} / {total}', { done: formatBytes(p.done), total: formatBytes(p.total) }))}</p><button class="button ghost small" data-action="install-cancel">${icon('pause')}${esc(t('play.pause', 'Pause'))}</button>` : '';
   return `<section class="panel" id="srv-repack"><header><h2>${icon('download')}${esc(t('install.title', 'Install the server'))}</h2></header>
-    <p class="muted">${esc(t('install.serverTab', 'The launcher downloads the server (about 150 MB, without any game data) into an empty folder you choose, then takes the game data from your own Conquest of Azeroth client (about 30 minutes) and installs the bots.'))}</p>
-    ${working ? (downloading || working) : `${gameOk ? '' : `<p class="status-line warn">${icon('warning')}${esc(t('setup.gameFirst', 'Choose your game folder first.'))}</p>`}<div class="button-row">${gameOk ? `<button class="button primary" data-action="install-server">${icon('download')}${esc(t('install.title', 'Install the server'))}</button>` : `<button class="button primary" data-action="client-locate">${icon('folder')}${esc(t('setup.pickGame', 'Choose the game folder'))}</button>`}<button class="button ghost" data-action="server-choose">${icon('folder')}${esc(t('home.haveServer', 'I already have a server folder'))}</button></div>`}
+    <p class="muted">请从百度网盘下载完整整合包，解压后请保持 Client 与 Server 两个文件夹原样。</p>
+    ${working ? (downloading || working) : `${gameOk ? '' : `<p class="status-line warn">${icon('warning')}${esc(t('setup.gameFirst', 'Choose your game folder first.'))}</p><div class="button-row"><button class="button primary" data-action="client-locate">${icon('folder')}${esc(t('setup.pickGame', 'Choose the game folder'))}</button></div>`}`}
   </section>`;
+  //End By leewheel
 }
 
 function installTail(info, repack) {
@@ -92,7 +115,8 @@ function installTail(info, repack) {
   const botsProgress = App.state.botsProgress || {};
   const botsBusy = BUSY.includes(botsProgress.phase) || b?.installing;
   const botsCheck = App.state.botsCheck;
-  const bots = b ? `<section class="panel" id="srv-bots"><header><h2>${icon('bot')}${esc(b.name)}</h2>${b.installed ? `<code>${esc(b.version || '?')}</code>` : ''}</header>
+  //By leewheel 2026年11月5日 老大要求：机器人帮助从首页挪到“检查”页“机器人”标题后面，内容内嵌（离线可看）
+  const bots = b ? `<section class="panel" id="srv-bots"><header><h2>${icon('bot')}${esc(b.name)}<button class="link-button bot-help-link" data-action="bots-help">${icon('book')}${esc(t('bots.help', '帮助'))}</button></h2>${b.installed ? `<code>${esc(b.version || '?')}</code>` : ''}</header>
     <p class="muted">${esc(loc(b.description))}</p>
     <div class="state-line">${b.installed ? `<span class="pill ok">${icon('check')}${esc(t('bots.installed', 'Installed'))}</span>${b.builtFor ? `<span class="pill">${esc(t('bots.builtFor', 'for {release}', { release: b.builtFor }))}</span>` : ''}` : `<span class="pill">${esc(t('bots.notInstalled', 'Not installed'))}</span>`}${botsCheck?.needsUpdate && !App.state.config.hasUpdates ? `<span class="pill warn">${esc(t('bots.update', 'Update {version}: {size}', { version: botsCheck.version, size: formatBytes(botsCheck.bytes) }))}</span>` : ''}</div>
     ${App.state.botsError && !b.installed && !botsBusy ? `<div class="conf-warn">${icon('warning')}<span>${esc(t('bots.failed', 'The bots were not installed: {reason}', { reason: App.state.botsError }))}</span></div>` : ''}
@@ -218,6 +242,14 @@ async function loadConf() {
   if (!App.state.realms && typeof loadRealms === 'function') loadRealms();
   try { App.state.conf = await App.api.serverSettings(confRealm()); }
   catch (error) { App.state.conf = { error: translateError(error.message) }; }
+  //By leewheel 2026-11-03 国度页"设置"按钮上的数字＝这个国度单独改过的项，这里把明细读回来
+  App.state.realmChanges = null;
+  const realm = confRealm();
+  if (realm && App.api.realmChanged) {
+    App.api.realmChanged(realm)
+      .then(changes => { App.state.realmChanges = changes; if (App.state.tab === 'server') App.refresh('server'); })
+      .catch(() => {});
+  }
   App.refresh('server');
 }
 
@@ -269,7 +301,8 @@ async function loadModules() {
 
 // The Modules tab of the top bar (second, so nobody misses it). Read again at each visit.
 App.pages.modules = {
-  render: () => `<div class="page classic"><div class="page-head"><p class="eyebrow">${esc(t('server.eyebrow', 'On this PC'))}</p><h1>${esc(t('tab.modules', 'Modules'))}</h1></div>${App.state.server?.path ? modulesView() : emptyState('addons', t('modules.noServer', 'No server yet'), t('modules.noServerText', 'Install or choose your server first.'))}</div>`,
+  //By leewheel 2026-11-02 服务器信息还没读回来时先显示骨架，别闪一下"尚无服务器"
+  render: () => `<div class="page classic"><div class="page-head"><p class="eyebrow">${esc(t('server.eyebrow', 'On this PC'))}</p><h1>${esc(t('tab.modules', 'Modules'))}</h1></div>${App.state.server?.path ? modulesView() : App.state.server ? emptyState('addons', t('modules.noServer', 'No server yet'), t('modules.noServerText', 'Install or choose your server first.')) : skeleton(4)}</div>`,
   mount() { if (!App.state.modulesFresh && App.state.server?.path) { App.state.modulesFresh = true; loadModules(); } },
 };
 
@@ -288,21 +321,21 @@ function moduleSwitch(action, on, disabled) {
   return `<button class="switch ${on ? 'on' : ''}" data-action="${action}" data-on="${on ? '1' : '0'}" ${disabled ? 'disabled' : ''} role="switch" aria-checked="${on}"><span></span></button>`;
 }
 
-// The Enchanter NPC: working once the server has its module (CoA Bots 2.8.4), a "coming soon" preview before.
+// The Enchanter NPC: shown only when this server actually has its module.
+//By leewheel 2026-11-02 没装模块时不再显示"即将推出"的假卡片，直接不显示。
 function enchanterCard(e, running, stopFirst) {
-  const live = !!e?.available;
-  const tiers = live ? e.tiers : ['60'];
-  const costs = live ? e.costs : { 60: 1, 70: 5, 80: 10 };
-  const locked = !live || running;
+  if (!e?.available) return '';
+  const tiers = e.tiers;
+  const costs = e.costs;
+  const locked = running;
   const tierBox = tier => `<label class="tier-check"><input type="checkbox" data-enchanter-tier="${tier}" ${tiers.includes(tier) ? 'checked' : ''} ${locked || tier === '60' ? 'disabled' : ''}> ${esc(t('modules.enchanterTier', 'Level {n}', { n: tier }))}</label>`;
   const price = tier => `<label class="tier-price">${tier}<input type="number" min="0" max="100000" step="1" data-enchanter-cost="${tier}" value="${Number(costs[tier]) || 0}" ${locked ? 'disabled' : ''}><span>${esc(t('modules.enchanterGold', 'gold'))}</span></label>`;
-  return `<section class="panel module-card${live ? '' : ' soon coming'}">${moduleArt('enchanter')}<header><h2>${icon('star')}${esc(t('modules.enchanter', 'Enchanter NPC'))}</h2>${live ? moduleSwitch('modules-enchanter', e.enabled, running) : `<span class="pill info">${esc(t('modules.comingSoon', 'Coming soon'))}</span>`}</header>
+  return `<section class="panel module-card">${moduleArt('enchanter')}<header><h2>${icon('star')}${esc(t('modules.enchanter', 'Enchanter NPC'))}</h2>${moduleSwitch('modules-enchanter', e.enabled, running)}</header>
       <p class="muted">${esc(t('modules.enchanterText', 'An NPC that applies enchantments to your gear. By default only enchantments up to level 60.'))}</p>
-      ${live ? '' : `<div class="module-extra tier-row">${moduleSwitch('modules-enchanter', false, true)}<span>${esc(t('modules.enchanterEnable', 'Enable the module'))}</span></div>`}
       <div class="module-extra"><span>${esc(t('modules.enchanterTiers', 'Highest enchantment level:'))}</span>${['60', '70', '80'].map(tierBox).join('')}</div>
       <div class="module-extra tier-prices"><span>${esc(t('modules.enchanterPrice', 'Price of one enchantment:'))}</span>${['60', '70', '80'].map(price).join('')}</div>
       <p class="small muted">${esc(t('modules.enchanterCounts', 'Level 60: 219 enchantments. Level 70: 55 more. Level 80: 81 more.'))}</p>
-      ${live ? `<p class="module-note">${icon('info')}${esc(t('modules.enchanterSpawn', 'Ilyra Spellweave appears in the enchanting shop of each capital after the next server start. Game masters: .npc add 9785001 places her elsewhere.'))}</p>${stopFirst}` : ''}
+      <p class="module-note">${icon('info')}${esc(t('modules.enchanterSpawn', 'Ilyra Spellweave appears in the enchanting shop of each capital after the next server start. Game masters: .npc add 9785001 places her elsewhere.'))}</p>${stopFirst}
       <p class="module-credit long"><span>${esc(t('modules.enchanterCredit', "SquidBots module (AGPL) · idea from AzerothCore's mod-npc-enchanter (StygianTheBest)"))}</span><button class="link-button" data-action="source-link" data-id="enchanter">${icon('external')}${esc(t('modules.enchanterOriginal', 'Original module'))}</button></p>
     </section>`;
 }
@@ -346,15 +379,9 @@ function modulesView() {
     ${m.dungeonclear?.available ? `<section class="panel module-card">${moduleArt('dungeonclear')}<header><h2>${icon('shield')}Dungeon Clear</h2>${moduleSwitch('modules-dungeon', m.dungeonclear.enabled, m.worldRunning)}</header>
       <p class="muted">${esc(t('modules.dungeonText', 'The bots of your group clear the dungeon on their own: start it from the SquidBots Lite addon, they pull, fight and loot room after room.'))}</p>
       <div class="module-extra"><span class="pill warn">${esc(t('modules.experimental', 'Experimental'))}</span><span>${esc(t('modules.raidWithBots', 'Raids too: start it the same way in a raid with your bots. Boss health counts a bot as 0.3 of a player (Settings > Creature difficulty).'))}</span></div>
-      <div class="module-extra soon"><span class="soon-tag">${esc(t('conf.soon', 'Coming soon'))}</span><span>${esc(t('modules.raidBotsAlone', 'Raids of bots alone, like the self-found dungeon parties.'))}</span></div>
       ${stopFirst}
       <p class="module-credit long"><span>${esc(t('modules.dungeonCredit', 'SquidBots version (AGPL) · original module by Jared Wright'))}</span><span class="credit-links"><button class="link-button" data-action="source-link" data-id="dungeonclear">${icon('external')}${esc(t('modules.source', 'Source code'))}</button><button class="link-button" data-action="source-link" data-id="dungeonclearOriginal">${icon('external')}${esc(t('modules.enchanterOriginal', 'Original module'))}</button></span></p>
     </section>` : ''}
-    <section class="panel module-card soon coming">${moduleArt('squidchat')}<header><h2>${icon('chat')}SquidChat</h2><span class="pill info">${esc(t('modules.comingSoon', 'Coming soon'))}</span></header>
-      <p class="muted">${esc(t('modules.squidchatText', 'Your server will never be quiet again: bots chat, cheer the good loot, laugh at the wipes and have an opinion on everything. Even on Jealous.'))}</p>
-      <ul class="module-facts">${[t('modules.iatalkBank', 'A bank of lines written in advance.'), t('modules.iatalkAi', 'Optional AI for the answers: Ollama on this PC or on your network, or an online service with your own key and a daily cap.')].map(text => `<li class="ok">${icon('check')}<span>${esc(text)}</span></li>`).join('')}</ul>
-      <p class="module-credit">${esc(t('modules.by', 'By {author}', { author: 'SquidBots (Zyth45)' }))}</p>
-    </section>
     ${enchanterCard(m.enchanter, m.worldRunning, stopFirst)}
     <section class="panel module-card ${m.rotation?.available ? '' : 'soon'}">${moduleArt('rotation')}<header><h2>${icon('refresh')}${esc(t('modules.rotation', 'Rotation assistant'))}</h2>${moduleSwitch('modules-rotation', !!(m.rotation?.available && m.rotation.enabled), m.worldRunning || !m.rotation?.available)}</header>
       <p class="muted">${esc(t('modules.rotationText', 'One button that casts the next spell of your rotation for you.'))}</p>
@@ -425,6 +452,7 @@ function settingsView() {
   const purging = realmKey && App.state.realmBusy === realmKey;
   const purge = realmKey ? `<button class="button ghost small" data-action="realm-purge" data-key="${realmKey}" ${realmOn || purging ? 'disabled' : ''}>${icon(purging ? 'refresh' : 'bot')}${esc(purging ? t('realms.purging', 'Recreating its bots…') : t('realms.purge', 'Recreate its bots'))}</button>` : info.bots?.installed && info.canPurgeBots ? `<button class="button ghost small" data-action="purge-bots" ${worldRunning(info) ? `disabled title="${esc(t('server.purgeStop', 'Stop the server first.'))}"` : `title="${esc(t('conf.purgeHint', 'Recreate the random bots (after changing their number, classes or levels): your characters stay. The server must be stopped.'))}"`}>${icon('bot')}${esc(t('server.purge', 'Recreate the bots'))}</button>` : '';
   const logs = `<button class="button ghost small" data-action="open-logs" title="${esc(t('conf.logsHint', 'The server logs (Server.log, errors, bots): the console scrolls too fast, these files keep everything.'))}">${icon('book')}${esc(t('conf.openLogs', 'Open the logs'))}</button>`;
+  //By leewheel 2026年11月6日 BUG 反馈入口已移到顶部“检查”左边（瓢虫图标），设置页不再重复放按钮
   const bar = `<div class="conf-bar${count ? ' dirty' : ''}" id="conf-bar"><span>${esc(count ? t('conf.pending', '{n} unsaved change(s)', { n: count }) : t('conf.savedShort', 'All saved.'))}</span><span class="spacer"></span>${count ? `<button class="button ghost small" data-action="conf-discard">${esc(t('conf.discard', 'Discard'))}</button><button class="button primary small" data-action="conf-save">${esc(t('common.save', 'Save'))}</button>${(realmKey ? realmOn : worldRunning(App.state.server)) ? `<button class="button primary small" data-action="conf-save-restart">${esc(t('conf.saveRestart', 'Save and restart'))}</button>` : ''}` : realmKey ? `<button class="button ghost small" data-action="realm-logs" data-key="${realmKey}">${icon('book')}${esc(t('conf.openLogs', 'Open the logs'))}</button>${purge}` : `${logs}${purge}<button class="button ghost small" data-action="conf-history" title="${esc(t('conf.saved', 'Saved. A copy of each file is kept before any change.'))}">${icon('refresh')}${esc(t('conf.history', 'History'))}</button>`}</div>`;
   const tabs = groups.map(group => ({ id: group.id, icon: group.icon, label: loc(group.label) }));
   if (!tabs.some(tab => tab.id === App.state.confGroup)) App.state.confGroup = tabs[0]?.id;
@@ -445,8 +473,17 @@ function settingsView() {
     ? t('realms.confRealm', 'Values marked "as CoA" follow Conquest of Azeroth. Change one and it becomes this realm\'s own; the lock marks the rules of its game mode.')
     : t('realms.confCoa', 'These values are also those of the other realms, except the ones a realm changes for itself.'));
   App.state.confBody = body;
+  //By leewheel 2026-11-03 国度设置页顶部：这个国度单独改过哪些（与主服不同的值），避免只看到一个数字不知道改了什么
+  const changes = App.state.realmChanges;
+  const changesPanel = !realmKey ? '' : `<details class="realm-changes"${changes?.count ? ' open' : ''}>
+    <summary>${icon('info')}<span>${esc(t('conf.realmOwnTitle', '这个国度单独改过的设置：{n} 项', { n: changes?.count ?? 0 }))}</span></summary>
+    ${!changes ? `<p class="muted small">${esc(t('conf.realmOwnLoading', '正在读取…'))}</p>`
+      : changes.count === 0 ? `<p class="muted small">${esc(t('conf.realmOwnNone', '没有单独改动：这个国度完全沿用主服（CoA）的设置。'))}</p>`
+      : `<p class="muted small">${esc(t('conf.realmOwnHint', '这些是这个国度与主服不同的值（粗体是它当前用的，括号里是主服的值）。没有必填项：想改哪项就改哪项，其余沿用主服。'))}</p>
+        <ul class="realm-change-list">${changes.items.map(item => `<li><code>${esc(item.key)}</code><span class="muted small">${esc(item.file)}</span><br><strong>${esc(item.value)}</strong>${item.base && item.base !== item.value ? ` <span class="muted small">（主服：${esc(item.base)}）</span>` : ''}</li>`).join('')}</ul>`}
+  </details>`;
   const search = `<div class="conf-search">${icon('search')}<input id="conf-search" type="search" spellcheck="false" autocomplete="off" value="${esc(App.state.confSearch || '')}" placeholder="${esc(t('conf.searchHint', 'Search a setting: a word, a name, or a key of the .conf files'))}"></div>`;
-  return `${banner}${bar}${search}<div class="conf-layout">${nav}<div class="conf-pane" id="conf-pane">${confSearching() ? searchView() : body}</div></div>`;
+  return `${banner}${changesPanel}${bar}${search}<div class="conf-layout">${nav}<div class="conf-pane" id="conf-pane">${confSearching() ? searchView() : body}</div></div>`;
 }
 
 // The first tab: the setup wizard, the recipes, and the profiles (the player's own values, out to a file and back).
@@ -555,6 +592,34 @@ document.addEventListener('input', event => {
   patchConfBar();
 });
 
+//By leewheel 2026年11月6日 BUG 反馈对话框（对齐参考启动器 PlusLauncherGeneralVersion：
+// QQ/标题/详细描述必填，截图可选多张，日志可勾选；提交时产品名固定 COA，否则上传点不认）。
+function showBugReport() {
+  App.state.bugShots = App.state.bugShots || [];
+  App.state.bugUnsubscribe = App.state.bugUnsubscribe || null;
+  const shots = () => App.state.bugShots;
+  const shotLine = () => `<div class="button-row"><button class="button ghost small" type="button" data-action="bug-add-shot">添加截图</button><button class="button ghost small" type="button" data-action="bug-clear-shots">清空</button><span class="muted small" id="bug-shot-count">已选 ${shots().length} 张</span></div>`;
+  const body = `<div class="bug-form">
+    <p class="conf-warn">${icon('warning')}<span>请写清 BUG 涉及的具体名称（有 ID 最好）：物品 / 任务 / NPC / 技能 / 地图 / 副本。没有名称与 ID，管理员无法在几万条数据里定位。</span></p>
+    <label class="field"><span>QQ 号（必填，方便管理员联系你）</span><input id="bug-qq" maxlength="20" autocomplete="off"></label>
+    <label class="field"><span>BUG 标题（必填，一句话说明问题）</span><input id="bug-title" maxlength="60" autocomplete="off"></label>
+    <label class="field"><span>BUG 详细描述（必填：怎么触发的、期望结果、实际结果）</span><textarea id="bug-desc" rows="7"></textarea></label>
+    <div class="field"><span>BUG 截图（可选，可多张）</span>${shotLine()}</div>
+    <label class="check"><input type="checkbox" id="bug-logs" checked><span>附带日志尾部（Server.log / Errors.log / 机器人日志 各取最后 2MB）</span></label>
+    <div id="bug-progress"></div>
+  </div>`;
+  const footer = `<footer class="dialog-foot"><button class="button ghost" data-action="dialog-close">取消</button><button class="button primary" data-action="bug-submit">提交</button></footer>`;
+  dialog.open(`${dialog.header('问题反馈', '提交到 BUG 服务（产品：COA）')}<div class="dialog-content">${body}</div>${footer}`, 'wide');
+}
+
+function bugProgress(payload) {
+  const box = document.getElementById('bug-progress');
+  if (!box) return;
+  const pct = Math.max(0, Math.min(100, Math.round(payload.pct || 0)));
+  box.innerHTML = `<div class="release-run"><div class="release-bar"><span data-pct="${pct}"></span></div><div class="release-pct">${pct}%</div><p class="release-status">${esc(payload.message || '')}</p></div>`;
+  applyBars(box);
+}
+
 // ---------------------------------------------------------------- page
 App.pages.server = {
   render() {
@@ -650,6 +715,64 @@ document.addEventListener('submit', event => {
 });
 
 Object.assign(App.actions, {
+  //By leewheel 2026年11月5日 游戏内时间：读/存 configs\modules\coa.conf 的 CoA.Clock.*
+  'clock-mode': button => { const input = document.getElementById('clock-time'); if (input) input.disabled = button.value !== '1'; },
+  //By leewheel 2026年11月6日 BUG 反馈：打开表单、加/清截图、提交（product 由主进程固定为 COA）
+  'bug-report': () => showBugReport(),
+  'bug-add-shot': () => guard(async () => {
+    const files = await App.api.pickBugScreenshots();
+    if (!files?.length) return;
+    App.state.bugShots = [...(App.state.bugShots || []), ...files].slice(0, 20);
+    const label = document.getElementById('bug-shot-count');
+    if (label) label.textContent = `已选 ${App.state.bugShots.length} 张`;
+  }),
+  'bug-clear-shots': () => { App.state.bugShots = []; const label = document.getElementById('bug-shot-count'); if (label) label.textContent = '已选 0 张'; },
+  'bug-submit': button => guard(async () => {
+    const qq = document.getElementById('bug-qq')?.value.trim() || '';
+    const title = document.getElementById('bug-title')?.value.trim() || '';
+    const description = document.getElementById('bug-desc')?.value.trim() || '';
+    const includeLogs = document.getElementById('bug-logs')?.checked !== false;
+    if (!qq) { toast('请填写 QQ 号'); return; }
+    if (!title) { toast('请填写 BUG 标题'); return; }
+    if (!description) { toast('请填写详细描述'); return; }
+    if (button) button.disabled = true;
+    if (App.state.bugUnsubscribe) { App.state.bugUnsubscribe(); App.state.bugUnsubscribe = null; }
+    App.state.bugUnsubscribe = App.api.onBugReportProgress(payload => bugProgress(payload));
+    bugProgress({ pct: 1, message: '准备提交…' });
+    try {
+      const result = await App.api.submitBugReport({ qq, title, description, includeLogs, screenshots: App.state.bugShots || [] });
+      const box = document.getElementById('bug-progress');
+      if (result?.ok) {
+        const id = Number(result.id) > 0 ? `单号 #${result.id}` : '已收到';
+        toast(`问题已提交（${id}）`, 'success');
+        if (box) box.innerHTML = `<div class="release-finished"><p><strong>提交成功：${esc(id)}</strong></p><p class="muted small">压缩包：${esc(result.zipName || '')}；管理员会按 QQ 联系你。</p><p class="muted small">请截图或记下这个单号。</p></div>`;
+        App.state.bugShots = [];
+      } else {
+        if (box) box.innerHTML = `<div class="error-wrap"><pre class="error-box" id="bug-error-text">${esc(result?.message || '提交失败')}</pre><div class="error-actions"><button class="button small" data-action="bug-copy-error">复制错误信息</button></div></div>`;
+        toast('提交失败，请把错误信息发给管理员', 'warning');
+      }
+    } catch (error) {
+      bugProgress({ pct: 0, message: `提交失败：${String(error?.message || error)}` });
+      toast('提交失败', 'warning');
+    } finally {
+      if (App.state.bugUnsubscribe) { App.state.bugUnsubscribe(); App.state.bugUnsubscribe = null; }
+      if (button) button.disabled = false;
+    }
+  }),
+  'bug-copy-error': async () => {
+    const text = document.getElementById('bug-error-text')?.textContent || '';
+    if (!text) return;
+    try { await App.api.copyText(text); toast('已复制', 'success'); } catch { toast('复制失败'); }
+  },
+  'clock-save': button => guard(async () => {
+    const mode = Number(document.querySelector('input[name="clock-mode"]:checked')?.value || 0);
+    const raw = document.getElementById('clock-time')?.value || '08:00';
+    const [hour, minute] = raw.split(':').map(Number);
+    const saved = await App.api.setClock({ mode, hour: Number.isFinite(hour) ? hour : 8, minute: Number.isFinite(minute) ? minute : 0 });
+    App.state.clock = saved;
+    toast(t('server.clockSaved', '已保存游戏内时间：{mode}', { mode: Number(saved.mode) === 1 ? `${String(saved.hour).padStart(2, '0')}:${String(saved.minute).padStart(2, '0')}` : t('server.clockLocalShort', '跟随电脑本地时间') }), 'success');
+    App.refresh('server');
+  }, button),
   // An existing account gets the password typed in the form (the console's account set password).
   'account-password': button => guard(async () => {
     const name = $('#ga-name').value.trim();
@@ -687,10 +810,31 @@ Object.assign(App.actions, {
     finally { App.state.stoppingAll = false; App.render(); if (typeof loadRealms === 'function') loadRealms(); }
   }, button),
   'service-log': button => guard(async () => {
-    const text = await App.api.serviceLog(button.dataset.id);
-    dialog.open(`${dialog.header(t('server.logOf', 'Log: {name}', { name: button.dataset.id }))}<div class="dialog-content"><pre class="log">${esc(text || t('server.noLog', 'Nothing logged yet.'))}</pre></div>`, 'wide');
+    const id = button.dataset.id;
+    const text = await App.api.serviceLog(id);
+    dialog.open(`${dialog.header(t('server.logOf', 'Log: {name}', { name: id }))}<div class="dialog-content"><pre class="log">${esc(text || t('server.noLog', 'Nothing logged yet.'))}</pre></div>`, 'wide');
+    //By leewheel 2026年11月4日 老大要求“启动中和已启动都要刷日志”：面板打开后每 1.5 秒重取一次尾巴，
+    // 世界服从加载到跑起来的全过程都能实时看到；面板一关就停止刷新，服务停掉时显示空白。
+    const element = $('#dialog');
     const pre = $('#dialog .log');
-    if (pre) pre.scrollTop = pre.scrollHeight;
+    if (!pre) return;
+    let stopped = false;
+    element.addEventListener('close', () => { stopped = true; }, { once: true });
+    pre.scrollTop = pre.scrollHeight;
+    const tick = async () => {
+      if (stopped || !element.open) { stopped = true; return; }
+      const tail = await App.api.serviceLog(id).catch(() => '');
+      if (stopped || !element.open) { stopped = true; return; }
+      const next = tail || t('server.noLog', 'Nothing logged yet.');
+      // 内容没变就不动 DOM：玩家往上翻看时不会被拉回底部；原本停在底部则继续跟随。
+      if (pre.textContent !== next) {
+        const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+        pre.textContent = next;
+        if (atBottom) pre.scrollTop = pre.scrollHeight;
+      }
+      setTimeout(tick, 1500);
+    };
+    setTimeout(tick, 1500);
   }, button),
   'modules-squidbots': button => guard(async () => {
     App.state.modules = await App.api.modulesSquidbots(button.dataset.on !== '1');
@@ -787,6 +931,8 @@ Object.assign(App.actions, {
   'server-check': button => guard(() => checkServer(false), button),
   'server-repair': button => guard(async () => { const result = await checkServer(true, true); if (result.needsUpdate) await updateServer(true); else toast(t('play.nothingToRepair', 'Every file checked: nothing to repair.'), 'success'); }, button),
   'server-pause': () => App.api.pauseServer(),
+  //By leewheel 2026年11月5日 “机器人”标题旁的帮助：打开内嵌的机器人指南（离线可看）
+  'bots-help': () => showBotHelp(),
   'bots-check': button => guard(async () => { App.state.botsCheck = await App.api.checkBots(false); refreshUpdates(); if (!App.state.botsCheck.needsUpdate) toast(t('server.upToDate', 'Up to date'), 'success'); App.refresh('server'); }, button),
   'bots-install': button => guard(async () => {
     const b = App.state.server.bots;

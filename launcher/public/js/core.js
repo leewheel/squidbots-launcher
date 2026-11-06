@@ -39,6 +39,8 @@ const App = {
   pages: {},
   render() {
     if (App.state.tab === 'addons' && !isClassic()) App.state.tab = 'play';
+    //By leewheel 2026-11-02 把当前页写到 body[data-tab]，主页的北郡修道院背景按它显示
+    document.body.dataset.tab = App.state.tab || '';
     // Server edition: Home, Realms, Modules on the left of the crest; Verification, Management and Console on its right.
     const serverTabs = [['home', 'home', t('tab.home', 'Home')], ...(App.state.realms?.available ? [['realms', 'globe', t('tab.realms', 'Realms')]] : []), ['modules', 'addons', t('tab.modules', 'Modules')]];
     const rightTabs = [['verify', 'shield', t('tab.verify', 'Verification')], ['server', 'settings', t('tab.settings', 'Settings')], ['console', 'terminal', t('tab.console', 'Console')]];
@@ -50,7 +52,11 @@ const App = {
     if (App.state.config.edition === 'server' && ![...serverTabs, ...rightTabs].some(([id]) => id === App.state.tab)) App.state.tab = 'home';
     $('#tabs').innerHTML = (App.state.config.edition === 'server' ? serverTabs : [['play', 'play', t('tab.play', 'Play')], ...(isClassic() && App.state.config.game.hasAddons ? [['addons', 'addons', t('addon.title', 'Addons')]] : []), ...(App.state.config.server ? [['server', 'layers', t('tab.server', 'Local server')]] : [])]
       ).map(([id, iconName, label]) => `<button class="tab${App.state.tab === id ? ' active' : ''}" data-tab="${id}">${icon(iconName)}<span>${esc(label)}</span>${(id === 'server' || id === 'home') && hasUpdates() && !(App.state.config.edition === 'server' && id === 'server') ? `<i class="dot" title="${esc(t('updates.dot', 'A new version is available'))}"></i>` : (id === 'modules' && isNew('modules')) || (id === 'realms' && isNew('realms')) ? newDot() : ''}</button>`).join('');
-    $('#tabs-right').innerHTML = App.state.config.edition === 'server' ? rightTabs.map(([id, iconName, label]) => `<button class="tab${App.state.tab === id ? ' active' : ''}" data-tab="${id}">${icon(iconName)}<span>${esc(label)}</span>${id === 'server' && (isNew('settings') || isNew('wizard')) ? newDot() : ''}</button>`).join('') : '';
+    //By leewheel 2026年11月6日 BUG 提交按钮放在“检查”左边（老大要求用瓢虫图标），点开就是问题反馈表单
+    const bugTab = `<button class="tab tab-bug" data-action="bug-report" title="${esc(t('bug.hint', '提交遇到的问题：带上启动器/服务端版本、日志尾部，可附截图'))}">${icon('ladybug')}<span>${esc(t('bug.open', 'BUG提交'))}</span></button>`;
+    $('#tabs-right').innerHTML = App.state.config.edition === 'server'
+      ? bugTab + rightTabs.map(([id, iconName, label]) => `<button class="tab${App.state.tab === id ? ' active' : ''}" data-tab="${id}">${icon(iconName)}<span>${esc(label)}</span>${id === 'server' && (isNew('settings') || isNew('wizard')) ? newDot() : ''}</button>`).join('')
+      : '';
     const banner = $('#launcher-banner');
     if (banner) banner.innerHTML = App.state.config.edition === 'server' && typeof launcherBanner === 'function' ? launcherBanner() : '';
     const page = App.pages[App.state.tab];

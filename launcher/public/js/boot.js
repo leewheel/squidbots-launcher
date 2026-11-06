@@ -1,6 +1,15 @@
 'use strict';
 // Start-up, the click handler, live events from the main process, and the screenshot tour.
 
+//By leewheel 2026-11-03 日志窗口的"看哪个世界服"下拉：换一个国度就重新拉它的日志
+document.addEventListener('change', event => {
+  const picker = event.target.closest && event.target.closest('#log-realm');
+  if (!picker) return;
+  App.state.logRealm = picker.value || '';
+  App.state.logFollowed = false;
+  if (typeof refreshServerLog === 'function') refreshServerLog();
+});
+
 document.addEventListener('click', event => {
   if (!event.target.closest('.split-button')) { const menu = $('#play-menu'); if (menu) menu.hidden = true; }
   const target = event.target.closest('button, [data-action]');
@@ -13,6 +22,23 @@ document.addEventListener('click', event => {
 });
 $('#dialog').addEventListener('click', event => { if (event.target.id === 'dialog') dialog.close(); });
 $('#dialog').addEventListener('close', () => { if (!$('#dialog').open) $('#dialog-body').innerHTML = ''; });
+
+//By leewheel 2026-11-05 目录布局告警（老大指定的两句中文原文）
+// 横幅常驻在所有页面之上，启动时再弹一个必须确认的对话框，避免被当成普通提示划过去。
+function showLayoutAlert(layout) {
+  const problems = [];
+  if (layout.chinesePath) problems.push({ text: '本模拟器的目录中不可以出现中文', detail: '请把整个模拟器文件夹移动到纯英文路径下，例如 D:/Games/COA。' });
+  if (layout.badFolders?.length) problems.push({ text: '不可以修改本模拟器的默认文件和文件夹布局', detail: `缺失或为空：${layout.badFolders.join('、')}。请保留原始的 Client、Server 文件夹及其内容。` });
+  const lines = problems.map(item => `<div class="layout-alert-line"><strong>${esc(item.text)}</strong><small>${esc(item.detail)}</small></div>`).join('');
+  const banner = $('#layout-alert');
+  if (banner) {
+    banner.innerHTML = `${icon('warning')}<div class="layout-alert-lines">${lines}</div>`;
+    banner.hidden = false;
+    document.body.classList.add('has-layout-alert');
+  }
+  dialog.open(`${dialog.header('目录布局检查未通过', '本模拟器无法按默认布局运行')}<div class="dialog-content">${lines}<p class="muted small">修正后请重新启动启动器。</p></div><footer class="dialog-foot"><button class="button primary" data-action="dialog-close">我知道了</button></footer>`, 'wide');
+}
+//End By leewheel
 
 function subscribe() {
   const api = App.api;
@@ -198,6 +224,19 @@ App.actions['whats-new-ok'] = () => dialog.close();
   document.body.insertAdjacentHTML('beforeend', `<div class="app-version" aria-hidden="true">v${esc(data.version)}</div>`);
   document.title = data.config.appName;
   Ocean.start($('#ocean'), data.settings.reduceMotion || data.smoke || matchMedia('(prefers-reduced-motion: reduce)').matches);
+  //By leewheel 2026-11-03 关闭启动器时先显示停机遮罩：让玩家看见"正在停服"，而不是以为点了没反应
+  if (App.api.onClosing) {
+    App.api.onClosing(payload => {
+      const phase = payload?.phase;
+      if (phase === 'stopping') {
+        dialog.open(`${dialog.header(t('closing.title', '正在停止服务器'))}<div class="dialog-content"><p class="status-line">${esc(t('closing.body', '关闭启动器会先停掉它启动的所有服务：国度的世界服、登录服、世界服和 MySQL。'))}</p><p class="muted small">${esc(t('closing.wait', '世界服要把角色数据存盘，通常需要 10～60 秒，请稍等，不要重复点击。'))}</p><div class="hero-progress"><div class="progress indeterminate"><span data-pct="30"></span></div></div></div>`);
+      } else if (phase === 'forcing') {
+        dialog.open(`${dialog.header(t('closing.title', '正在停止服务器'))}<div class="dialog-content"><p class="status-line">${esc(t('closing.forcing', '停止超时，正在强制结束进程…'))}</p></div>`);
+      } else if (phase === 'done') {
+        dialog.open(`${dialog.header(t('closing.title', '正在停止服务器'))}<div class="dialog-content"><p class="status-line">${esc(t('closing.done', '服务器已停止，正在退出…'))}</p></div>`);
+      }
+    });
+  }
   subscribe();
   App.state.tab = data.config.edition === 'server' ? 'home' : data.settings.startPage === 'server' && data.config.server ? 'server' : 'play';
   App.render();
@@ -206,6 +245,9 @@ App.actions['whats-new-ok'] = () => dialog.close();
   setInterval(probeRealm, 30 * 1000);
   // Once after an update of the launcher: what is new in it (never shown again).
   if (data.whatsNew?.length) showWhatsNew(data.whatsNew);
+  //By leewheel 2026-11-05 布局告警最后弹出，避免被"新版本"等启动弹窗覆盖；横幅之后一直常驻
+  if (data.layout && (data.layout.chinesePath || data.layout.badFolders?.length)) showLayoutAlert(data.layout);
+  //End By leewheel
   if (isClassic() && data.config.edition !== 'server') loadNews();
   // Compare the game with its latest release at start (nothing is downloaded without asking).
   if (data.config.edition === 'server') { refreshAddon(true); App.api.updateRefresh().then(state => { if (state) { App.state.update.state = state; if (App.state.tab === 'home') App.render(); } }).catch(() => {}); App.api.componentsRefresh().then(state => { App.state.components = state; if (App.state.tab === 'home') App.render(); }).catch(() => {}); App.api.notes().then(notes => { App.state.notes = notes; if (App.state.tab === 'home') App.render(); }).catch(() => {}); App.api.updateState().then(state => { if (!App.state.update.state) App.state.update.state = state; if (App.state.tab === 'home') App.render(); }).catch(() => {}); loadNews(); App.api.feed().then(feed => { App.state.feed = feed; if (App.state.tab === 'home') App.render(); }).catch(() => {}); }

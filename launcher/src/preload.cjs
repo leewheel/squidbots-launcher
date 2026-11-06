@@ -49,6 +49,40 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   verify: deep => call('verify:run', deep === true),
   verifyFix: id => call('verify:fix', id),
   copyVersions: () => call('verify:versions'),
+  //By leewheel 2026-11-03 服务端 / 客户端更新（GitHub releases）
+  releaseCheck: () => call('release:check'),
+  //By leewheel 2026-11-03 国度"设置"上的数字：这个国度单独改过哪些设置
+  realmChanged: key => call('realm:changed', key),
+  //By leewheel 2026-11-03 主页底部的 worldserver 日志面板（第二个参数是国度 key，空＝主服）
+  serverLog: (realm, lines) => call('server:log', realm, lines),
+  releaseHistory: () => call('release:history'),
+  releaseApply: options => call('release:apply', options),
+  //By leewheel 2026-11-05 按发布顺序依次补齐所有缺失补丁
+  releaseApplyAll: options => call('release:applyAll', options),
+  //End By leewheel
+  //By leewheel 2026年11月5日 更新状态由主进程记着：界面重开后先查它，避免重复点“开始更新”
+  releaseState: () => call('release:state'),
+  //By leewheel 2026年11月5日 关掉数据库自动更新（worldserver/authserver/playerbots 三个 EnableDatabases）
+  dbUpdatesOff: () => call('repack:dbUpdatesOff'),
+  //By leewheel 2026年11月5日 游戏内时间（configs\modules\coa.conf 的 CoA.Clock.*）
+  getClock: () => call('clock:get'),
+  setClock: options => call('clock:set', options),
+  //By leewheel 2026年11月6日 BUG 反馈：预览环境、选截图、提交（product 固定 COA）
+  bugReportPreview: () => call('bugreport:preview'),
+  pickBugScreenshots: () => call('bugreport:pickScreenshots'),
+  submitBugReport: options => call('bugreport:submit', options),
+  onBugReportProgress: on('bugreport:progress'),
+  //By leewheel 2026年11月5日 复制文本 / 打开文件（更新失败时要能把错误发出来）
+  copyText: text => call('clipboard:write', text),
+  openPath: target => call('shell:openPath', target),
+  releaseCancel: () => call('release:cancel'),
+  //By leewheel 2026年11月4日 启动器每次运行会自动查更新，结果通过这个事件推给首页
+  releaseAutoCheck: () => call('release:autoCheck'),
+  onReleaseAvailable: on('release:available'),
+  normalizeLayout: () => call('layout:normalize'),
+  readLayoutReport: () => call('layout:report'),
+  onReleaseProgress: on('release:progress'),
+  openUrl: url => call('shell:open', url),
   dashboardStatus: () => call('dashboard:status'),
   startDashboard: () => call('dashboard:start'),
   stopDashboard: () => call('dashboard:stop'),
@@ -198,4 +232,7 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   onAddonProgress: on('addons:progress'),
   onLauncherUpdate: on('launcher:update'),
   onGameExit: on('game:exit'),
+  //By leewheel 2026-11-03 关闭流程：窗口留在前台显示"正在停止服务器"
+  onClosing: on('closing'),
+  debugClose: () => call('debug:close'),
 }));

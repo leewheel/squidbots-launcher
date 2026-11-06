@@ -8,6 +8,8 @@ const ICONS = {
   trophy: '<path d="M8 4h8v5a4 4 0 0 1-8 0Z"/><path d="M8 6H5a3 3 0 0 0 3 4M16 6h3a3 3 0 0 1-3 4"/><path d="M12 13v4M9 20h6M10 17h4"/>',
   addons: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><path d="M16.5 13v7M13 16.5h7"/>',
   bug: '<rect x="8" y="8" width="8" height="12" rx="4"/><path d="M10 8V6a2 2 0 0 1 4 0v2M12 11v9M4 10l4 2M20 10l-4 2M3 15h5M16 15h5M5 20l3-2M19 20l-3-2"/>',
+  //By leewheel 2026年11月6日 瓢虫（BUG 提交用）：圆壳 + 中缝 + 三个斑点 + 触角
+  ladybug: '<ellipse cx="12" cy="14" rx="6.5" ry="6"/><path d="M12 8v12"/><circle cx="9.2" cy="12" r="1.1"/><circle cx="14.8" cy="12" r="1.1"/><circle cx="9.4" cy="16.6" r="1.1"/><circle cx="14.6" cy="16.6" r="1.1"/><path d="M9.5 8.4 7.6 5.8M14.5 8.4l1.9-2.6"/><circle cx="7.1" cy="5.3" r=".9"/><circle cx="16.9" cy="5.3" r=".9"/>',
   bot: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01M9.5 16h5M3 12v3M21 12v3"/>',
   chart: '<path d="M4 20V4M4 20h16"/><path d="m7 15 4-4 3 3 5-6"/>',
   database: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>',

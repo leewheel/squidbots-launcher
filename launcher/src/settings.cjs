@@ -14,6 +14,18 @@ const defaults = Object.freeze({
   autoCheckAddons: true, betaUpdates: false, hideCloseNotice: false, trayOnClose: false, notifications: true, startWithWindows: false, startServerOnOpen: false, restartWorldOnCrash: false, dailyBackup: true, lastSeenVersion: '', installPaths: {}, components: {}, instances: [], modules: { squidbots: true },
 });
 
+//By leewheel 2026年11月4日 目录可以是相对的（相对启动器所在目录，如 Client、Server），这样整个整合包
+// 拷到任何盘、任何目录名都能用；绝对路径照旧接受。相对路径不许带盘符、不许用 .. 往外跳。
+const FOLDER_SEGMENT = /^[A-Za-z0-9 ._ -]+$/;
+function cleanFolder(folder) {
+  if (typeof folder !== 'string' || !folder) return '';
+  if (path.isAbsolute(folder)) return path.normalize(folder);
+  const parts = folder.split(/[\\/]+/).filter(Boolean);
+  if (!parts.length || parts.some(part => part === '..' || part === '.' || !FOLDER_SEGMENT.test(part))) return '';
+  return parts.join(path.sep);
+}
+//End By leewheel
+
 function sanitize(value) {
   const out = structuredClone(defaults);
   if (!value || typeof value !== 'object') return out;
@@ -24,7 +36,11 @@ function sanitize(value) {
   if (typeof value.realmlist === 'string' && REALMLIST.test(value.realmlist)) out.realmlist = value.realmlist;
   for (const key of ['minimizeOnLaunch', 'reduceMotion', 'autoCheckAddons', 'betaUpdates', 'hideCloseNotice', 'trayOnClose', 'notifications', 'startWithWindows', 'startServerOnOpen', 'restartWorldOnCrash', 'dailyBackup']) if (typeof value[key] === 'boolean') out[key] = value[key];
   if (value.installPaths && typeof value.installPaths === 'object') {
-    for (const [area, folder] of Object.entries(value.installPaths)) if (/^[a-z]{1,20}$/.test(area) && typeof folder === 'string' && path.isAbsolute(folder)) out.installPaths[area] = path.normalize(folder);
+    for (const [area, folder] of Object.entries(value.installPaths)) {
+      if (!/^[a-z]{1,20}$/.test(area)) continue;
+      const clean = cleanFolder(folder);
+      if (clean) out.installPaths[area] = clean;
+    }
   }
   if (typeof value.lastSeenVersion === 'string' && /^\d+\.\d+\.\d+$/.test(value.lastSeenVersion)) out.lastSeenVersion = value.lastSeenVersion;
   if (value.modules && typeof value.modules.squidbots === 'boolean') out.modules.squidbots = value.modules.squidbots;
@@ -51,4 +67,4 @@ async function writeSettings(file, value) {
   return clean;
 }
 
-module.exports = { readSettings, writeSettings, sanitize, defaults };
+module.exports = { readSettings, writeSettings, sanitize, cleanFolder, defaults };

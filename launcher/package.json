@@ -1,7 +1,7 @@
 {
   "name": "coa-launcher-lite",
   "productName": "征服艾泽拉斯 单机启动器",
-  "version": "1.0.0",
+  "version": "1.0.1104",
   "description": "征服艾泽拉斯（Conquest of Azeroth）单机整合包启动器：一键启动/停止本地 MySQL、登录服务器与世界服务器，管理设置、备份与国度。",
   "license": "MIT",
   "author": "leewheel",
@@ -16,6 +16,17 @@
     "productName": "征服艾泽拉斯 单机启动器",
     "artifactName": "CoA-Launcher-${version}.${ext}",
     "electronDist": "node_modules/electron/dist",
+    "compression": "store",
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "loadBrowserProcessSpecificV8Snapshot": false,
+      "grantFileProtocolExtraPrivileges": false
+    },
     "directories": {
       "output": "dist"
     },
