@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   //By leewheel 2026年11月6日 强制更新：用本地 CoA-Update-*.zip 直接重装（跳过版本比较，GitHub 没资产也能修）
   releaseLocalZip: options => call('release:localZip', options),
   releaseLocalPick: () => call('release:localPick'),
+  //By leewheel 2026年11月6日 镜像测速（返回速度排行，最好的一条在 best）
+  mirrorSpeedtest: () => call('mirrors:speedtest'),
   //By leewheel 2026年11月6日 强制更新 = 从 GitHub 重新下载安装（本地包是另一个按钮）
   releaseForceRemote: options => call('release:forceRemote', options),
   //End By leewheel

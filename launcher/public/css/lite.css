@@ -480,3 +480,10 @@ dialog.xwide { width: min(980px, 96vw); }
 .dialog-foot { flex-wrap: wrap; row-gap: 8px; }
 .dialog-foot .button { white-space: nowrap; flex: 0 0 auto; }
 /*End By leewheel*/
+
+/*By leewheel 2026年11月6日 下载速度与镜像测速列表*/
+.release-speed { margin: 2px 0 6px; color: #9fe8ff; font-size: 12.5px; letter-spacing: .02em; }
+.release-mirrors { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
+.release-mirrors li strong { color: #ffcf5c; }
+.release-mirrors li.bad { color: #ff9a9a; }
+/*End By leewheel*/

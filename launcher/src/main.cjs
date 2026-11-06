@@ -196,6 +196,39 @@ function appVersion() {
   } catch { /* 读不到就用 Electron 的 */ }
   return app.getVersion();
 }
+//By leewheel 2026年11月6日 下载速度显示：KB/s 或 MB/s；剩余时间写成“x分y秒”
+function formatSpeed(kbps) {
+  const value = Number(kbps) || 0;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} MB/s`;
+  return `${Math.max(1, Math.round(value))} KB/s`;
+}
+function formatLeft(seconds) {
+  const value = Math.max(0, Math.round(Number(seconds) || 0));
+  if (value < 60) return `${value} 秒`;
+  const minutes = Math.floor(value / 60);
+  const rest = value % 60;
+  return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
+}
+
+//By leewheel 2026年11月6日 镜像测速结果缓存（6 小时）：下载前按上次测速的顺序试源；
+// 缓存过期或换了资产就重新测一次（在后台做，不挡下载）。
+const MIRROR_CACHE_MS = 6 * 60 * 60 * 1000;
+async function rankedMirrors(assetUrl) {
+  const cached = settings?.mirrorRanking;
+  if (cached?.url === assetUrl && Array.isArray(cached.list) && Date.now() - Number(cached.at || 0) < MIRROR_CACHE_MS) {
+    const prefixes = releaseUpdate.mirrorsFromRanking(cached.list, null);
+    if (prefixes?.length) return prefixes;
+  }
+  try {
+    const list = await releaseUpdate.rankMirrors(assetUrl, { fetchImpl: netFetch, mirrors: config.downloadMirrors });
+    const prefixes = releaseUpdate.mirrorsFromRanking(list, null) || [];
+    await persist({ ...settings, mirrorRanking: { url: assetUrl, at: Date.now(), list } });
+    return prefixes.length ? prefixes : config.downloadMirrors;
+  } catch {
+    return config.downloadMirrors;
+  }
+}
+
 const gamePath = () => areaFolder('game');const addonPath = () => areaFolder('addon');
 // The game the server takes its data from: the game folder, or else the client the Play tab shows (server edition).
 const gameDataPath = () => [gamePath(), addonPath()].find(item => item && fs_exists(item)) || '';
@@ -2674,12 +2707,32 @@ function registerIpc() {
       await fs.rm(folder, { recursive: true, force: true });
       await fs.mkdir(folder, { recursive: true });
       progress({ phase: 'download', version, message: `正在下载 ${options.asset.name}`, pct: 0 });
+      //By leewheel 2026年11月6日 下载优先走测速最快的源（缓存 6 小时），并给界面带上下载速度与剩余时间。
+      const ranked = await rankedMirrors(options.asset.url);
       //By leewheel 2026年11月4日 下载走“国内镜像优先、GitHub 最后”（镜像列表在 launcher.config.json 的 downloadMirrors）
+      let speedSample = { at: Date.now(), done: 0 };
       const fetched = await releaseUpdate.download(options.asset.url, zip, {
         fetchImpl: netFetch,
         signal: releaseAbort.signal,
-        mirrors: config.downloadMirrors,
-        onProgress: (done, total) => progress({ phase: 'download', version, done, total, pct: total ? Math.floor((done / total) * 100) : null, message: '正在下载' }),
+        mirrors: ranked.length ? ranked : config.downloadMirrors,
+        onProgress: (done, total) => {
+          const now = Date.now();
+          const elapsed = (now - speedSample.at) / 1000;
+          let kbps = 0;
+          if (elapsed >= 0.5) {
+            kbps = Math.round(((done - speedSample.done) / 1024) / elapsed);
+            speedSample = { at: now, done };
+          }
+          const pct = total ? Math.floor((done / total) * 100) : null;
+          const left = kbps > 0 && total ? Math.max(0, Math.round((total - done) / 1024 / kbps)) : null;
+          progress({
+            phase: 'download', version, done, total, pct,
+            kbps, left,
+            message: kbps > 0
+              ? `正在下载 ${formatSpeed(kbps)}${left !== null ? `，剩余约 ${formatLeft(left)}` : ''}`
+              : '正在下载',
+          });
+        },
       });
       progress({ phase: 'download', version, pct: 100, message: fetched.mirror ? `下载完成（镜像 ${fetched.mirror}）` : '下载完成（GitHub 直连）' });
       progress({ phase: 'extract', version, message: '正在解压', pct: null });
@@ -2878,6 +2931,26 @@ function registerIpc() {
   });
   //By leewheel 2026年11月6日 强制更新 = **从 GitHub 重新下载安装**（老大明确：强制更新就是下载 GitHub，
   // 本机已经是最新版本、或者文件被改坏了，也照样重下一次覆盖）。本地 zip 是另一个按钮（release:localZip）。
+  //By leewheel 2026年11月6日 手动测速：给“检查更新”里当前最新资产测一遍所有源，返回速度排行并缓存
+  handle('mirrors:speedtest', async () => {
+    const root = launcherRootFolder();
+    let assetUrl = '';
+    try {
+      const releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 5 });
+      const latest = releases.find(release => releaseUpdate.pickAsset(release));
+      assetUrl = latest ? releaseUpdate.pickAsset(latest).url : '';
+    } catch (error) {
+      return { ok: false, message: `读取更新列表失败：${error.message}`, list: [] };
+    }
+    if (!assetUrl) return { ok: false, message: '还没有可测速的更新包（GitHub 上没有 zip 资产）', list: [] };
+    const list = await releaseUpdate.rankMirrors(assetUrl, {
+      fetchImpl: netFetch,
+      mirrors: config.downloadMirrors,
+      onLine: line => send('repack:notice', { key: 'mirror.test', text: line }),
+    });
+    await persist({ ...settings, mirrorRanking: { url: assetUrl, at: Date.now(), list } });
+    return { ok: true, list, best: list.find(item => item.ok) || null };
+  });
   handle('release:forceRemote', async options => {
     if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
     const root = launcherRootFolder();

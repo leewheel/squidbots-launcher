@@ -984,6 +984,7 @@ function showReleaseUpdate() {
       ${failed ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}重新检查</button>` : ''}
       ${pending.length && !running && !finished && !failed ? `<button class="button primary" data-action="release-apply">${icon('download')}${esc(pending.length > 1 ? `开始更新（${pending.length} 个补丁）` : t('release.start', '开始更新'))}</button>` : ''}
       ${!running ? `<button class="button ghost" data-action="release-force-remote" title="${esc('从 GitHub 重新下载最新更新包并覆盖安装（已经是最新版本也会重装，用来修坏掉的文件）')}">${icon('refresh')}强制更新（从 GitHub 下载）</button>` : ''}
+      ${!running ? `<button class="button ghost" data-action="release-speedtest" title="${esc('给所有下载镜像测速，下载时自动用最快的那个')}">${icon('chart')}镜像测速</button>` : ''}
       ${!running ? `<button class="button ghost" data-action="release-local" title="${esc('GitHub 上没有 zip 资产时，用本地的 CoA-Update-*.zip 覆盖安装')}">${icon('download')}从本地包更新</button>` : ''}
     </footer>`;
     dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${running || finished || failed ? '' : historyHtml}</div>${footer}`, 'xwide');
@@ -1020,6 +1021,9 @@ function releaseRunView(run) {
     const state = run.error ? (item[0] === run.phase ? 'bad' : '') : (currentIndex > index || run.done ? 'done' : item[0] === run.phase ? 'doing' : '');
     return `<li class="${state}">${item[1]}</li>`;
   }).join('');
+  const speedLine = run.phase === 'download' && typeof run.kbps === 'number' && run.kbps > 0
+    ? `<p class="release-speed">${esc(t('release.speed', '下载速度'))} ${esc(run.kbps >= 1024 ? `${(run.kbps / 1024).toFixed(1)} MB/s` : `${Math.round(run.kbps)} KB/s`)}${typeof run.left === 'number' ? ` · ${esc(t('release.left', '剩余'))} ${esc(run.left < 60 ? `${Math.round(run.left)} 秒` : `${Math.floor(run.left / 60)} 分 ${Math.round(run.left % 60)} 秒`)}` : ''}</p>`
+    : '';
   const status = run.error
     ? `<p class="release-status bad">${icon('warning')}<span>更新失败：${esc(run.error)}</span></p>`
     : run.done
@@ -1037,6 +1041,7 @@ function releaseRunView(run) {
   return `<div class="release-run">
     <div class="release-bar"><span data-pct="${pct}"></span></div>
     <div class="release-pct">${pct}%</div>
+    ${speedLine}
     ${status}
     <ol class="release-steps">${steps}</ol>
     ${errorBlock}
@@ -1049,6 +1054,9 @@ function releaseProgress(payload) {
   const run = App.state.releaseRun || (App.state.releaseRun = { phase: '', pct: 0, message: '', done: false, error: '' });
   run.phase = payload.phase || run.phase;
   run.message = payload.message || '';
+  //By leewheel 2026年11月6日 下载速度 / 剩余时间：主进程每秒推一次，展示成 “12.3 MB/s · 剩余 1 分 20 秒”
+  if (typeof payload.kbps === 'number') run.kbps = payload.kbps;
+  if (typeof payload.left === 'number') run.left = payload.left;
   // 主进程推来的失败信息与日志路径也要记住（否则重开窗口就只剩一句话）
   if (payload.error) { run.error = String(payload.error); run.done = false; }
   if (payload.errorLog) run.errorLog = payload.errorLog;
@@ -1463,6 +1471,28 @@ Object.assign(App.actions, {
   'release-retry': () => { App.state.releaseRun = null; showReleaseUpdate(); },
   'release-apply': button => applyReleaseUpdate(button),
   //By leewheel 2026年11月6日 强制更新 = 从 GitHub 重新下载最新 zip 覆盖安装（不看版本号）
+  //By leewheel 2026年11月6日 镜像测速：给最新更新包的所有下载源各测 256KB，按速度排序并缓存，
+  // 之后“开始更新/强制更新”会优先用最快的源（结果在弹窗里列出来，玩家自己也能看到谁快）。
+  'release-speedtest': button => guard(async () => {
+    if (button) button.disabled = true;
+    const box = document.getElementById('release-progress');
+    if (box) box.innerHTML = `<p class="release-status">正在测速，请稍等（每个源最多 8 秒）…</p>`;
+    try {
+      const result = await App.api.mirrorSpeedtest();
+      if (!result?.ok) { toast(result?.message || '测速失败', 'warning'); if (box) box.innerHTML = ''; return; }
+      const rows = (result.list || []).map(item => {
+        const host = (() => { try { return new URL(item.url).host; } catch { return item.url; } })();
+        return item.ok
+          ? `<li>${esc(host)} · <strong>${esc(item.kbps >= 1024 ? `${(item.kbps / 1024).toFixed(1)} MB/s` : `${item.kbps} KB/s`)}</strong> · 首字节 ${item.firstByteMs}ms</li>`
+          : `<li class="bad">${esc(host)} · 不可用（${esc(String(item.error || '').slice(0, 60))}）</li>`;
+      }).join('');
+      if (box) box.innerHTML = `<p class="release-status ok">测速完成：下载会自动用最快的源</p><ul class="release-mirrors">${rows}</ul>`;
+    } catch (error) {
+      toast(`测速失败：${String(error?.message || error)}`, 'warning');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }),
   'release-force-remote': button => guard(async () => {
     if (button) button.disabled = true;
     toast('正在从 GitHub 重新下载更新包…');

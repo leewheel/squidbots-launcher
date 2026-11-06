@@ -180,15 +180,41 @@ const DEFAULT_MIRRORS = [
   'https://ghproxy.net/',
   'https://github.moeyy.xyz/',
   'https://hub.gitmirror.com/',
+  //By leewheel 2026年11月6日 老大点名要加的国内镜像（清华 / 阿里），它们是“整站镜像”规则：
+  //  https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
+  //  → https://mirrors.tuna.tsinghua.edu.cn/github-release/<owner>/<repo>/<tag>/<file>
+  //  → https://mirrors.aliyun.com/github-release/<owner>/<repo>/<tag>/<file>
+  // 用 {owner}/{repo}/{tag}/{asset} 占位，mirrorCandidates 会按 GitHub 地址解析后填进去。
+  'https://mirrors.tuna.tsinghua.edu.cn/github-release/{owner}/{repo}/{tag}/{asset}',
+  'https://mirrors.aliyun.com/github-release/{owner}/{repo}/{tag}/{asset}',
 ];
+
+//By leewheel 2026年11月6日 解析 GitHub release 资产地址，供整站镜像套模板用
+function parseReleaseUrl(url) {
+  const match = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/download\/([^/]+)\/(.+)$/i.exec(String(url || ''));
+  if (!match) return null;
+  return { owner: match[1], repo: match[2], tag: match[3], asset: match[4] };
+}
 
 // 生成尝试顺序：镜像（去重、去掉空值）→ GitHub 原地址。已经是 GitHub 直连地址才放最后。
 function mirrorCandidates(url, mirrors = DEFAULT_MIRRORS) {
   const list = [];
+  const release = parseReleaseUrl(url);
   const usable = (Array.isArray(mirrors) ? mirrors : DEFAULT_MIRRORS).map(item => String(item || '').trim());
-  for (const prefix of usable) {
-    if (!prefix) continue;
-    const candidate = `${prefix}${url}`;
+  for (const entry of usable) {
+    if (!entry) continue;
+    let candidate;
+    if (entry.includes('{owner}')) {
+      // 整站镜像：没有 tag/asset 信息（比如镜像地址不是 release 资产）就跳过
+      if (!release) continue;
+      candidate = entry
+        .replace('{owner}', release.owner)
+        .replace('{repo}', release.repo)
+        .replace('{tag}', release.tag)
+        .replace('{asset}', release.asset);
+    } else {
+      candidate = `${entry}${url}`;
+    }
     if (!list.includes(candidate)) list.push(candidate);
   }
   if (!list.includes(url)) list.push(url);
@@ -227,8 +253,74 @@ async function downloadOnce(url, target, { fetchImpl, onProgress, signal, timeou
 
 //By leewheel 2026年11月4日 按“镜像优先、GitHub 最后”的顺序逐个试；某个源超时/404/断流就换下一个。
 // 全部失败才报错，并把每个源的原因写进错误里，方便判断是镜像挂了还是网络不通。
-async function download(url, target, { fetchImpl, onProgress = () => {}, signal, mirrors = DEFAULT_MIRRORS } = {}) {
-  await fsp.mkdir(path.dirname(target), { recursive: true });
+//By leewheel 2026年11月6日 镜像测速：对每个候选源发一个 256KB 的 Range 请求，量“首字节时间 + 吞吐”。
+// 结果按吞吐从高到低排序（吞吐相同看延迟），失败的源排到最后但仍然保留——下载时还会再试一次。
+async function probeMirror(url, { fetchImpl = fetch, bytes = 262144, timeout = 8000 } = {}) {
+  const started = Date.now();
+  try {
+    const response = await fetchImpl(url, {
+      redirect: 'follow',
+      headers: { 'User-Agent': 'CoA-Launcher', Range: `bytes=0-${bytes - 1}` },
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (!response.ok && response.status !== 206) throw new Error(`HTTP ${response.status}`);
+    const firstByte = Date.now() - started;
+    let received = 0;
+    let head = Buffer.alloc(0);
+    if (response.body && typeof response.body.getReader === 'function') {
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value || []);
+        if (head.length < 4) head = Buffer.concat([head, chunk.subarray(0, 4 - head.length)]);
+        received += chunk.length;
+        if (received >= bytes) break;
+      }
+      await reader.cancel().catch(() => {});
+    } else {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      received = buffer.length;
+      head = buffer.subarray(0, 4);
+    }
+    //By leewheel 2026年11月6日 只有“真的是 zip”才算这个源可用：镜像挂了常返回 200 + HTML 错误页，
+    // 光看状态码会把错误页当成下载成功（实弹：资产还不存在时 ghfast 也回 200）。
+    const looksZip = head.length >= 2 && head[0] === 0x50 && head[1] === 0x4B;
+    if (!looksZip && /\.zip($|\?)/i.test(url)) throw new Error('返回的不是 zip（多半是镜像错误页）');
+    const spent = Math.max(1, Date.now() - started);
+    return { url, ok: true, ms: spent, firstByteMs: firstByte, bytes: received, kbps: Math.round((received / 1024) * 1000 / spent) };
+  } catch (error) {
+    return { url, ok: false, ms: Date.now() - started, firstByteMs: 0, bytes: 0, kbps: 0, error: String(error?.message || error).split(/\r?\n/)[0] };
+  }
+}
+
+/** 给一个 release 资产地址测所有候选源（并行，谁先回谁先记），按速度排序返回（失败的排最后） */
+async function rankMirrors(url, { fetchImpl = fetch, mirrors = DEFAULT_MIRRORS, onLine = () => {} } = {}) {
+  const candidates = mirrorCandidates(url, mirrors);
+  const hostOf = candidate => { try { return new URL(candidate).host; } catch { return candidate; } };
+  const probes = candidates.map(candidate => probeMirror(candidate, { fetchImpl }).then(result => {
+    onLine(result.ok ? `测速：${hostOf(candidate)} ${result.kbps} KB/s（首字节 ${result.firstByteMs}ms）` : `测速：${hostOf(candidate)} 不可用（${result.error}）`);
+    return result;
+  }));
+  const results = await Promise.all(probes);
+  results.sort((a, b) => (b.ok ? 1 : 0) - (a.ok ? 1 : 0) || b.kbps - a.kbps || a.firstByteMs - b.firstByteMs);
+  return results;
+}
+
+/** 下载失败重试顺序：用测速结果里 ok 的源（保持速度排序），最后补 GitHub 直连 */
+function mirrorsFromRanking(ranking, fallback = DEFAULT_MIRRORS) {
+  const good = (ranking || []).filter(item => item.ok && item.url);
+  if (!good.length) return fallback;
+  // 排行里存的是“完整镜像地址”，这里还原成镜像前缀/模板，交给 mirrorCandidates 重新拼
+  return good.map(item => {
+    if (item.url.includes('mirrors.tuna.tsinghua.edu.cn')) return 'https://mirrors.tuna.tsinghua.edu.cn/github-release/{owner}/{repo}/{tag}/{asset}';
+    if (item.url.includes('mirrors.aliyun.com')) return 'https://mirrors.aliyun.com/github-release/{owner}/{repo}/{tag}/{asset}';
+    const match = /^(https?:\/\/[^/]+\/)/.exec(item.url);
+    return match ? match[1] : '';
+  }).filter(Boolean);
+}
+
+async function download(url, target, { fetchImpl, onProgress = () => {}, signal, mirrors = DEFAULT_MIRRORS } = {}) {  await fsp.mkdir(path.dirname(target), { recursive: true });
   const candidates = mirrorCandidates(url, mirrors);
   const failures = [];
   for (const candidate of candidates) {
@@ -734,5 +826,7 @@ module.exports = {
   API, HISTORY, LAST, SNAPSHOT, DEFAULT_MIRRORS, mirrorCandidates, parseVersion, compareVersions, releaseIsNewer, versionOf,
   listReleases, pickAsset, pendingReleases, installedVersion, readHistory, recordVersion,
   download, downloadOnce, extractZip, contentRoot, copyTree, clientMpqs, readDbcMap, injectDbc, injectIntoArchive,
+  //By leewheel 2026年11月6日 镜像测速：给“下载优先走最快的源”用
+  probeMirror, rankMirrors, mirrorsFromRanking, parseReleaseUrl,
   applyDbcTree, mysqlPaths, readDbConfig, mysqlQuery, waitForMysql, importSqlFile, importSqlTree, importSql, applyUpdate, findDir, walkFiles,
 };
