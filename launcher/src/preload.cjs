@@ -23,6 +23,9 @@ function on(channel) {
 
 contextBridge.exposeInMainWorld('launcher', Object.freeze({
   bootstrap: () => call('bootstrap'),
+  //By leewheel 2026年11月7日 端口体检：启动时扫所有服务端口，被别的程序占着就报错并给「强制关闭」按钮
+  portsScan: () => call('ports:scan'),
+  portsKill: port => call('ports:kill', Number(port)),
   window: action => call('window', action),
   saveSettings: patch => call('settings:save', patch),
   probeRealm: () => call('realm:probe'),
@@ -64,6 +67,8 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   releaseLocalPick: () => call('release:localPick'),
   //By leewheel 2026年11月6日 镜像测速（返回速度排行，最好的一条在 best）
   mirrorSpeedtest: () => call('mirrors:speedtest'),
+  //By leewheel 2026年11月6日 打开数据库导入日志（逐条 OK/FAIL，多次更新追加在同一文件）
+  releaseSqlLog: () => call('release:sqlLog'),
   //By leewheel 2026年11月6日 强制更新 = 从 GitHub 重新下载安装（本地包是另一个按钮）
   releaseForceRemote: options => call('release:forceRemote', options),
   //End By leewheel

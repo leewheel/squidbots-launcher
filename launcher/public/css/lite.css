@@ -487,3 +487,7 @@ dialog.xwide { width: min(980px, 96vw); }
 .release-mirrors li strong { color: #ffcf5c; }
 .release-mirrors li.bad { color: #ff9a9a; }
 /*End By leewheel*/
+
+/*By leewheel 2026年11月6日 正在导入的 SQL 文件 */
+.release-sql { margin: 2px 0 6px; color: #ffd479; font-size: 12.5px; word-break: break-all; }
+/*End By leewheel*/

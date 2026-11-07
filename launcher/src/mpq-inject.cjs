@@ -216,53 +216,159 @@ function writeRollback(state) {
   } finally { fs.closeSync(handle); }
 }
 
-// 把 content 注入为 arcName（例如 'DBFilesClient\\Spell.dbc'）。
-// 只替换归档里已存在的文件；options.dryRun 只检查不写。
-function injectFile(file, arcName, content, { dryRun = false } = {}) {
+//By leewheel 2026年11月7日 找 hash 空槽：MPQ 用线性探测，第一个 blockIndex=0xFFFFFFFF 就是空位。
+// 为什么必须新增：母本档里“有”、玩家档里“没有”的新条目，旧实现直接丢（只替换不新增），
+// 表现就是“更新包明明带了文件、玩家那边却没有”。这里按 MPQ 规则补空槽，才算真·不遗漏。
+function findFreeHashSlot(archive, arcName) {
+  const count = archive.hashEntries;
+  if (!count) return -1;
+  let slot = hashString(arcName, HASH_TABLE_OFFSET) & (count - 1);
+  for (let i = 0; i < count; i++) {
+    if (archive.hashTable.readUInt32LE(slot * 16 + 12) === 0xFFFFFFFF) return slot;
+    slot = (slot + 1) & (count - 1);
+  }
+  return -1;
+}
+
+// block 表里的空项：offset / archived / size / flags 四个字段全为 0
+function findFreeBlock(archive) {
+  for (let i = 0; i < archive.blockEntries; i++) {
+    const at = i * 16;
+    if (archive.blockTable.readUInt32LE(at) === 0
+      && archive.blockTable.readUInt32LE(at + 4) === 0
+      && archive.blockTable.readUInt32LE(at + 8) === 0
+      && archive.blockTable.readUInt32LE(at + 12) === 0) return i;
+  }
+  return -1;
+}
+
+//By leewheel 2026年11月7日 单块 zlib 打包（首字节 0x02 是 MPQ 的压缩掩码，decompressStorm 认这个）。
+// 不压缩会把 Spell.dbc（255MB）原样塞进档，玩家硬盘多几百 MB。
+// 用 level 9：默认 6 级下 ZZN 档会从 64MB 涨到 101MB（实测），压到 9 级能省一截。
+function packPayload(content, compress) {
+  const data = Buffer.from(content);
+  if (!compress) return { payload: data, size: data.length, flags: (FLAG_EXISTS | FLAG_SINGLE_UNIT) >>> 0 };
+  const deflated = require('node:zlib').deflateSync(data, { level: 9 });
+  if (deflated.length >= data.length) return { payload: data, size: data.length, flags: (FLAG_EXISTS | FLAG_SINGLE_UNIT) >>> 0 };
+  return { payload: Buffer.concat([Buffer.from([0x02]), deflated]), size: data.length, flags: (FLAG_EXISTS | FLAG_SINGLE_UNIT | FLAG_COMPRESS) >>> 0 };
+}
+
+//By leewheel 2026年11月7日 批量注入：同一张档只开一次、三张表只重写一次。
+// 逐条调用会把 hash/block 表反复追加，一个档几十条补丁就能把档撑大几十 MB。
+// items: [{ arcName, content }]；allowCreate=true 时档里没有的条目按 MPQ 规则新增。
+// 任何一条失败都不静默丢弃：返回 results 里逐条带 ok/reason，调用方必须检查。
+function injectMany(file, items, { dryRun = false, allowCreate = false, compress = true } = {}) {
+  if (!items || !items.length) return { ok: true, results: [] };
   const archive = openArchive(file, { writable: !dryRun });
   try {
-    const { slot, blockIndex } = findSlot(archive, arcName);
-    if (slot < 0 || blockIndex === 0xFFFFFFFF) return { ok: false, reason: 'missing', message: `归档里没有 ${arcName}（本功能只替换，不新增）` };
-    const oldOffset = blockOffset(archive, blockIndex);
-    const oldArchived = blockField(archive, blockIndex, 1);
-    const oldSize = blockField(archive, blockIndex, 2);
-    const oldFlags = blockField(archive, blockIndex, 3);
-    if (dryRun) return { ok: true, dryRun: true, arcName, oldOffset, oldArchived, oldSize, oldFlags, size: content.length };
+    const hash = Buffer.from(archive.hashTable);
+    //By leewheel 2026年11月7日 block 表要能扩容：真实的玩家档（检验目录那份）blockEntries 恰好等于已用条目数，
+    // 一个空项都没有。旧实现只能"找空项"，于是新条目全部注不进去（正是"包里有文件、玩家却没有"）。
+    // MPQ 规范不要求 block 表是 2 的幂（只有 hash 表要求），这里按需翻倍扩容并改写 header 的 blockEntries。
+    let block = Buffer.from(archive.blockTable);
+    let hi = Buffer.from(archive.hiBlockTable);
+    let blockEntries = archive.blockEntries;
+    // 查已有条目（基于内存里的哈希表：同批次刚新增的槽也要能被后续条目查到）
+    const lookup = name => {
+      const count = archive.hashEntries;
+      if (!count) return { slot: -1, blockIndex: -1 };
+      const nameA = hashString(name, HASH_NAME_A);
+      const nameB = hashString(name, HASH_NAME_B);
+      let slot = hashString(name, HASH_TABLE_OFFSET) & (count - 1);
+      for (let i = 0; i < count; i++) {
+        const at = slot * 16;
+        const entryBlock = hash.readUInt32LE(at + 12);
+        if (entryBlock === 0xFFFFFFFF) return { slot: -1, blockIndex: -1 };
+        if (hash.readUInt32LE(at) === nameA && hash.readUInt32LE(at + 4) === nameB) return { slot, blockIndex: entryBlock };
+        slot = (slot + 1) & (count - 1);
+      }
+      return { slot: -1, blockIndex: -1 };
+    };
+    const freeHash = name => {
+      const count = archive.hashEntries;
+      if (!count) return -1;
+      let slot = hashString(name, HASH_TABLE_OFFSET) & (count - 1);
+      for (let i = 0; i < count; i++) {
+        if (hash.readUInt32LE(slot * 16 + 12) === 0xFFFFFFFF) return slot;
+        slot = (slot + 1) & (count - 1);
+      }
+      return -1;
+    };
+    // 找一个可用的 block 项；没有空项就扩容（翻倍），返回新索引
+    const freeBlock = () => {
+      for (let i = 0; i < blockEntries; i++) {
+        const at = i * 16;
+        if (block.readUInt32LE(at) === 0 && block.readUInt32LE(at + 4) === 0 && block.readUInt32LE(at + 8) === 0 && block.readUInt32LE(at + 12) === 0) return i;
+      }
+      const grown = Math.max(blockEntries * 2, blockEntries + 16);
+      block = Buffer.concat([block, Buffer.alloc((grown - blockEntries) * 16)]);
+      hi = Buffer.concat([hi, Buffer.alloc((grown - blockEntries) * 2)]);
+      const index = blockEntries;
+      blockEntries = grown;
+      return index;
+    };
 
-    const data = Buffer.from(content);
+    const results = [];
+    const writes = [];
+    let cursor = archive.size;
+    for (const item of items) {
+      const arcName = String(item.arcName).replace(/\//g, '\\');
+      let { slot, blockIndex } = lookup(arcName);
+      let created = false;
+      if (slot < 0 || blockIndex === 0xFFFFFFFF) {
+        if (!allowCreate) { results.push({ ok: false, reason: 'missing', arcName, message: `归档里没有 ${arcName}（未允许新增）` }); continue; }
+        slot = freeHash(arcName);
+        blockIndex = freeBlock();
+        if (slot < 0) { results.push({ ok: false, reason: 'no-hash-slot', arcName, message: 'MPQ 哈希表已满，无法新增条目' }); continue; }
+        if (blockIndex < 0) { results.push({ ok: false, reason: 'no-block-slot', arcName, message: 'MPQ block 表已满，无法新增条目' }); continue; }
+        hash.writeUInt32LE(hashString(arcName, HASH_NAME_A) >>> 0, slot * 16);
+        hash.writeUInt32LE(hashString(arcName, HASH_NAME_B) >>> 0, slot * 16 + 4);
+        hash.writeUInt16LE(0, slot * 16 + 8);            // locale
+        hash.writeUInt16LE(0, slot * 16 + 10);           // platform
+        hash.writeUInt32LE(blockIndex >>> 0, slot * 16 + 12);
+        created = true;
+      }
+      const at = blockIndex * 16;
+      const oldOffset = block.readUInt32LE(at);
+      const oldArchived = block.readUInt32LE(at + 4);
+      const oldSize = block.readUInt32LE(at + 8);
+      const oldFlags = block.readUInt32LE(at + 12);
+      if (dryRun) { results.push({ ok: true, dryRun: true, arcName, created, oldOffset, oldArchived, oldSize, oldFlags, size: Buffer.byteLength(item.content) }); continue; }
+      const { payload, size, flags } = packPayload(item.content, compress);
+      const newOffset = cursor;
+      cursor += payload.length;
+      block.writeUInt32LE(newOffset >>> 0, at);
+      block.writeUInt32LE(payload.length, at + 4);
+      block.writeUInt32LE(size, at + 8);
+      block.writeUInt32LE(flags >>> 0, at + 12);
+      if (archive.hasHigh) hi.writeUInt16LE(Math.floor(newOffset / 0x100000000) & 0xFFFF, blockIndex * 2);
+      writes.push({ offset: newOffset, data: payload });
+      results.push({ ok: true, arcName, created, oldOffset, oldArchived, oldSize, newOffset, size, archived: payload.length, total: 0 });
+    }
+    if (dryRun) return { ok: true, dryRun: true, results };
+    const okResults = results.filter(item => item.ok);
+    if (!okResults.length) return { ok: false, results };
+
+    const newHashPos = cursor; cursor += archive.hashEntries * 16;
+    const newBlockPos = cursor; cursor += blockEntries * 16;
+    const newHiBlockPos = cursor; cursor += blockEntries * 2;
+    const newTotal = cursor;
+
     const rollback = captureRollback(archive);
-    // 1) 新数据追加到当前文件末尾（旧块原地保留，回滚只需写回 header + 截断）
-    const newOffset = archive.size;
-    // 2) 新表位置：数据之后依次放 hash 表、block 表、hi-block 表
-    const newHashPos = newOffset + data.length;
-    const newBlockPos = newHashPos + archive.hashEntries * 16;
-    const newHiBlockPos = newBlockPos + archive.blockEntries * 16;
-    const newTotal = newHiBlockPos + archive.blockEntries * 2;
-
-    // 3) 改写 block 表项：复用原索引，改指向新数据（单块、不压缩、不加密）
-    const block = Buffer.from(archive.blockTable);
-    const at = blockIndex * 16;
-    block.writeUInt32LE(newOffset >>> 0, at);
-    block.writeUInt32LE(data.length, at + 4);
-    block.writeUInt32LE(data.length, at + 8);
-    block.writeUInt32LE((FLAG_EXISTS | FLAG_SINGLE_UNIT) >>> 0, at + 12);
-    const hiBlock = Buffer.from(archive.hiBlockTable);
-    if (archive.hasHigh) hiBlock.writeUInt16LE(Math.floor(newOffset / 0x100000000) & 0xFFFF, blockIndex * 2);
-
-    // 4) 写数据、写三张表、改 header（只写 headerSize 字节，0x2C 之后是数据区绝不动）
     const handle = archive.fd;
     try {
-      fs.writeSync(handle, data, 0, data.length, newOffset);
-      const hashEnc = encrypt(archive.hashTable, HASH_TABLE_KEY);
+      for (const write of writes) fs.writeSync(handle, write.data, 0, write.data.length, write.offset);
+      const hashEnc = encrypt(hash, HASH_TABLE_KEY);
       fs.writeSync(handle, hashEnc, 0, hashEnc.length, newHashPos);
       const blockEnc = encrypt(block, BLOCK_TABLE_KEY);
       fs.writeSync(handle, blockEnc, 0, blockEnc.length, newBlockPos);
-      fs.writeSync(handle, hiBlock, 0, hiBlock.length, newHiBlockPos);
+      fs.writeSync(handle, hi, 0, hi.length, newHiBlockPos);
 
       const header = Buffer.from(archive.headerRaw);
       header.writeUInt32LE(newTotal >>> 0, 8);
       header.writeUInt32LE(newHashPos >>> 0, 16);
       header.writeUInt32LE(newBlockPos >>> 0, 20);
+      header.writeUInt32LE(blockEntries >>> 0, 28);   // 块表可能扩容过，条目数要同步
       if (archive.headerRaw.length >= 0x2C) {
         header.writeBigUInt64LE(BigInt(newHiBlockPos), 32);
         header.writeUInt16LE(Math.floor(newHashPos / 0x100000000) & 0xFFFF, 40);
@@ -274,10 +380,37 @@ function injectFile(file, arcName, content, { dryRun = false } = {}) {
       try { writeRollback(rollback); } catch {}
       throw error;
     }
-    return { ok: true, arcName, oldOffset, oldArchived, oldSize, newOffset, size: data.length, total: newTotal, rollback };
+    for (const item of okResults) item.total = newTotal;
+    return { ok: true, results: okResults, rollback };
   } finally {
     closeArchive(archive);
   }
+}
+
+// 单条注入（保留老接口）：默认只替换已有条目；allowCreate 时才新增。
+// compress 默认 false，保持老行为不变；新的补丁安装流程显式传 compress:true。
+function injectFile(file, arcName, content, { dryRun = false, allowCreate = false, compress = false } = {}) {
+  const out = injectMany(file, [{ arcName, content }], { dryRun, allowCreate, compress });
+  const one = out.results && out.results[0];
+  if (!one) return { ok: false, reason: 'empty', message: '没有可写入的条目' };
+  return { ...one, rollback: out.rollback };
+}
+
+//By leewheel 2026年11月7日 新增条目后必须把它登记进 (listfile)，否则下次 enumerate 看不到、
+// 后续更新还会当成“新条目”重复新增。这里只在确实有新名字时才重写 listfile。
+function appendToListfile(file, names, { compress = true } = {}) {
+  const existing = entryList(file);
+  if (!existing) return { ok: false, reason: 'no-listfile', message: '归档没有 (listfile)，无法登记新条目' };
+  const known = new Set(existing.map(name => name.toLowerCase()));
+  const add = [];
+  for (const name of names) {
+    const key = String(name).replace(/\//g, '\\');
+    if (!known.has(key.toLowerCase())) { known.add(key.toLowerCase()); add.push(key); }
+  }
+  if (!add.length) return { ok: true, added: 0, names: [] };
+  const text = existing.concat(add).join('\r\n') + '\r\n';
+  const result = injectFile(file, '(listfile)', Buffer.from(text, 'utf8'), { compress });
+  return { ok: result.ok, added: add.length, names: add, error: result.ok ? '' : result.message };
 }
 
 //By leewheel 2026年11月5日 只读条目的基本信息（不解压、不写盘）：更新包用它判断“这张表在档里变了没有”。
@@ -473,4 +606,4 @@ function listFiles(file) {
   } finally { closeArchive(archive); }
 }
 
-module.exports = { isMpqFile, openArchive, closeArchive, readArchive, findSlot, entryInfo, entryMeta, readEntry, readMany, entryList, injectFile, extractPlain, listFiles, hashString, captureRollback, writeRollback };
+module.exports = { isMpqFile, openArchive, closeArchive, readArchive, findSlot, entryInfo, entryMeta, readEntry, readMany, entryList, injectFile, injectMany, appendToListfile, packPayload, findFreeHashSlot, findFreeBlock, extractPlain, listFiles, hashString, captureRollback, writeRollback };

@@ -269,6 +269,39 @@ class ServerControl {
     return true;
   }
 
+  //By leewheel 2026年11月7日 启动器一开就把所有服务端口扫一遍：谁占着、是不是本包自己的程序。
+  // 老大要求：被别的程序占着必须报错，并且界面要给一个「强制关闭占用程序」的按钮。
+  async scanPorts() {
+    const out = [];
+    for (const service of this.services) {
+      if (!(await portOpen(service.port))) {
+        out.push({ id: service.id, name: service.name, port: service.port, busy: false, mine: false, pid: 0, file: '' });
+        continue;
+      }
+      const owner = await this.portOwner(service.port);
+      const mine = !!(owner && this.ownsExe(service, owner.file));
+      out.push({ id: service.id, name: service.name, port: service.port, busy: true, mine, pid: owner?.pid || 0, file: owner?.file || '' });
+    }
+    return out;
+  }
+
+  //By leewheel 2026年11月7日 强制关闭占用端口的程序（玩家点了界面按钮才执行）。
+  // 本包自己的服务走正常停止（世界服要存档）；外来进程按端口查到的 PID 精确 taskkill，不做进程名通配。
+  async killPortOwner(port) {
+    const target = Number(port);
+    if (!Number.isInteger(target)) throw new Error('端口号不正确');
+    const owner = await this.portOwner(target);
+    if (!owner?.pid) throw new Error(`端口 ${target} 上没有找到监听进程（可能已经自己退出了）`);
+    const service = this.services.find(item => item.port === target);
+    if (service && this.ownsExe(service, owner.file)) {
+      await this.stop(service.id);
+      return { pid: owner.pid, graceful: true };
+    }
+    await exec('taskkill.exe', ['/PID', String(owner.pid), '/T', '/F'], { windowsHide: true })
+      .catch(error => { throw new Error(`结束 PID ${owner.pid} 失败：${error.message}`); });
+    return { pid: owner.pid, graceful: false };
+  }
+
   async emit() { this.notify(await this.status()); }
 
   // A second Start of a service already starting (double click, home page and a realm card) waits for the first one.
@@ -283,6 +316,12 @@ class ServerControl {
   async startOnce(id) {
     const service = this.services.find(item => item.id === id);
     if (!service) throw new Error('Unknown service.');
+    //By leewheel 2026年11月7日 中文路径硬拦截：布局体检不通过就一律不启动服务端。
+    // 中文路径下 MySQL/世界服会读不到文件或乱码，老大明确要求「有中文就报错」，不能只弹个提示还让他继续点。
+    if (require('./layout-check.cjs').checkLayout({ paths: [this.root] }).chinesePath) {
+      throw new Error('运行目录包含中文，服务端无法正常工作：请把整个整合包移动到纯英文路径（例如 D:/Games/COA）后重新打开启动器。');
+    }
+    //End By leewheel
     //By leewheel 2026-11-05 世界服读配置之前修好 RA；修不动也不该挡住服务器启动，只留一条中文告警
     if (/world/i.test(id)) await ensureWorldConsole(this.root).catch(error => console.warn(`[启动器] 远程控制台配置修复失败：${error.message}`));
     //By leewheel 2026年11月6日 世界服/登录服启动前，把数据库端口和“数据库自动更新”两条配置对齐整合包：

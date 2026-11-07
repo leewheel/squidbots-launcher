@@ -49,6 +49,38 @@ const releaseUpdate = require('./release-update.cjs');
 const bugReport = require('./bug-report.cjs');
 //By leewheel 2026年11月6日 启动器自替换：老版启动器只会把 client\ 铺到 Client\，从那里把新 exe 装到根目录
 const launcherSwap = require('./launcher-swap.cjs');
+//By leewheel 2026年11月6日 数据库导入日志（逐条 OK/FAIL，多个更新包追加在同一个文件里）
+const sqlLog = require('./sql-log.cjs');
+//By leewheel 2026年11月8日 更新阶段名（玩家看得懂的中文）+ 阶段内进度区间。
+// 根因记录：applyUpdate 的 onLine 原来把 phase 写死成 'apply'，每输出一行日志
+// （例如“注入 patch-ZZN.mpq ← ……”）就把“注入客户端补丁档 / 导入数据库”的指示灯抢回去，
+// 于是玩家看到的永远是“停止服务器（保存角色）”那盏灯亮着、进度条对不上。
+// 现在 onPhase 只由真正的阶段切换调用，日志行沿用当前阶段；阶段内按真实条数推进百分比。
+const RELEASE_PHASE_LABEL = {
+  download: '下载更新包',
+  extract: '解压更新包',
+  apply: '停止服务器（保存角色）',
+  server: '写入服务端文件',
+  configs: '覆盖配置',
+  client: '写入客户端文件',
+  'mpq-entries': '注入客户端补丁档',
+  dbc: '处理 DBC',
+  sql: '导入数据库',
+  launcher: '更新启动器',
+  'config-patch': '写入新配置参数',
+  next: '当前补丁完成，继续下一个',
+  done: '更新完成',
+};
+// 阶段内进度区间（与界面 RELEASE_STEPS 的权重保持一致）
+const RELEASE_PHASE_SPAN = {
+  'mpq-entries': [66, 80],
+  sql: [86, 96],
+};
+const spanPct = (phase, done, total) => {
+  const span = RELEASE_PHASE_SPAN[phase];
+  if (!span || !total || done <= 0) return null;
+  return Math.min(span[1], span[0] + Math.round((span[1] - span[0]) * (done / total)));
+};
 const { normalizeLayout, readMarker: readLayoutMarker, isNormalized: isLayoutNormalized } = require('./layout-fix.cjs');
 //By leewheel 2026年11月4日 配置文件随整合包放在 Server\configs，启动时没有就生成默认；目录一律相对启动器所在目录
 const portableConfig = require('./portable-config.cjs');
@@ -82,10 +114,28 @@ async function retryPendingSql() {
   const conns = releaseUpdate.readDbConfig(serverRoot);
   try { const control = serverControl(); if (control) await control.start('mysql'); } catch { /* 起不来就再等下次 */ }
   try {
+    const pendingRun = { startedAt: Date.now(), ok: 0, failed: 0 };
     const done = await releaseUpdate.importSqlTree(serverRoot, pending.sqlRoot, {
       conns, waitMs: 45000,
       onLine: line => send('repack:notice', { key: 'sql.pending', text: String(line).slice(0, 200) }),
+      //By leewheel 2026年11月6日 补导也走“清单 + 逐条日志”，和更新时同一个 sql-import.log
+      onPlan: plan => {
+        pendingRun.total = plan.length;
+        Object.assign(pendingRun, sqlLog.startRun(root, { version: pending.version || '', origin: '启动时补导', files: plan }));
+      },
+      onFileStart: file => send('repack:notice', { key: 'sql.pendingFile', text: `正在补导 ${file.index}/${file.total}：${file.label}` }),
+      onFileDone: file => {
+        if (file.ok) pendingRun.ok++; else pendingRun.failed++;
+        sqlLog.recordFile(root, file);
+      },
     });
+    if (pendingRun.total) sqlLog.finishRun(root, pendingRun, { failed: done.failures || [] });
+    //By leewheel 2026年11月6日 补导也可能有个别脚本失败：有失败就**保留待办**（别当成功清掉），并每轮提示
+    const stillFailing = done.failures || [];
+    if (stillFailing.length) {
+      send('repack:notice', { key: 'sql.pendingPartial', text: `还有 ${stillFailing.length} 个数据脚本没导成功，下次启动继续补导` });
+      return done;
+    }
     await clearPendingSql(root);
     send('repack:notice', { key: 'sql.pendingDone', text: `待办的数据库脚本已补导（${done.length} 个）` });
     return done;
@@ -753,6 +803,9 @@ function registerIpc() {
   //By leewheel 2026-11-05 smoke 测试跑在临时英文目录、也没有 Client/Server，不能让启动告警干扰截图测试
   handle('bootstrap', async () => ({ config: publicConfig(), settings, client: await clientInfo(), version: appVersion(), launcherUpdate: launcherUpdates.status, smoke: !!smokeDir, whatsNew: whatsNew(), layout: smokeDir ? { chinesePath: false, badFolders: [] } : startupLayout() }));
   //End By leewheel
+  //By leewheel 2026年11月7日 端口体检与强制关闭（启动器启动时自动扫一次，界面给按钮）
+  handle('ports:scan', async () => (serverControl() ? serverControl().scanPorts() : []));
+  handle('ports:kill', async port => (serverControl() ? serverControl().killPortOwner(Number(port)) : null));
   handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: appVersion() }); return true; });
   handle('window', action => {
     if (action === 'minimize') window.minimize();
@@ -2067,7 +2120,7 @@ function registerIpc() {
     return { ...(await sqlConsole.run(serverPath(), String(query).slice(0, 20000), { allowChanges: allowChanges === true })), backup };
   });
   const verify = require('./verify.cjs');
-  const watch = { world: null, crashes: null, restarts: [], backupDay: '' };
+  const watch = { world: null, crashes: null, restarts: [] };
   serverStartOnOpen = async () => {
     if (!serverPath() || !inspectRepack(serverPath()).repack || serverBusy()) return;
     const services = await requireControl().status();
@@ -2095,16 +2148,12 @@ function registerIpc() {
       if (quiet && settings.restartWorldOnCrash && world === 'stopped' && watch.restarts.length < 3) { watch.restarts.push(Date.now()); notifyUser('restarted'); startEverything().catch(() => {}); }
       else notifyUser('crash');
     }
-    // One automatic backup a day while MySQL runs (characters, accounts, bots), the last 7 kept.
-    const day = new Date().toISOString().slice(0, 10);
-    if (quiet && settings.dailyBackup !== false && watch.backupDay !== day && services.some(service => service.id === 'mysql' && service.state === 'running')) {
-      watch.backupDay = day;
-      const list = await serverTools().backup.list();
-      const daily = list.filter(item => item.label === 'daily').sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-      if (daily.some(item => item.createdAt.slice(0, 10) === day)) return;
-      await oneServerJob('the daily backup', () => serverTools().backup.create({ label: 'daily', reason: 'automatic' }));
-      for (const old of daily.slice(6)) await serverTools().backup.remove(old.name).catch(() => {});
-    }
+    //By leewheel 2026年11月7日 老大明确要求：启动器**不再自动做每日备份**。
+    // 原来这里每天静默跑一次 backup.create('daily')，全程占用 server 任务锁，
+    // 玩家在更新/启服时会撞上「请等每日备份完成」而卡住，而且备份本身
+    // 也在玩家不知情时吃磁盘 I/O。备份改为**只能手动**（界面「立即备份」按钮），
+    // 需要备份时由老大自己决定。
+    //End By leewheel
   };
   // ---- the achievements of the random bots (see bot-achievements.cjs): once after the update to 2.8, then on demand
   const achievementsMarker = root => path.join(root, 'Settings', 'maintenance.json');
@@ -2690,8 +2739,10 @@ function registerIpc() {
     // 每一次进度都同步进主进程状态：界面关了再打开，也能拿到“现在到哪一步了”
     const progress = payload => {
       //By leewheel 2026-11-05 队列里只有最后一个补丁才允许报"完成"，中间改为"第 n/N 个完成，继续下一个"
+      //By leewheel 2026年11月8日 中间态原来借用 'apply'，界面会把指示灯整排倒退到“停止服务器”；改专用 'next'，
+      // 界面据此把步骤全部标成已完成但不算整体完成（进度条停在 99%，不会跳成 100%）。
       const actual = queue && !queue.last && payload.phase === 'done'
-        ? { ...payload, phase: 'apply', pct: null, message: `第 ${queue.index}/${queue.total} 个补丁完成，继续下一个` }
+        ? { ...payload, phase: 'next', pct: 99, message: `第 ${queue.index}/${queue.total} 个补丁完成，继续下一个` }
         : payload;
       Object.assign(releaseState, {
         busy: true,
@@ -2765,18 +2816,58 @@ function registerIpc() {
         if (adminReady) { usableConns = null; progress({ phase: 'sql', version, message: '数据库已就绪（改用 admin-client.ini 的连接）', pct: null }); }
         else progress({ phase: 'sql', version, message: '数据库暂未就绪：先归位文件，SQL 转为待办，下次启动服务器时自动补导', pct: null });
       }
+      const sqlRun = { startedAt: Date.now(), ok: 0, failed: 0 };
+      //By leewheel 2026年11月8日 livePhase 记住“现在到底在哪一步”：日志行只更新文案，绝不改阶段，
+      // 这样“注入客户端补丁档 / 导入数据库”的指示灯才不会被打回“停止服务器”。
+      let livePhase = 'apply';
       const result = await releaseUpdate.applyUpdate({
         root, world: extract, serverRoot, clientRoot,
-        onPhase: phase => progress({ phase, version, message: `正在处理：${phase}`, pct: null }),
-        onLine: line => progress({ phase: 'apply', version, message: String(line).slice(0, 300), pct: null }),
+        onPhase: phase => {
+          livePhase = phase;
+          progress({ phase, version, message: RELEASE_PHASE_LABEL[phase] || '', pct: null });
+        },
+        onLine: line => progress({ phase: livePhase, version, message: String(line).slice(0, 300), pct: null }),
+        //By leewheel 2026年11月8日 阶段内真实进度（注入补丁档逐条推进），让进度条真的在走
+        onPhaseProgress: (phase, done, total) => progress({ phase, version, message: `${RELEASE_PHASE_LABEL[phase] || phase} ${done}/${total}`, pct: spanPct(phase, done, total) }),
+        //By leewheel 2026年11月6日 先出清单再逐条导入：界面显示“正在导入 3/13 某文件”，日志逐条记 OK/FAIL
+        onSqlPlan: plan => {
+          sqlRun.total = plan.length;
+          const run = sqlLog.startRun(root, { version, origin: '自动更新', files: plan });
+          Object.assign(sqlRun, run);
+          progress({ phase: 'sql', version, pct: 86, message: `准备导入 ${plan.length} 个数据脚本`, sqlPlan: plan.length });
+        },
+        onSqlFileStart: file => progress({
+          phase: 'sql', version,
+          //By leewheel 2026年11月8日 导入数据库按文件数推进 86%→96%，不再一直钉在 90%
+          pct: spanPct('sql', file.index - 1, file.total),
+          message: `正在导入 ${file.index}/${file.total}：${file.label}`,
+          sqlCurrent: file.label, sqlIndex: file.index, sqlTotal: file.total,
+        }),
+        onSqlFileDone: file => {
+          if (file.ok) sqlRun.ok++; else sqlRun.failed++;
+          sqlLog.recordFile(root, file);
+          if (!file.ok) progress({ phase: 'sql', version, pct: null, message: `导入失败 ${file.index}/${file.total}：${file.label}（${String(file.error || '').slice(0, 120)}）`, sqlCurrent: file.label, sqlIndex: file.index, sqlTotal: file.total });
+        },
         importSqlFiles: options.importSql !== false,
         conns: usableConns,
         waitMs: mysqlReady || usableConns === null ? 15000 : 5000,
       });
+      if (sqlRun.total) {
+        sqlLog.finishRun(root, sqlRun, { failed: result.sql?.failures || [], note: `数据脚本日志：${sqlLog.logFile(root)}` });
+      }
       //By leewheel 2026年11月5日 没导成的 SQL 记成待办（.coa-launcher/pending-sql.json），
       // 下次启动服务器 / 下次开启动器时自动补导，绝不要求玩家手动开库。
-      if (result.sqlPending) await savePendingSql(root, result.sqlPending, options.version || version);
-      else await clearPendingSql(root);
+      //By leewheel 2026年11月6日 单个脚本导入失败不再中断整目录：这里把失败清单报给玩家，
+      // 并把“还有没导成功的”记成待办（成功的不受影响，下次补导是幂等的）。
+      //By leewheel 2026年11月7日 数据脚本失败必须让整次更新失败：不再记“待办”、不再写“更新成功”。
+      // 旧行为“失败也记成功”正是上一个包把服务端弄坏却没人发现的原因。
+      const sqlFailures = result.sql?.failures || [];
+      if (sqlFailures.length) {
+        const list = sqlFailures.slice(0, 3).map(item => `${item.database || '默认库'}/${item.file}`).join('、');
+        throw new Error(`有 ${sqlFailures.length} 个数据脚本没导入成功：${list}${sqlFailures.length > 3 ? ' …' : ''}。更新未完成`);
+      }
+      if (result.sqlPending) throw new Error(`数据库未就绪，数据脚本没有导入：${result.sqlPending}。更新未完成`);
+      await clearPendingSql(root);
       //By leewheel 2026年11月6日 启动器自替换：按常规做法——独立助手等本进程退出后改名替换
       // （运行中的 exe 既不能改名也不能覆盖，只有进程退出后才允许，所以必须由别的程序来做）。
       if (result.launcherPending) {
@@ -2854,7 +2945,9 @@ function registerIpc() {
       for (let i = 0; i < queue.length; i++) {
         const item = queue[i];
         const step = { index: i + 1, total: queue.length, last: i === queue.length - 1 };
-        send('release:progress', { phase: 'download', version: item.version, message: `正在安装第 ${step.index}/${step.total} 个补丁：${item.version}`, pct: 0 });
+        //By leewheel 2026年11月8日 reset：换到下一个补丁时进度必须归零重来，
+        // 否则会出现“灯回到下载更新包、进度条却还停在 99%”的错位（老大说的对不上）。
+        send('release:progress', { phase: 'download', version: item.version, message: `正在安装第 ${step.index}/${step.total} 个补丁：${item.version}`, pct: 0, reset: true });
         applied.push(await applyOnePatch({
           version: item.version, tag: item.tag, asset: item.asset,
           deleteAfter: options?.deleteAfter !== false, importSql: options?.importSql !== false,
@@ -2894,15 +2987,47 @@ function registerIpc() {
       const serverRoot = path.join(root, 'Server');
       const clientRoot = path.join(root, 'Client');
       progress({ phase: 'apply', version, message: '正在替换文件…', pct: 30 });
+      const localSqlRun = { startedAt: Date.now(), ok: 0, failed: 0 };
+      //By leewheel 2026年11月8日 本地包更新同样：日志行只改文案，阶段由 onPhase 独占推进
+      let liveLocalPhase = 'apply';
       const result = await releaseUpdate.applyUpdate({
         root, world: workDir, serverRoot, clientRoot,
-        onPhase: phase => progress({ phase, version, message: `正在处理：${phase}`, pct: null }),
-        onLine: line => progress({ phase: 'apply', version, message: String(line).slice(0, 300), pct: null }),
+        onPhase: phase => {
+          liveLocalPhase = phase;
+          progress({ phase, version, message: RELEASE_PHASE_LABEL[phase] || '', pct: null });
+        },
+        onLine: line => progress({ phase: liveLocalPhase, version, message: String(line).slice(0, 300), pct: null }),
+        onPhaseProgress: (phase, done, total) => progress({ phase, version, message: `${RELEASE_PHASE_LABEL[phase] || phase} ${done}/${total}`, pct: spanPct(phase, done, total) }),
+        //By leewheel 2026年11月6日 本地包更新也先出清单、逐条显示进度、逐条写日志
+        onSqlPlan: plan => {
+          localSqlRun.total = plan.length;
+          Object.assign(localSqlRun, sqlLog.startRun(root, { version, origin: '本地包更新', files: plan }));
+          progress({ phase: 'sql', version, pct: 86, message: `准备导入 ${plan.length} 个数据脚本`, sqlPlan: plan.length });
+        },
+        onSqlFileStart: file => progress({
+          phase: 'sql', version,
+          pct: spanPct('sql', file.index - 1, file.total),
+          message: `正在导入 ${file.index}/${file.total}：${file.label}`,
+          sqlCurrent: file.label, sqlIndex: file.index, sqlTotal: file.total,
+        }),
+        onSqlFileDone: file => {
+          if (file.ok) localSqlRun.ok++; else localSqlRun.failed++;
+          sqlLog.recordFile(root, file);
+        },
         importSqlFiles: options?.importSql !== false,
         conns: null,
         waitMs: 15000,
       });
+      if (localSqlRun.total) sqlLog.finishRun(root, localSqlRun, { failed: result.sql?.failures || [] });
       await enforceDbUpdatesOff(serverRoot, { notify: false }).catch(() => {});
+      //By leewheel 2026年11月7日 本地包更新同样：脚本失败就失败，不再记待办。
+      const localFailures = result.sql?.failures || [];
+      if (localFailures.length) {
+        const list = localFailures.slice(0, 3).map(item => `${item.database || '默认库'}/${item.file}`).join('、');
+        throw new Error(`有 ${localFailures.length} 个数据脚本没导入成功：${list}${localFailures.length > 3 ? ' …' : ''}。更新未完成`);
+      }
+      if (result.sqlPending) throw new Error(`数据库未就绪，数据脚本没有导入：${result.sqlPending}。更新未完成`);
+      await clearPendingSql(root);
       if (result.launcherPending) {
         launcherSwap.spawnReplaceHelper(root, process.pid, { restart: false });
       }
@@ -2920,6 +3045,13 @@ function registerIpc() {
     } finally {
       releaseBusy = false;
     }
+  });
+  //By leewheel 2026年11月6日 打开“数据库导入日志”（逐条 OK/FAIL，多次更新都在这个文件里）
+  handle('release:sqlLog', async () => {
+    const file = sqlLog.logFile(launcherRootFolder());
+    if (!fs_exists(file)) return { ok: false, message: '还没有导入日志（这次更新没有数据脚本）' };
+    const error = await shell.openPath(file);
+    return { ok: !error, file, message: error || '' };
   });
   handle('release:localPick', async () => {
     const result = await dialog.showOpenDialog(window, {
@@ -2948,8 +3080,10 @@ function registerIpc() {
       mirrors: config.downloadMirrors,
       onLine: line => send('repack:notice', { key: 'mirror.test', text: line }),
     });
-    await persist({ ...settings, mirrorRanking: { url: assetUrl, at: Date.now(), list } });
-    return { ok: true, list, best: list.find(item => item.ok) || null };
+    //By leewheel 2026年11月6日 给每个源补一句中文原因，界面直接显示（清华/阿里的 404 = 不收录本仓库）
+    const annotated = list.map(item => ({ ...item, reason: item.ok ? '' : releaseUpdate.describeProbeFailure(item.url, item.error) }));
+    await persist({ ...settings, mirrorRanking: { url: assetUrl, at: Date.now(), list: annotated } });
+    return { ok: true, list: annotated, best: annotated.find(item => item.ok) || null };
   });
   handle('release:forceRemote', async options => {
     if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
@@ -3374,7 +3508,21 @@ const NOTE_TEXT = {
   zh: { update: ['新版本 {version}', '服务器更新已就绪，可在启动器中安装。'], ready: ['服务器就绪', '世界已启动：可以开始游戏了。'], crash: ['世界已停止', 'worldserver 崩溃了。已写入崩溃报告（检查）。'], restarted: ['世界正在重新启动', 'worldserver 崩溃了，正在重新启动。'], open: '打开启动器', quit: '关闭启动器并停止服务器' },
 };
 const noteWords = () => NOTE_TEXT[settings?.language] || NOTE_TEXT.en;
-function showWindow() { if (!window) return; if (window.isMinimized()) window.restore(); window.show(); window.focus(); }
+//By leewheel 2026年11月6日 第二个实例被挡掉时，第一个实例要把窗口拉回前台：
+// 只 show() 不够——窗口在后台/最小化/被游戏挡住时，玩家以为“双击没反应”。
+function showWindow() {
+  if (!window) return;
+  if (window.isMinimized()) window.restore();
+  if (!window.isVisible()) window.show();
+  // Windows 上 focus() 经常抢不到前台：先置顶一下再取消置顶，强制把窗口提到最前
+  try {
+    window.setAlwaysOnTop(true);
+    window.show();
+    window.focus();
+    window.moveTop();
+    setTimeout(() => { try { window.setAlwaysOnTop(false); } catch { /* 窗口可能已关 */ } }, 400);
+  } catch { /* 忽略：能 show 出来就行 */ }
+}
 function notifyUser(kind, values = {}) {
   if (smokeDir || settings?.notifications === false) return;
   const [title, body] = noteWords()[kind] || [];
@@ -3678,7 +3826,8 @@ async function main() {
   });
   setTimeout(() => launcherUpdates.check(), 1500).unref();
   if (config.edition === 'server' && !smokeDir) createTray().catch(() => {});
-  // The server watched every 20 seconds, window shown or not: ready, crash (and restart), the daily backup.
+  // The server watched every 20 seconds, window shown or not: ready, crash (and restart).
+  //By leewheel 2026年11月7日 自动每日备份已移除，这里只剩状态跟踪与崩溃重启。
   if (!smokeDir) setInterval(() => serverWatch?.().catch(() => {}), 20000).unref();
   // Scripts/manage.py fixed at once: a realm task can start MySQL before any server start.
   if (!smokeDir) fixManage(serverPath()).catch(() => {});
@@ -3701,8 +3850,26 @@ if (takeoverPid > 0) {
   launcherSwap.performTakeover(launcherRootFolder(), takeoverPid)
     .catch(() => false)
     .finally(() => app.exit(0));
-} else if (!smokeDir && !app.requestSingleInstanceLock()) app.quit();
-else {
+} else if (!smokeDir && !app.requestSingleInstanceLock()) {
+  //By leewheel 2026年11月6日 老大反馈：已经有一个启动器在跑时，双击新的 build 会“进程自己消失、不弹窗”，
+  // 看着像崩溃。其实是被单实例锁挡掉了（而且锁是跨版本共享的，两个 exe 用同一个 userData）。
+  // 这里改成**先弹一句中文提示再退出**，玩家/我们自己都知道是“已经在运行”，不是坏了。
+  app.whenReady().then(() => {
+    //By leewheel 2026年11月6日 先把焦点抢过来再弹框：不然提示框可能被已打开的启动器/游戏窗口挡住，
+    // 玩家还是只看到“双击没反应”。
+    try { app.focus({ steal: true }); } catch { /* 旧版 Electron 忽略 */ }
+    dialog.showMessageBoxSync({
+      type: 'info',
+      title: config?.appName || 'CoA 启动器',
+      message: '启动器已经在运行',
+      detail: '已经有一个启动器窗口（可能在托盘里或最小化了），这次不会再开第二个。\n请切换到已经打开的窗口；如果找不到，就看任务栏右下角的托盘图标。',
+      buttons: ['好'],
+      noLink: true,
+      defaultId: 0,
+    });
+    app.quit();
+  });
+} else {
   app.on('second-instance', () => showWindow());
   app.whenReady().then(main).catch(error => { dialog.showErrorBox(boxText('launchFailed')[0], error.message); app.quit(); });
   app.on('window-all-closed', () => app.quit());

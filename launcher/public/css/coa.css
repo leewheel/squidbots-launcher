@@ -263,7 +263,8 @@ body::after {
   display: block;
   line-height: 0;
 }
-.free-banner .fb-canvas { display: block; width: 100%; height: 34px; }
+/*By leewheel 2026年11月7日 免费声明改为 canvas 画字（字号更大）：横幅里的画布高度 34 → 40*/
+.free-banner .fb-canvas { display: block; width: 100%; height: 40px; }
 
 /* 右侧小字状态行：一条竖线隔开，字号小、字距大，像设备铭牌 */
 .free-banner .fb-meta {

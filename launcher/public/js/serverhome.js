@@ -401,23 +401,31 @@ function homeView() {
 // 所以文案彻底退出代码——现在只有两张透明 PNG（assets/notice-free.png、assets/notice-meta.png），
 // 源码里搜不到任何字样；canvas 只负责把图片按画布高度缩放后绘制，再叠杂波特效。
 // 说明：图片当然能被人看见，但改它需要重新打包 asar，而 asar 有完整性校验——改过的启动器起不来。
+//By leewheel 2026年11月7日 老大改了免费声明文案，并且要求**字体放大、杂波干扰的大小也随机**。
+// 文案不进源码明文：仍是 base64，运行时解码后用 canvas 画字（不再用固定 PNG，字号才能放大、才能按宽度自适应）。
+const FREE_NOTICE_B64 = '5p2l6Ieq6Jma56m66aOO5pq055qE5L+h5oGv77ya5pys5qih5ouf5Zmo5a6M5YWo5YWN6LS577yM6Iqx6ZKx6LSt5Lmw55qE6YO95piv5YK76YC877yB';
+let freeNoticeTextCache = '';
+function freeNoticeText() {
+  if (freeNoticeTextCache) return freeNoticeTextCache;
+  try {
+    const bytes = Uint8Array.from(atob(FREE_NOTICE_B64), char => char.charCodeAt(0));
+    freeNoticeTextCache = new TextDecoder('utf-8').decode(bytes);
+  } catch { freeNoticeTextCache = ''; }
+  return freeNoticeTextCache;
+}
 const freeNoticeArt = { text: null, meta: null };
+// 保留旧的图片加载函数签名（别的地方可能引用），实际不再用它画字
 function loadFreeNoticeArt() {
-  if (!freeNoticeArt.text) {
-    freeNoticeArt.text = new Image();
-    freeNoticeArt.text.onload = () => drawFreeNotice();
-    freeNoticeArt.text.src = 'assets/notice-free.png';
-  }
   if (!freeNoticeArt.meta) freeNoticeArt.meta = 'assets/notice-meta.png';
 }
 function drawFreeNotice() {
   const canvas = document.getElementById('free-notice-canvas');
   const holder = canvas?.parentElement;
   if (!canvas || !holder) return;
-  loadFreeNoticeArt();
   const ratio = window.devicePixelRatio || 1;
   const width = Math.max(240, holder.clientWidth || 640);
-  const height = 34;
+  //By leewheel 2026年11月7日 字号放大：横幅高 40，字高按高度 56% 取（比原来的 26px 图大一档）
+  const height = 40;
   canvas.width = Math.round(width * ratio);
   canvas.height = Math.round(height * ratio);
   canvas.style.width = `${width}px`;
@@ -430,63 +438,76 @@ function drawFreeNotice() {
 
 //By leewheel 2026年11月6日 老大要求保留“杂波干扰”特效：canvas 里按帧重画——随机色散重影、
 // 横向切片错位、扫描噪点、亮度闪烁，节奏沿用原来 CSS 的两组 glitch（3.7s / 4.3s）+ 6.5s 闪一下。
+//By leewheel 2026年11月7日 干扰大小也要随机：切片厚度/位移、噪点块尺寸、色散偏移全部 rand 化，不再是固定像素。
 // 关掉系统动画偏好（prefers-reduced-motion）时只画一帧静态。
 let freeNoticeRaf = 0;
 let freeNoticeStatic = false;
 function paintFreeNotice(ctx, ratio, width, height, now) {
-  const art = freeNoticeArt.text;
+  const text = freeNoticeText();
   const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  if (!art || !art.complete || !art.naturalWidth) return;   // 图还没加载好，等 onload 后重画
-  // 按画布高度等比缩放，垂直居中
-  const artHeight = 26;
-  const artWidth = art.naturalWidth * (artHeight / art.naturalHeight);
+  if (!text) return;
+  const clock = now / 1000;
+  const flicker = !reduced && clock % 6.5 > 6.34;
   const middle = height / 2;
-  const top = middle - artHeight / 2;
-  // 两组独立的 glitch 节奏：各自每 period 触发一次，持续 duration
-  const burst = (clock, period, duration, range) => {
+  // 字号：先按高度定，再按可用宽度收缩，保证长文案放得下
+  let fontSize = Math.max(16, Math.round(height * 0.56));
+  const fontOf = size => `700 ${size}px "Microsoft YaHei", "Noto Sans SC", "Segoe UI", sans-serif`;
+  ctx.font = fontOf(fontSize);
+  const limit = width - 28;
+  const measured = ctx.measureText(text).width;
+  if (measured > limit) {
+    fontSize = Math.max(11, Math.floor(fontSize * (limit / measured)));
+    ctx.font = fontOf(fontSize);
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // 两组独立的 glitch 节奏：各自每 period 触发一次，持续 duration；幅度随机
+  const burst = (period, duration, range) => {
     const phase = clock % period;
     if (reduced || phase > duration) return 0;
     return (Math.random() * 2 - 1) * range;
   };
-  const clock = now / 1000;
-  const shiftA = burst(clock, 3.7, 0.16, 3.2);
-  const shiftB = burst(clock, 4.3, 0.13, 2.6);
-  // 色散重影：红/青各画一层图（用 canvas filter 上色，不依赖字体）
+  const shiftA = burst(3.7, 0.16, 1.6 + Math.random() * 3.4);
+  const shiftB = burst(4.3, 0.13, 1.2 + Math.random() * 2.8);
+  const centerX = width / 2 + shiftA * 0.6;
+  // 色散重影：红/青各一层（偏移量随机）
+  const chroma = 1 + Math.random() * 2.2;
   ctx.globalAlpha = 0.55;
-  ctx.filter = 'sepia(1) saturate(6) hue-rotate(-40deg)';
-  ctx.drawImage(art, 1.4 + shiftA, top + 0.5 + shiftB * 0.3, artWidth, artHeight);
-  ctx.filter = 'sepia(1) saturate(6) hue-rotate(140deg)';
-  ctx.drawImage(art, -1.4 - shiftB, top - 0.5 - shiftA * 0.3, artWidth, artHeight);
-  ctx.filter = 'none';
+  ctx.fillStyle = 'rgba(255,60,120,.9)';
+  ctx.fillText(text, centerX + chroma + shiftA, middle + 0.4 + shiftB * 0.3);
+  ctx.fillStyle = 'rgba(0,229,255,.9)';
+  ctx.fillText(text, centerX - chroma - shiftB, middle - 0.4 - shiftA * 0.3);
   // 主体：霓虹辉光 + 每 6.5 秒一次亮度跳动
-  ctx.globalAlpha = !reduced && clock % 6.5 > 6.36 ? 0.55 : 1;
-  ctx.shadowColor = 'rgba(0,229,255,.75)';
-  ctx.shadowBlur = 14;
-  ctx.drawImage(art, shiftA * 0.6, top, artWidth, artHeight);
+  ctx.globalAlpha = flicker ? 0.55 : 1;
+  ctx.shadowColor = 'rgba(0,229,255,.8)';
+  ctx.shadowBlur = 12 + Math.random() * 8;
+  ctx.fillStyle = '#eafcff';
+  ctx.fillText(text, centerX, middle);
   ctx.shadowBlur = 0;
   ctx.globalAlpha = 1;
   if (reduced) return;
-  // 横向切片错位：挑一条窄带把已画好的像素整体平移，像信号撕裂
-  const slices = Math.random() < 0.22 ? 2 : 1;
+  // 横向切片错位：厚度与位移都随机（1~14px 厚、最多 ±14px 位移）
+  const slices = 1 + Math.floor(Math.random() * 3);
   for (let index = 0; index < slices; index++) {
-    if (Math.random() > 0.35) continue;
+    if (Math.random() > 0.42) continue;
     const top = Math.random() * height;
-    const band = 2 + Math.random() * 7;
-    const dx = (Math.random() * 2 - 1) * 9;
+    const band = 1 + Math.random() * 13;
+    const dx = (Math.random() * 2 - 1) * 14;
     try {
       ctx.drawImage(ctx.canvas, 0, top * ratio, width * ratio, band * ratio, dx, top, width, band);
     } catch { /* 画布还没准备好就跳过这一条 */ }
   }
-  // 扫描噪点：几个随机亮/暗小段
-  for (let index = 0; index < 3; index++) {
-    if (Math.random() > 0.5) continue;
+  // 扫描噪点：块尺寸随机（1~6px 高、4~60px 宽），数量也随机
+  const specks = 4 + Math.floor(Math.random() * 14);
+  for (let index = 0; index < specks; index++) {
     const y = Math.random() * height;
     const x = Math.random() * width;
-    const w = 6 + Math.random() * 42;
-    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(126,243,255,.35)' : 'rgba(255,60,120,.25)';
-    ctx.fillRect(x, y, w, 1);
+    const w = 4 + Math.random() * 56;
+    const h = 1 + Math.random() * 5;
+    ctx.fillStyle = Math.random() > 0.5 ? 'rgba(126,243,255,.32)' : 'rgba(255,60,120,.22)';
+    ctx.fillRect(x, y, w, h);
   }
 }
 function startFreeNoticeGlitch() {
@@ -979,6 +1000,7 @@ function showReleaseUpdate() {
     const footer = `<footer class="dialog-foot">
       ${info.latest?.url ? `<button class="button ghost" data-action="release-page">${icon('external')}${esc(t('release.page', '发布页'))}</button>` : ''}
       <button class="button ghost" data-action="release-history">${esc(t('release.history', '更新记录'))}</button>
+      ${!running ? `<button class="button ghost" data-action="release-sql-log" title="${esc('逐条查看这次（以及历次）数据脚本的导入结果')}">${icon('book')}导入日志</button>` : ''}
       <button class="button ghost" data-action="dialog-close">${esc(t('common.close', '关闭'))}</button>
       ${finished ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}${esc(t('release.recheck', '重新检查'))}</button>` : ''}
       ${failed ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}重新检查</button>` : ''}
@@ -998,29 +1020,43 @@ function showReleaseUpdate() {
 
 //By leewheel 2026年11月5日 更新进度：老大要求“看得见完成没完成”。原来只有下载/完成两个阶段画进度条，
 // 中间停服、替换文件、注入 MPQ、导库几分钟里界面毫无反应。现在：整段都有百分比 + 每一步的状态清单。
+//By leewheel 2026年11月8日 步骤表必须与后端 onPhase 的真实顺序一一对应，否则指示灯会整排熄灭：
+// 后端实际顺序是 server → configs → client → mpq-entries → dbc → sql → launcher → config-patch → done。
+// 这次补上“更新启动器”和“写入新配置参数”两步（以前它们不在表里，一到这两步 9 个灯全灭）。
 const RELEASE_STEPS = [
   ['download', '下载更新包', 0, 40],
-  ['extract', '解压', 40, 45],
+  ['extract', '解压更新包', 40, 45],
   ['apply', '停止服务器（保存角色）', 45, 50],
-  ['server', '写入服务端文件', 50, 60],
-  ['configs', '覆盖配置', 60, 63],
-  ['client', '写入客户端文件', 63, 70],
-  ['mpq-entries', '注入客户端补丁档', 70, 85],
-  ['dbc', '处理 DBC', 85, 90],
-  ['sql', '导入数据库', 90, 99],
+  ['server', '写入服务端文件', 50, 58],
+  ['configs', '覆盖配置', 58, 61],
+  ['client', '写入客户端文件', 61, 66],
+  ['mpq-entries', '注入客户端补丁档', 66, 80],
+  ['dbc', '处理 DBC', 80, 86],
+  ['sql', '导入数据库', 86, 96],
+  ['launcher', '更新启动器', 96, 98],
+  ['config-patch', '写入新配置参数', 98, 99],
   ['done', '完成', 100, 100],
 ];
 function releaseStepLabel(phase) {
+  if (phase === 'next') return '当前补丁完成，继续下一个';
   const step = RELEASE_STEPS.find(item => item[0] === phase);
   return step ? step[1] : String(phase || '');
 }
 function releaseRunView(run) {
   const pct = Math.max(0, Math.min(100, Math.round(run.pct || 0)));
-  const currentIndex = RELEASE_STEPS.findIndex(item => item[0] === run.phase);
+  //By leewheel 2026年11月8日 allDone = 队列里的中间态（第 n 个补丁装完、还在装下一个）：
+  // 步骤全部算完成，但整体不算“更新完成”，进度条停在 99%。
+  // phase 直接是 'next' 也要认（关掉弹窗再打开时，状态是从主进程 releaseState 里读回来的）。
+  const allDone = !!run.allDone || run.phase === 'next';
+  const currentIndex = allDone ? RELEASE_STEPS.length : RELEASE_STEPS.findIndex(item => item[0] === run.phase);
   const steps = RELEASE_STEPS.filter(item => item[0] !== 'done').map((item, index) => {
-    const state = run.error ? (item[0] === run.phase ? 'bad' : '') : (currentIndex > index || run.done ? 'done' : item[0] === run.phase ? 'doing' : '');
+    const state = run.error ? (item[0] === run.phase ? 'bad' : '') : (currentIndex > index || run.done || allDone ? 'done' : item[0] === run.phase ? 'doing' : '');
     return `<li class="${state}">${item[1]}</li>`;
   }).join('');
+  //By leewheel 2026年11月6日 导入数据库时把“当前正在导哪个文件”显示出来（老大要求）
+  const sqlLine = run.phase === 'sql' && run.sqlCurrent
+    ? `<p class="release-sql">${esc(t('release.sql', '正在导入'))} ${typeof run.sqlIndex === 'number' ? `${run.sqlIndex}/${run.sqlTotal} · ` : ''}${esc(run.sqlCurrent)}</p>`
+    : '';
   const speedLine = run.phase === 'download' && typeof run.kbps === 'number' && run.kbps > 0
     ? `<p class="release-speed">${esc(t('release.speed', '下载速度'))} ${esc(run.kbps >= 1024 ? `${(run.kbps / 1024).toFixed(1)} MB/s` : `${Math.round(run.kbps)} KB/s`)}${typeof run.left === 'number' ? ` · ${esc(t('release.left', '剩余'))} ${esc(run.left < 60 ? `${Math.round(run.left)} 秒` : `${Math.floor(run.left / 60)} 分 ${Math.round(run.left % 60)} 秒`)}` : ''}</p>`
     : '';
@@ -1028,7 +1064,9 @@ function releaseRunView(run) {
     ? `<p class="release-status bad">${icon('warning')}<span>更新失败：${esc(run.error)}</span></p>`
     : run.done
       ? `<p class="release-status ok">${icon('check')}<span>更新完成，可以重新启动服务器了。</span></p>`
-      : `<p class="release-status">${esc(releaseStepLabel(run.phase))}${run.message ? ` · ${esc(run.message)}` : ''}</p>`;
+      : allDone
+        ? `<p class="release-status">${esc(run.message || '当前补丁完成，继续下一个')}</p>`
+        : `<p class="release-status">${esc(releaseStepLabel(run.phase))}${run.message ? ` · ${esc(run.message)}` : ''}</p>`;
   //By leewheel 2026年11月5日 失败原因要能复制：单独一块可选中的文本 + 复制按钮 + 打开日志
   const errorBlock = run.error ? `<div class="error-wrap">
       <pre class="error-box" id="update-error-text">${esc(run.error)}</pre>
@@ -1041,6 +1079,7 @@ function releaseRunView(run) {
   return `<div class="release-run">
     <div class="release-bar"><span data-pct="${pct}"></span></div>
     <div class="release-pct">${pct}%</div>
+    ${sqlLine}
     ${speedLine}
     ${status}
     <ol class="release-steps">${steps}</ol>
@@ -1052,21 +1091,52 @@ function releaseRunView(run) {
 // 重开后的“进行中”视图又没有这个容器 → 永远冻结。现在：先更新状态，再刷新所有正在显示的视图。
 function releaseProgress(payload) {
   const run = App.state.releaseRun || (App.state.releaseRun = { phase: '', pct: 0, message: '', done: false, error: '' });
-  run.phase = payload.phase || run.phase;
+  //By leewheel 2026年11月8日 队列中间态（第 n 个补丁装完、还在装下一个）：步骤全绿，整体不算完成
+  if (payload.phase === 'next') {
+    run.allDone = true;
+    run.done = false;
+    run.error = '';
+    run.message = payload.message || '';
+    // 显式钉在 99%：绝不能出现“100% 但还没装完”的假完成
+    run.pct = 99;
+    paintReleaseProgress(run);
+    return;
+  }
+  run.allDone = false;
+  //By leewheel 2026年11月8日 队列换包（reset）：进度归零重来，避免灯在“下载”而条还停在 99%
+  if (payload.reset) { run.pct = 0; run.done = false; run.error = ''; run.allDone = false; run.sqlCurrent = ''; }
+  //By leewheel 2026年11月8日 只认步骤表里的阶段：以后后端即使新增阶段，也不至于把已经点亮的灯全灭
+  // （unknown 阶段只更新文案，灯保持在上一个已知阶段）。
+  if (payload.phase && RELEASE_STEPS.some(item => item[0] === payload.phase)) run.phase = payload.phase;
+  else if (!run.phase) run.phase = payload.phase || '';
   run.message = payload.message || '';
   //By leewheel 2026年11月6日 下载速度 / 剩余时间：主进程每秒推一次，展示成 “12.3 MB/s · 剩余 1 分 20 秒”
   if (typeof payload.kbps === 'number') run.kbps = payload.kbps;
   if (typeof payload.left === 'number') run.left = payload.left;
+  //By leewheel 2026年11月6日 记录“当前正在导入哪个 SQL 文件”，弹窗里显示成 “正在导入 3/13 · acore_world/xxx.sql”
+  if (payload.sqlCurrent) { run.sqlCurrent = String(payload.sqlCurrent); run.sqlIndex = payload.sqlIndex; run.sqlTotal = payload.sqlTotal; }
+  if (payload.phase === 'done') run.sqlCurrent = '';
   // 主进程推来的失败信息与日志路径也要记住（否则重开窗口就只剩一句话）
   if (payload.error) { run.error = String(payload.error); run.done = false; }
   if (payload.errorLog) run.errorLog = payload.errorLog;
-  if (payload.phase === 'done') { run.done = true; run.pct = 100; run.error = ''; }
-  const step = RELEASE_STEPS.find(item => item[0] === payload.phase);
+  //By leewheel 2026年11月7日 更新完成：清掉“有新版本”的缓存，保证首页提示条立刻消失（即使马上重画首页也不会再冒出来）
+  if (payload.phase === 'done') { run.done = true; run.pct = 100; run.error = ''; App.state.releaseAvailable = null; }
+  const step = RELEASE_STEPS.find(item => item[0] === run.phase);
   if (step) {
-    // 下载有真实百分比；其它阶段按权重推进，到阶段起点为止
-    if (payload.phase === 'download' && typeof payload.pct === 'number') run.pct = Math.min(step[3], step[2] + (step[3] - step[2]) * (payload.pct / 100));
-    else run.pct = Math.max(run.pct || 0, step[2]);
+    //By leewheel 2026年11月8日 阶段内按真实进度推进（注入补丁档 66→80%、导库 86→96%），
+    // 而不是只跳到阶段起点就干等。老实现里进度条在 70% 卡到整个 MPQ 阶段结束。
+    if (run.phase === 'download' && typeof payload.pct === 'number') {
+      run.pct = Math.max(run.pct || 0, Math.min(step[3], step[2] + (step[3] - step[2]) * (payload.pct / 100)));
+    } else if (typeof payload.pct === 'number') {
+      run.pct = Math.max(run.pct || 0, Math.max(step[2], Math.min(step[3], payload.pct)));
+    } else {
+      run.pct = Math.max(run.pct || 0, step[2]);
+    }
   }
+  paintReleaseProgress(run);
+}
+//By leewheel 2026年11月8日 统一刷新入口：更新弹窗（含关掉再打开）与首页横幅都用它
+function paintReleaseProgress(run) {
   // 1) 更新窗口开着：刷新容器（CSP 会挡内联 style，宽度必须用 CSSOM 设）
   const box = document.getElementById('release-progress');
   if (box) { box.innerHTML = releaseRunView(run); applyBars(box); }
@@ -1157,11 +1227,8 @@ function releaseBanner() {
     </div>`;
   }
   if (run && run.done) {
-    return `<div class="update-banner release-banner release-finished-banner" role="status">
-      <i class="dot"></i>
-      <span><strong>已更新${run.version ? `到 ${esc(run.version)}` : '完成'}</strong> · 服务器当前是停止状态，回首页点“启动”即可</span>
-      <button class="button ghost small" data-action="release-recheck">${icon('refresh')}重新检查</button>
-    </div>`;
+    //By leewheel 2026年11月7日 老大要求：更新完成后首页的更新提示条直接隐藏，不再挂“已更新到…”这条
+    return '';
   }
   const info = App.state.releaseAvailable;
   if (!info || !info.version) return '';
@@ -1484,7 +1551,7 @@ Object.assign(App.actions, {
         const host = (() => { try { return new URL(item.url).host; } catch { return item.url; } })();
         return item.ok
           ? `<li>${esc(host)} · <strong>${esc(item.kbps >= 1024 ? `${(item.kbps / 1024).toFixed(1)} MB/s` : `${item.kbps} KB/s`)}</strong> · 首字节 ${item.firstByteMs}ms</li>`
-          : `<li class="bad">${esc(host)} · 不可用（${esc(String(item.error || '').slice(0, 60))}）</li>`;
+          : `<li class="bad">${esc(host)} · ${esc(item.reason || String(item.error || '').slice(0, 60))}</li>`;
       }).join('');
       if (box) box.innerHTML = `<p class="release-status ok">测速完成：下载会自动用最快的源</p><ul class="release-mirrors">${rows}</ul>`;
     } catch (error) {
@@ -1493,6 +1560,18 @@ Object.assign(App.actions, {
       if (button) button.disabled = false;
     }
   }),
+  //By leewheel 2026年11月6日 打开数据库导入日志（逐条 OK/FAIL）
+  'release-sql-log': button => guard(async () => {
+    if (button) button.disabled = true;
+    try {
+      const result = await App.api.releaseSqlLog();
+      if (!result?.ok) toast(result?.message || '没有导入日志', 'warning');
+    } catch (error) {
+      toast(`打开日志失败：${String(error?.message || error)}`, 'warning');
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }, button),
   'release-force-remote': button => guard(async () => {
     if (button) button.disabled = true;
     toast('正在从 GitHub 重新下载更新包…');

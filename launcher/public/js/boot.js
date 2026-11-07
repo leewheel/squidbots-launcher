@@ -12,6 +12,28 @@ document.addEventListener('change', event => {
 
 document.addEventListener('click', event => {
   if (!event.target.closest('.split-button')) { const menu = $('#play-menu'); if (menu) menu.hidden = true; }
+  //By leewheel 2026年11月7日 「强制关闭占用端口的程序」：点了才杀，杀完自动复查，清干净就把横幅收掉
+  const killer = event.target.closest('[data-port-kill]');
+  if (killer && !killer.disabled) {
+    const port = Number(killer.dataset.portKill);
+    killer.disabled = true;
+    killer.textContent = '正在关闭…';
+    App.api.portsKill(port).then(() => App.api.portsScan()).then(list => {
+      const left = (list || []).filter(item => item.busy && !item.mine);
+      if (!left.length) {
+        const lines = document.getElementById('port-alert-lines');
+        if (lines) lines.remove();
+        const banner = $('#layout-alert');
+        if (banner && !banner.innerHTML.trim()) { banner.hidden = true; document.body.classList.remove('has-layout-alert'); }
+        dialog.close();
+      } else showPortAlert(list);
+    }).catch(error => {
+      killer.disabled = false;
+      killer.textContent = `强制关闭 ${port} 失败，重试`;
+      console.warn('[启动器] 强制关闭端口失败：', error && error.message ? error.message : error);
+    });
+    return;
+  }
   const target = event.target.closest('button, [data-action]');
   if (!target || target.disabled) return;
   const data = target.dataset;
@@ -37,6 +59,26 @@ function showLayoutAlert(layout) {
     document.body.classList.add('has-layout-alert');
   }
   dialog.open(`${dialog.header('目录布局检查未通过', '本模拟器无法按默认布局运行')}<div class="dialog-content">${lines}<p class="muted small">修正后请重新启动启动器。</p></div><footer class="dialog-foot"><button class="button primary" data-action="dialog-close">我知道了</button></footer>`, 'wide');
+}
+//End By leewheel
+
+//By leewheel 2026年11月7日 端口体检：启动器一开就扫所有服务端口。
+// 被别的程序占着就报错，并且每个端口给一个「强制关闭」按钮（玩家点了才执行 taskkill）。
+function showPortAlert(list) {
+  const blocked = (list || []).filter(item => item.busy && !item.mine);
+  const old = document.getElementById('port-alert-lines');
+  if (old) old.remove();
+  if (!blocked.length) return;
+  const lines = blocked.map(item => `<div class="layout-alert-line"><strong>端口 ${item.port} 被其他程序占用（${esc(item.name)}）</strong><small>${esc(item.file || `PID ${item.pid}`)}</small><button class="button" style="white-space:nowrap" data-port-kill="${item.port}">强制关闭这个程序</button></div>`).join('');
+  const banner = $('#layout-alert');
+  if (banner) {
+    banner.insertAdjacentHTML('beforeend', `<div class="layout-alert-lines" id="port-alert-lines">${lines}</div>`);
+    banner.hidden = false;
+    document.body.classList.add('has-layout-alert');
+  }
+  if (!$('#dialog').open) {
+    dialog.open(`${dialog.header('端口被其他程序占用', '服务器无法启动')}<div class="dialog-content">${lines}<p class="muted small">点「强制关闭这个程序」会结束占用端口的进程；关掉后会自动复查。也可以自己关掉它，再重新打开启动器。</p></div><footer class="dialog-foot"><button class="button primary" data-action="dialog-close">我知道了</button></footer>`, 'wide');
+  }
 }
 //End By leewheel
 
@@ -247,6 +289,9 @@ App.actions['whats-new-ok'] = () => dialog.close();
   if (data.whatsNew?.length) showWhatsNew(data.whatsNew);
   //By leewheel 2026-11-05 布局告警最后弹出，避免被"新版本"等启动弹窗覆盖；横幅之后一直常驻
   if (data.layout && (data.layout.chinesePath || data.layout.badFolders?.length)) showLayoutAlert(data.layout);
+  //End By leewheel
+  //By leewheel 2026年11月7日 启动即体检端口：被别的程序占着就报错 + 每个端口给「强制关闭」按钮
+  if (data.config.server) App.api.portsScan().then(list => showPortAlert(list)).catch(() => {});
   //End By leewheel
   if (isClassic() && data.config.edition !== 'server') loadNews();
   // Compare the game with its latest release at start (nothing is downloaded without asking).

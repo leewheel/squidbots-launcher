@@ -176,18 +176,35 @@ async function recordVersion(root, entry) {
 // 镜像只要在 GitHub 资源地址前拼一个前缀即可（ghproxy 系都是这个规则）；列表可以在 launcher.config.json
 // 的 downloadMirrors 里改，留空 "" 表示直连（最后兜底用）。
 const DEFAULT_MIRRORS = [
+  //By leewheel 2026年11月6日 实测过能用的前缀代理（2026-11-06 用真实资产测速：gh-proxy 101KB/s、ghfast 39KB/s、geekertao 36KB/s）：
+  'https://gh-proxy.com/',
   'https://ghfast.top/',
+  'https://ghfile.geekertao.top/',
+  // 其余前缀代理保留做兜底（有时超时，网络好时会恢复）
   'https://ghproxy.net/',
   'https://github.moeyy.xyz/',
   'https://hub.gitmirror.com/',
-  //By leewheel 2026年11月6日 老大点名要加的国内镜像（清华 / 阿里），它们是“整站镜像”规则：
-  //  https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
-  //  → https://mirrors.tuna.tsinghua.edu.cn/github-release/<owner>/<repo>/<tag>/<file>
-  //  → https://mirrors.aliyun.com/github-release/<owner>/<repo>/<tag>/<file>
-  // 用 {owner}/{repo}/{tag}/{asset} 占位，mirrorCandidates 会按 GitHub 地址解析后填进去。
+  'https://ghproxy.cc/',
+  'https://gh.llkk.cc/',
+  //By leewheel 2026年11月6日 清华 / 阿里只能镜像**白名单仓库**（我们的仓库不在名单里，实测固定 404），
+  // 放最后：万一哪天进白名单就能用；测速里会把它们的 404 标成“该镜像不收录本仓库”，不误导玩家。
   'https://mirrors.tuna.tsinghua.edu.cn/github-release/{owner}/{repo}/{tag}/{asset}',
   'https://mirrors.aliyun.com/github-release/{owner}/{repo}/{tag}/{asset}',
 ];
+// 这些整站镜像只收白名单仓库，404 属于“不支持”，不是“坏了”
+const CURATED_MIRRORS = ['mirrors.tuna.tsinghua.edu.cn', 'mirrors.aliyun.com'];
+
+//By leewheel 2026年11月6日 把探测失败原因翻成玩家能懂的话（界面直接用）
+function describeProbeFailure(url, error) {
+  const host = (() => { try { return new URL(url).host; } catch { return url; } })();
+  const text = String(error || '');
+  if (CURATED_MIRRORS.some(item => host.includes(item)) && /404/.test(text)) return '该镜像只收录指定仓库（不含本仓库）';
+  if (/404/.test(text)) return '文件不存在（版本可能还没上传）';
+  if (/aborted|timeout/i.test(text)) return '超时';
+  if (/ENOTFOUND|ERR_NAME|fetch failed/i.test(text)) return '域名解析失败 / 连不上';
+  if (/不是 zip/.test(text)) return '返回的不是文件（镜像错误页）';
+  return text.slice(0, 60) || '不可用';
+}
 
 //By leewheel 2026年11月6日 解析 GitHub release 资产地址，供整站镜像套模板用
 function parseReleaseUrl(url) {
@@ -410,6 +427,31 @@ async function clientMpqs(clientRoot) {
   return names.filter(name => /\.mpq$/i.test(name)).map(name => path.join(data, name));
 }
 
+//By leewheel 2026年11月7日 收集 client\data\mpq\ 下的条目补丁，按“目标档”分组。
+// 支持多级档路径：data\mpq\patch-ZZN.mpq\X.dbc 与 data\mpq\enUS\locale-enUS.MPQ\Interface\X.lua 都认。
+// 旧实现只认一级目录，enUS 这种两级路径会把目录当成档名，注入必然失败后被静默跳过（文件就丢了）。
+async function collectMpqPatchGroups(root) {
+  const groups = new Map();
+  async function walk(dir) {
+    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const full = path.join(dir, entry.name);
+      if (/\.mpq$/i.test(entry.name)) {
+        const archiveRel = path.relative(root, full).split(path.sep).join('/');
+        if (!groups.has(archiveRel)) groups.set(archiveRel, { archiveRel, files: [] });
+        for (const item of await walkFiles(full)) {
+          groups.get(archiveRel).files.push({ file: item.file, arcName: item.rel.split(path.sep).join('\\') });
+        }
+      } else {
+        await walk(full);
+      }
+    }
+  }
+  await walk(root);
+  return [...groups.values()];
+}
+
 // dbc → mpq 映射：更新包里的 dbc-map.json，形如 { "Spell.dbc": "patch-ZZN.mpq", "*.dbc": "patch-M.MPQ" }
 async function readDbcMap(world) {
   for (const relative of ['dbc-map.json', 'dbc/dbc-map.json', 'update.json']) {
@@ -494,7 +536,8 @@ async function applyDbcTree({ clientRoot, serverRoot, dbcRoot, map = null, onLin
     }
     const result = await injectIntoArchive(clientRoot, archive, item.file, { map, onLine, warnings });
     injected.push({ ...result, file: item.rel });
-    if (!result.ok) warnings.push(`${table} 没能注入任何补丁档`);
+    //By leewheel 2026年11月7日 注入失败就是文件没到位，必须中止更新，不能只记警告放过。
+    if (!result.ok) throw new Error(`DBC ${table} 没能注入任何补丁档（${result.reason || '归档里没有这张表'}）。更新中止`);
   }
   return injected;
 }
@@ -584,46 +627,95 @@ function connForDatabase(conns, database) {
   return conns.world || conns.auth || conns.characters || null;
 }
 
-//By leewheel 2026年11月4日 按【库名目录】导入：server\SQL\acore_characters_reborn\*.sql → 导入 acore_characters_reborn。
-// 库不存在只记警告并跳过（绝不自动建库，避免把脚本导进错的地方）。
-// 老的平铺 sql\*.sql 仍然支持（不带 --database，脚本里自带 USE）。
-//By leewheel 2026年11月5日 conns 由 worldserver.conf 决定（世界服连哪个库就导哪个库），
-// 连不上时只记警告并把失败的 SQL 交给调用方（进待办，下次启动服务器时自动补导），不再让整个更新失败。
-async function importSqlTree(serverRoot, sqlRoot, { onLine = () => {}, warnings = [], conns = null, waitMs = 120000 } = {}) {
+//By leewheel 2026年11月7日 数据库脚本导入的硬规则（老大 2026-11-07 明确要求）：
+//  ① 补丁包 server\SQL\<库名>\ 下所有 .sql 必须全部导入，一个都不许漏；
+//  ② 任何一份失败、库不存在、目录名非法，立即抛错中止更新，绝不“记警告继续”；
+//  ③ 连不上数据库也中止 —— 文件已换完、库没导，等于把服务端弄坏（上一个包就是这么起不来的）。
+async function importSqlTree(serverRoot, sqlRoot, { onLine = () => {}, warnings = [], conns = null, waitMs = 120000, onPlan = () => {}, onFileStart = () => {}, onFileDone = () => {} } = {}) {
   const done = [];
+  const failures = [];
   const probeConn = conns ? (conns.world || conns.auth || conns.characters) : null;
   const ready = await waitForMysql(serverRoot, { onLine, conn: probeConn, timeoutMs: waitMs });
   if (!ready) {
     let last = '';
     try { await mysqlQuery(serverRoot, 'SELECT 1', probeConn); } catch (error) { last = String(error.message).split(/\r?\n/).filter(Boolean).pop(); }
     const where = probeConn ? `${probeConn.host}:${probeConn.port}（用户 ${probeConn.user}）` : 'admin-client.ini 里的地址';
-    const failure = new Error(`连不上数据库 ${where}：${last}`);
-    failure.code = 'SQL_PENDING';
-    throw failure;
+    throw new Error(`连不上数据库 ${where}：${last}。更新已中止（文件未提交、数据库未改动）`);
   }
   const entries = await fsp.readdir(sqlRoot, { withFileTypes: true }).catch(() => []);
   const databases = entries.filter(entry => entry.isDirectory());
   const loose = entries.filter(entry => entry.isFile() && /\.sql$/i.test(entry.name));
+
+  // 先出清单：这次要导哪些脚本、导进哪个库
+  const plan = [];
+  //By leewheel 2026年11月7日 如果包里同时给了变体库目录（acore_characters_dawnrise 等），
+  // 说明每个库的补丁是分别算出来的，主库目录只导主库，不再自动套到变体库（否则同一份会导两遍）。
+  const dbNames = databases.map(entry => entry.name.toLowerCase());
+  const hasVariantDir = name => dbNames.some(other => other !== name.toLowerCase() && other.startsWith(name.toLowerCase() + '_'));
   for (const entry of databases) {
     const database = entry.name;
-    if (!DATABASE.test(database)) { warnings.push(`SQL 目录名不是合法库名：${database}（已跳过）`); continue; }
+    if (!DATABASE.test(database)) throw new Error(`SQL 目录名不是合法库名：${database}（补丁包结构错误，更新中止）`);
     const conn = connForDatabase(conns, database);
-    const exists = await mysqlQuery(serverRoot, `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${database}'`, conn).catch(() => '');
-    if (!exists) { warnings.push(`数据库 ${database} 不存在，已跳过它的 SQL`); onLine(`跳过 ${database}（库里没有这个库）`); continue; }
-    const files = (await walkFiles(path.join(sqlRoot, database))).filter(item => /\.sql$/i.test(item.rel)).sort((a, b) => a.rel.localeCompare(b.rel, 'en'));
-    for (const item of files) {
-      onLine(`导入 ${database} ← ${item.rel}`);
-      await importSqlFile(serverRoot, item.file, database, conn);
-      done.push(`${database}/${item.rel}`);
-      onLine(`✓ ${database}/${item.rel}`);
+    const targets = [database];
+    if (!hasVariantDir(database)) {
+      const family = database.replace(/_(auth|characters|world)$/i, '');
+      const siblings = await mysqlQuery(serverRoot, `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE '${family}\\_%'`, conn).catch(() => '');
+      for (const name of String(siblings).split(/\r?\n/).map(item => item.trim()).filter(Boolean)) {
+        if (!name.toLowerCase().startsWith(database.toLowerCase())) continue;
+        if (name !== database) targets.push(name);
+      }
+    }
+    for (const target of targets) {
+      const exists = await mysqlQuery(serverRoot, `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${target}'`, conn).catch(() => '');
+      if (!exists) throw new Error(`数据库 ${target} 不存在：${database} 目录下的脚本无处可导（不自动建库，避免导错地方）。更新中止`);
+      const files = (await walkFiles(path.join(sqlRoot, database))).filter(item => /\.sql$/i.test(item.rel)).sort((a, b) => a.rel.localeCompare(b.rel, 'en'));
+      for (const item of files) plan.push({ database: target, file: item.rel, full: item.file, conn });
     }
   }
   for (const entry of loose.sort((a, b) => a.name.localeCompare(b.name, 'en'))) {
-    onLine(`导入 ${entry.name} …`);
-    await importSqlFile(serverRoot, path.join(sqlRoot, entry.name), '', probeConn);
-    done.push(entry.name);
-    onLine(`✓ ${entry.name}`);
+    plan.push({ database: '', file: entry.name, full: path.join(sqlRoot, entry.name), conn: probeConn });
   }
+  //By leewheel 2026年11月7日 完整性核对：包里的每个 .sql 都必须出现在导入计划里，否则更新中止。
+  // 这一条就是防“包里有脚本、启动器没导”的静默遗漏。
+  const planned = new Set(plan.map(item => path.resolve(item.full).toLowerCase()));
+  const onDisk = (await walkFiles(sqlRoot)).filter(item => /\.sql$/i.test(item.rel));
+  for (const item of onDisk) {
+    if (!planned.has(path.resolve(item.file).toLowerCase())) {
+      throw new Error(`补丁包里的数据脚本没被排进导入计划：${path.relative(sqlRoot, item.file)}。更新中止`);
+    }
+  }
+  if (!plan.length && onDisk.length) throw new Error(`补丁包里有 ${onDisk.length} 个数据脚本，但一个都没排进导入计划。更新中止`);
+  onPlan(plan.map(item => ({ database: item.database, file: item.file })));
+
+  const total = plan.length;
+  for (let index = 0; index < total; index++) {
+    const item = plan[index];
+    const label = `${item.database ? `${item.database}/` : ''}${item.file}`;
+    const started = Date.now();
+    onFileStart({ ...item, index: index + 1, total, label });
+    onLine(`导入 ${label}（${index + 1}/${total}）`);
+    try {
+      await importSqlFile(serverRoot, item.full, item.database, item.conn);
+    } catch (error) {
+      const ms = Date.now() - started;
+      const reason = String(error?.message || error).split(/\r?\n/)[0];
+      failures.push({ database: item.database, file: item.file, error: reason });
+      onFileDone({ database: item.database, file: item.file, label, ok: false, ms, error: reason, index: index + 1, total });
+      onLine(`✗ ${label}：${reason}`);
+      //By leewheel 2026年11月7日 失败必须中断：继续导后面的只会让库停在半更新状态，服务端起不来。
+      const failure = new Error(`数据脚本导入失败：${label} —— ${reason}（本次更新已中止，已导入 ${done.length}/${total} 份）`);
+      failure.code = 'SQL_FAILED';
+      failure.sqlFailures = failures;
+      failure.done = done;
+      throw failure;
+    }
+    const ms = Date.now() - started;
+    done.push(label);
+    onFileDone({ database: item.database, file: item.file, label, ok: true, ms, index: index + 1, total });
+    onLine(`✓ ${label}（${index + 1}/${total}）`);
+  }
+  done.failures = failures;
+  done.plan = plan.map(item => ({ database: item.database, file: item.file }));
   return done;
 }
 
@@ -667,7 +759,7 @@ function snapshotWriter(root, dir) {
 // ---------------------------------------------------------------- 一次更新的编排
 // options: { root, world(解压目录), serverRoot, clientRoot, onPhase, onLine, importSqlFiles, conns, waitMs }
 // conns：worldserver.conf 里读出来的三条连接串（readDbConfig），决定 SQL 导到哪个库
-async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () => {}, onLine = () => {}, importSqlFiles = true, conns = null, waitMs = 120000 }) {
+async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () => {}, onLine = () => {}, onPhaseProgress = () => {}, onSqlPlan = () => {}, onSqlFileStart = () => {}, onSqlFileDone = () => {}, importSqlFiles = true, conns = null, waitMs = 120000 }) {
   const folder = await contentRoot(world);
   const result = { server: 0, client: 0, dbc: [], mpq: 0, mpqEntries: 0, sql: [], warnings: [], backup: '' };
 
@@ -706,24 +798,36 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
 
   // 3c) MPQ 内部条目补丁：client\data\mpq\<档名.mpq>\<内部路径> → 注入 Client\Data\<档名.mpq> 的同名条目。
   // 只发变了的那几条（一个 292MB 的 enUS 档，实际改动可能只有一个 0.5MB 的 lua）。
+  //By leewheel 2026年11月7日 三条硬规则：① 支持多级档路径（enUS\xxx.MPQ）；
+  // ② 母本有、玩家档没有的新条目必须能新增（allowCreate），否则新 DBC/新贴图永远到不了玩家；
+  // ③ 任何一条注入失败都中止更新，绝不静默跳过（这就是“包里有文件、玩家却没有”的根因）。
   const mpqPatchRoot = clientFrom ? path.join(clientFrom, 'data', 'mpq') : '';
   if (mpqPatchRoot && fs.existsSync(mpqPatchRoot)) {
     onPhase('mpq-entries');
-    const archives = (await fsp.readdir(mpqPatchRoot, { withFileTypes: true })).filter(entry => entry.isDirectory());
-    for (const archive of archives) {
-      const target = path.join(clientRoot, 'Data', ...archive.name.split('/'));
-      if (!fs.existsSync(target)) { result.warnings.push(`补丁档不存在，跳过内部条目：${archive.name}`); continue; }
-      const files = await walkFiles(path.join(mpqPatchRoot, archive.name));
-      for (const item of files) {
-        const arcName = item.rel.split(path.sep).join('\\');
-        const payload = await fsp.readFile(item.file);
-        try {
-          const outcome = mpq.injectFile(target, arcName, payload);
-          if (outcome?.ok) { result.mpqEntries = (result.mpqEntries || 0) + 1; onLine(`注入 ${archive.name} ← ${arcName}（${(payload.length / 1024).toFixed(0)} KB）`); }
-          else result.warnings.push(`${archive.name} 里没有 ${arcName}，注入跳过`);
-        } catch (error) {
-          result.warnings.push(`${archive.name} 注入 ${arcName} 失败：${error.message}`);
-        }
+    const groups = await collectMpqPatchGroups(mpqPatchRoot);
+    //By leewheel 2026年11月8日 注入补丁档要“看得见走到哪一条”：原来整个阶段只发一次 phase，
+    // 界面进度条从 70% 直接干等到 85%，玩家以为卡死了。这里先数总条数，每注入一条报一次。
+    const mpqTotal = groups.reduce((sum, group) => sum + group.files.length, 0);
+    let mpqDone = 0;
+    onPhaseProgress('mpq-entries', 0, mpqTotal);
+    for (const group of groups) {
+      const target = path.join(clientRoot, 'Data', ...group.archiveRel.split('/'));
+      if (!fs.existsSync(target)) throw new Error(`补丁档不存在，无法注入：${group.archiveRel}。更新中止`);
+      const items = [];
+      for (const item of group.files) items.push({ arcName: item.arcName, content: await fsp.readFile(item.file) });
+      const outcome = mpq.injectMany(target, items, { allowCreate: true, compress: true });
+      for (const one of outcome.results) {
+        if (!one.ok) throw new Error(`${group.archiveRel} 注入 ${one.arcName} 失败：${one.message || one.reason}。更新中止`);
+        result.mpqEntries = (result.mpqEntries || 0) + 1;
+        onLine(`注入 ${group.archiveRel} ← ${one.arcName}（${one.created ? '新增' : '替换'}，${(one.size / 1024).toFixed(0)} KB）`);
+        mpqDone++;
+        onPhaseProgress('mpq-entries', mpqDone, mpqTotal);
+      }
+      const created = outcome.results.filter(one => one.created).map(one => one.arcName);
+      if (created.length) {
+        const listed = mpq.appendToListfile(target, created, { compress: true });
+        if (!listed.ok) throw new Error(`${group.archiveRel} 的 (listfile) 登记失败：${listed.error}。更新中止`);
+        onLine(`${group.archiveRel} 新条目 ${created.length} 条已登记进 (listfile)`);
       }
     }
   }
@@ -764,19 +868,18 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
   }
 
   // 5) SQL：server\SQL\<库名>\*.sql
-  //By leewheel 2026年11月5日 数据库连不上不再让整个更新失败：文件已经归位，SQL 进“待办”，
-  // 下次启动服务器/下次开启动器时自动补导（老大明确要求不能让玩家手动开库）。
+  //By leewheel 2026年11月7日 数据库脚本必须全部导入成功；任何失败/库不存在/连不上都让整次更新失败。
+  // 旧实现把失败转成“待办 + 警告”，还照样写“更新成功”，结果服务端起不来（老大 2026-11-07 明确要求改掉）。
   const sqlRoot = (serverFrom ? await findDir(serverFrom, ['SQL']) : '') || (await findDir(folder, ['SQL']));
+  if (sqlRoot) result.sqlRoot = sqlRoot;
   if (importSqlFiles && sqlRoot) {
     onPhase('sql');
     try {
-      result.sql = await importSqlTree(serverRoot, sqlRoot, { onLine, warnings: result.warnings, conns, waitMs });
+      result.sql = await importSqlTree(serverRoot, sqlRoot, { onLine, warnings: result.warnings, conns, waitMs, onPlan: onSqlPlan, onFileStart: onSqlFileStart, onFileDone: onSqlFileDone });
       onLine(`SQL：已导入 ${result.sql.length} 个脚本`);
     } catch (error) {
-      if (error?.code !== 'SQL_PENDING') throw error;
-      result.sqlPending = sqlRoot;
-      result.warnings.push(`${error.message}；文件已更新完成，SQL 已记为待办，下次启动服务器时自动补导`);
-      onLine(`SQL 待办：${error.message}`);
+      result.sqlError = String(error?.message || error);
+      throw error;
     }
   }
 
@@ -807,14 +910,17 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
   // 不再整份覆盖玩家的 .conf（老大要求；否则玩家自己改的设置每次更新都会被冲掉）。
   const patchFile = path.join(folder, 'configs', 'configs.patch.json');
   if (fs.existsSync(patchFile)) {
-    onPhase('configs');
+    //By leewheel 2026年11月8日 这是收尾的“逐键写参数”，不是前面的整份覆盖配置。
+    // 以前借用 'configs'，界面会把已经走完的步骤倒退回“覆盖配置”，看着像卡住了。
+    onPhase('config-patch');
     try {
       const patchResult = await require('./config-patch.cjs').applyConfigPatch(path.join(root, 'Server'), patchFile);
       const keys = patchResult.applied.reduce((sum, item) => sum + item.keys.length, 0);
       result.configPatch = { files: patchResult.applied.length, keys };
       onLine(keys ? `配置：已写入 ${keys} 个新参数（只改动值，其他行原样保留）` : '配置：没有需要更新的参数');
     } catch (error) {
-      result.warnings.push(`配置参数写入失败：${error.message}`);
+      //By leewheel 2026年11月7日 配置参数没写进去，服务端可能因缺参数起不来，必须中止而不是只记警告。
+      throw new Error(`配置参数写入失败：${error.message}。更新中止`);
     }
   }
 
@@ -827,6 +933,6 @@ module.exports = {
   listReleases, pickAsset, pendingReleases, installedVersion, readHistory, recordVersion,
   download, downloadOnce, extractZip, contentRoot, copyTree, clientMpqs, readDbcMap, injectDbc, injectIntoArchive,
   //By leewheel 2026年11月6日 镜像测速：给“下载优先走最快的源”用
-  probeMirror, rankMirrors, mirrorsFromRanking, parseReleaseUrl,
+  probeMirror, rankMirrors, mirrorsFromRanking, parseReleaseUrl, describeProbeFailure,
   applyDbcTree, mysqlPaths, readDbConfig, mysqlQuery, waitForMysql, importSqlFile, importSqlTree, importSql, applyUpdate, findDir, walkFiles,
 };

@@ -11,7 +11,9 @@ const CHANNELS = new Set(['stable', 'test']);
 const defaults = Object.freeze({
   //By leewheel 2026-11-02 中文发射版：默认界面语言改为简体中文
   language: 'zh', theme: 'abyss', channel: 'stable', startPage: 'play', realmlist: '', minimizeOnLaunch: true, reduceMotion: false,
-  autoCheckAddons: true, betaUpdates: false, hideCloseNotice: false, trayOnClose: false, notifications: true, startWithWindows: false, startServerOnOpen: false, restartWorldOnCrash: false, dailyBackup: true, lastSeenVersion: '', installPaths: {}, components: {}, instances: [], modules: { squidbots: true },
+  //By leewheel 2026年11月7日 dailyBackup 默认改为 false：启动器不再自动备份（老大要求），
+  // 保留这个键只为兼容老配置文件，不再有任何自动备份逻辑读它。
+  autoCheckAddons: true, betaUpdates: false, hideCloseNotice: false, trayOnClose: false, notifications: true, startWithWindows: false, startServerOnOpen: false, restartWorldOnCrash: false, dailyBackup: false, lastSeenVersion: '', installPaths: {}, components: {}, instances: [], modules: { squidbots: true },
 });
 
 //By leewheel 2026年11月4日 目录可以是相对的（相对启动器所在目录，如 Client、Server），这样整个整合包
