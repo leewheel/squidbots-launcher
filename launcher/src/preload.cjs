@@ -54,6 +54,11 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   copyVersions: () => call('verify:versions'),
   //By leewheel 2026-11-03 服务端 / 客户端更新（GitHub releases）
   releaseCheck: () => call('release:check'),
+  //By leewheel 2026年11月8日 机器人名字前缀：读当前值 / 写新值（存 acore_world.coa_bot_settings）
+  botsPrefix: () => call('bots:prefix'),
+  botsPrefixSet: value => call('bots:prefix:set', value),
+  //By leewheel 2026年11月8日 忽略某个版本：横幅上的「忽略」按钮用它，写进设置后不再提示这一个版本
+  releaseIgnore: version => call('release:ignore', version),
   //By leewheel 2026-11-03 国度"设置"上的数字：这个国度单独改过哪些设置
   realmChanged: key => call('realm:changed', key),
   //By leewheel 2026-11-03 主页底部的 worldserver 日志面板（第二个参数是国度 key，空＝主服）
@@ -71,6 +76,8 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   releaseSqlLog: () => call('release:sqlLog'),
   //By leewheel 2026年11月6日 强制更新 = 从 GitHub 重新下载安装（本地包是另一个按钮）
   releaseForceRemote: options => call('release:forceRemote', options),
+  //By leewheel 2026年11月8日 列出 GitHub 上所有可装的补丁，供“强制更新”挑选装到哪一版
+  releaseList: () => call('release:list'),
   //End By leewheel
   //By leewheel 2026年11月5日 更新状态由主进程记着：界面重开后先查它，避免重复点“开始更新”
   releaseState: () => call('release:state'),

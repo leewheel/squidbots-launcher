@@ -88,6 +88,10 @@ function realmNote(realm, working) {
   if (realm.state === 'queued') return line('warn', t('realms.queuedText', 'Starts after {name}: the worlds start one after the other.', { name: realmTitle(realm.after || 'coa') }));
   if ((realm.state === 'starting' || working) && realm.firstStart) return line('info', t('realms.firstStart', 'First start: a few minutes (auction house, new bots). The next ones are quicker.'));
   if (realm.state === 'stopped' && realm.skipped?.reason === 'memory') return line('bad', t('realms.lowMemoryText', 'Not started with the server: {free} GB free, about {need} GB needed. Stop a realm or lower its bots.', { free: (realm.skipped.free / 1024).toFixed(1), need: (realm.skipped.need / 1024).toFixed(1) }));
+  //By leewheel 2026年11月8日 端口被别的程序（常见：另一个整合包的同一个国度）占着时，必须说清是谁，
+  // 不能让玩家以为“显示运行中但其实不是自己这个”。
+  if (realm.state === 'foreign') return line('bad', t('realms.foreignText', 'Port {port} is used by another program ({other}). Close it, or give this realm another port in its settings.', { port: realm.worldPort, other: realm.other || 'unknown' }));
+  //End By leewheel
   return '';
 }
 

@@ -89,6 +89,25 @@ async function archiveCrashes(root) {
   return moved;
 }
 
+//By leewheel 2026年11月8日 核心版本读数：优先用「最近一次成功更新」的版本。
+// repack.json 的 coreVersion 是打包时写死的，玩家更新一百次也不会变，界面上永远挂着同一个旧号。
+function installedReleaseLabel(root, fallback) {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(path.dirname(root), '.coa-launcher', 'last-update.json'), 'utf8'));
+    const raw = String(data.version || data.tag || '').trim();
+    const compact = /^(?:COA-?UPDATE-?)?(\d{4})(\d{2})(\d{2})$/i.exec(raw);
+    if (compact)
+      return `${compact[1]}.${compact[2]}.${compact[3]}`;
+    const split = /^(\d{4})[.\-_](\d{1,2})[.\-_](\d{1,2})/.exec(raw);
+    if (split)
+      return `${split[1]}.${String(split[2]).padStart(2, '0')}.${String(split[3]).padStart(2, '0')}`;
+    const at = new Date(data.at || '');
+    if (!Number.isNaN(at.getTime()))
+      return `${at.getFullYear()}.${String(at.getMonth() + 1).padStart(2, '0')}.${String(at.getDate()).padStart(2, '0')}`;
+  } catch {}
+  return fallback;
+}
+
 // updaters: { repack, bots } ClientUpdater-like; botsPackage: BotsPackage; control: ServerControl; backup: ServerBackup.
 async function runChecks({ root, inspect, control, backup, repack, botsPackage, deep = false }) {
   const checks = [];
@@ -100,7 +119,7 @@ async function runChecks({ root, inspect, control, backup, repack, botsPackage, 
     add('core', 'core.installed', 'bad', { missing: info.missing.slice(0, 4).join(', ') }, 'install');
     return checks;
   }
-  add('core', 'core.installed', 'ok', { version: info.release || '?' });
+  add('core', 'core.installed', 'ok', { version: installedReleaseLabel(root, info.release || '?') });
   if (repack) {
     try {
       const [installed, release] = await Promise.all([repack.installedState(root), repack.peek()]);
@@ -166,7 +185,10 @@ async function runChecks({ root, inspect, control, backup, repack, botsPackage, 
   const services = control ? await control.status() : [];
   for (const service of services) {
     const state = service.state === 'running' ? 'ok' : service.state === 'foreign' ? 'bad' : 'info';
-    add('services', `service.${service.state === 'foreign' ? 'foreign' : service.state === 'running' ? 'running' : 'stopped'}`, state, { name: service.name, port: service.port, other: service.other || '', variant: service.variant || '' }, service.state === 'stopped' ? 'start' : '');
+    //By leewheel 2026年11月8日 「启动」按钮必须只启动这一项服务。
+    // 以前 action 一律是 'start'，前端映射到 service-start-all（启动全部）：
+    // 玩家点 MySQL 那行，期望的是拉数据库，实际却在等整个世界服启动链路。
+    add('services', `service.${service.state === 'foreign' ? 'foreign' : service.state === 'running' ? 'running' : 'stopped'}`, state, { name: service.name, port: service.port, other: service.other || '', variant: service.variant || '', serviceId: service.id }, service.state === 'stopped' ? `service-start:${service.id}` : '');
   }
   const mysql = services.find(service => service.id === 'mysql');
   let own = false;

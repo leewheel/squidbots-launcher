@@ -45,6 +45,8 @@ const { mysqlLender } = require('./mysql-lender.cjs');
 const { fixManage } = require('./manage-fix.cjs');
 //By leewheel 2026-11-03 服务端/客户端更新 + 首次运行目录整形
 const releaseUpdate = require('./release-update.cjs');
+//By leewheel 2026年11月8日 基线：整合包“已包含到哪个版本”的记录，替代旧的“猜 exe 时间”
+const releaseBaseline = require('./release-baseline.cjs');
 //By leewheel 2026年11月6日 BUG 反馈：格式对齐参考启动器（product 必须是 COA）
 const bugReport = require('./bug-report.cjs');
 //By leewheel 2026年11月6日 启动器自替换：老版启动器只会把 client\ 铺到 Client\，从那里把新 exe 装到根目录
@@ -63,11 +65,16 @@ const RELEASE_PHASE_LABEL = {
   server: '写入服务端文件',
   configs: '覆盖配置',
   client: '写入客户端文件',
+  runtime: '分发机器人面板（Runtime / CoA-Bots）',
   'mpq-entries': '注入客户端补丁档',
   dbc: '处理 DBC',
   sql: '导入数据库',
+  //By leewheel 2026年11月9日 导完库按包里的表清单核一遍（老大要求：要能说清“更新失败到底缺了什么”）
+  dbcheck: '核对数据表',
   launcher: '更新启动器',
   'config-patch': '写入新配置参数',
+  //By leewheel 2026年11月8日 收尾核对：文件是否真的换成包里的了（大小 + exe 的 md5）
+  verify: '核对文件落地',
   next: '当前补丁完成，继续下一个',
   done: '更新完成',
 };
@@ -283,6 +290,11 @@ const gamePath = () => areaFolder('game');const addonPath = () => areaFolder('ad
 // The game the server takes its data from: the game folder, or else the client the Play tab shows (server edition).
 const gameDataPath = () => [gamePath(), addonPath()].find(item => item && fs_exists(item)) || '';
 const serverPath = () => areaFolder('server');
+//By leewheel 2026年11月8日 机器人面板的根是**整合包根目录**，不是 Server\：
+// 它要的是 <根>\Runtime\python\python.exe 与 <根>\CoA-Bots\Tools\Dashboard\squidbots.py，
+// 而 database/配置又按 <根>\Server\configs\... 去找。以前这里传的是 serverPath()，
+// 全部路径都对不上 → available 永远 false → 主页那张「机器人仪表盘」卡从来不出现（老大实弹）。
+const dashboardRoot = () => launcherRootFolder();
 const realmlist = () => settings.realmlist || config.game.realmlists[0].address;
 
 //By leewheel 2026年11月6日 把系统分辨率写进 Client\WTF\Config.wtf 的 gxResolution：
@@ -364,6 +376,62 @@ function launcherRootFolder() {
   const candidates = launcherRootCandidates();
   const found = candidates.find(root => fs_exists(path.join(root, 'Client')) || fs_exists(path.join(root, 'Server')));
   return found || candidates[0];
+}
+
+//By leewheel 2026年11月8日 核心版本：优先显示「最近一次成功更新的版本」。
+// repack.json 里的 coreVersion 是打包时写死的，玩家更新一百次也不会变 —— 老大截图里
+// 更新完还挂着 coa-publish-20261103 就是这个原因。last-update.json 才是真实进度。
+//By leewheel 2026年11月8日 别再自己写一套正则：直接复用 releaseBaseline.dateOf。
+// 原来只认 `COA-UPDATE-数字` 和纯数字两种写法，`coa-publish-20261106`（整合包 RELEASE.json 的
+// releaseId）匹配不上，函数就把整串原样返回 —— 老大截图上「核心」那栏显示的就是这条原始 ID。
+function updateVersionLabel(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const date = releaseBaseline.dateOf(raw);
+  if (!date) return raw;
+  const text = String(date); // 20261106
+  return `${text.slice(0, 4)}.${text.slice(4, 6)}.${text.slice(6, 8)}`;
+}
+
+async function coreVersionLabel(folder) {
+  //By leewheel 2026年11月8日 核心版本要能反映“更新到底成功没有”，所以取两个记录的较新者：
+  //  ① 最近一次成功更新的版本（.coa-launcher\last-update.json）
+  //  ② 整合包基线（.coa-launcher\baseline.json / Server\RELEASE.json）
+  // 只看 ① 的话，本地包更新记成 "COA-UPDATE" 这种没日期的串就会一直顶在旧值；
+  // 只看 ② 的话，更新完 RELEASE.json 不跟着动，玩家会以为没更新。取日期大的那个最贴合事实。
+  const candidates = [];
+  try {
+    const file = path.join(launcherRootFolder(), '.coa-launcher', 'last-update.json');
+    const data = JSON.parse(require('node:fs').readFileSync(file, 'utf8'));
+    const label = updateVersionLabel(data.version || data.tag);
+    const at = new Date(data.at || '');
+    const atDate = Number.isNaN(at.getTime()) ? 0
+      : Number(`${at.getFullYear()}${String(at.getMonth() + 1).padStart(2, '0')}${String(at.getDate()).padStart(2, '0')}`);
+    // 版本串里带年份才算数（老记录的 version 只是 "COA-UPDATE"，没有日期）
+    const date = releaseBaseline.dateOf(label) || atDate;
+    if (date) candidates.push({ label: /\d{4}/.test(label) ? label : `${at.getFullYear()}.${String(at.getMonth() + 1).padStart(2, '0')}.${String(at.getDate()).padStart(2, '0')}`, date });
+  } catch {}
+  try {
+    const baseline = releaseBaseline.readBaseline({
+      root: launcherRootFolder(),
+      serverRoot: folder || serverPath() || '',
+    });
+    if (baseline.date) candidates.push({ label: updateVersionLabel(baseline.version), date: baseline.date });
+  } catch {}
+  //By leewheel 2026年11月8日 第三候选：更新历史里最后一条真正装过的版本。
+  // last-update.json 缺失/写坏（老大机器上就是这个状态：历史有 11.08、核心那栏却显示旧的整合包 ID）
+  // 时，靠它也能把“已经装到哪一版”如实显示出来。
+  try {
+    const installed = await releaseUpdate.installedVersion(launcherRootFolder());
+    const date = releaseBaseline.dateOf(installed);
+    if (date) candidates.push({ label: updateVersionLabel(installed), date });
+  } catch {}
+  if (candidates.length) {
+    candidates.sort((a, b) => b.date - a.date);
+    const best = candidates[0];
+    if (/\d{4}/.test(best.label)) return best.label;
+  }
+  return folder && repackUpdater ? repackUpdater.installedVersion(folder) : '';
 }
 //By leewheel 2026-11-05 启动时的目录体检，结果缓存一次，随 bootstrap 交给主页显示
 // 便携版只认 PORTABLE_EXECUTABLE_DIR 给出的真实目录：Electron 会把 exe 解压到 %TEMP% 下运行，
@@ -548,6 +616,48 @@ function serverControl() {
   return control;
 }
 
+//By leewheel 2026年11月8日 更新（远程补丁 / 本地包）专用的服务控制：
+// 不看“服务器目录”设置，直接按整合包自己的 <root>\Server 建对象。
+// 老大实弹（2026-11-08 12:54 安装本地包）：那条路径既没停服、也没启动 MySQL，
+// 直接拿 mysql\admin-client.ini 去连 3396，15 秒后报“连不上数据库”。
+function updateServerControl(serverRoot) {
+  if (!config.server?.services?.length) return null;
+  const control = new ServerControl({ root: serverRoot, services: config.server.services, commands: config.server.commands, notify: () => {} });
+  control.key = `update|${path.resolve(serverRoot)}`;
+  return control;
+}
+
+//By leewheel 2026年11月8日 动文件之前先把数据库弄活：连不上就当场中止，一个文件都不换。
+// 旧实现把“启动 MySQL 失败”用 .catch(() => {}) 吞掉，玩家只看到“连不上数据库”，
+// 根本不知道启动器其实一步都没做——这就是老大说的“启动器根本没有去启动 MySQL”。
+// 返回**一条连接串集合**（worldserver.conf 里那三条），调用方只用一个变量接，不要再多套一层对象。
+async function ensureUpdateDatabase(serverRoot, note = () => {}) {
+  const conns = releaseUpdate.readDbConfig(serverRoot);
+  const probe = conns.world || conns.auth || conns.characters || null;
+  const where = probe ? `${probe.host}:${probe.port}（用户 ${probe.user}）` : 'mysql\\admin-client.ini 里的地址';
+  // 已经能连：不用动
+  if (await releaseUpdate.waitForMysql(serverRoot, { conn: probe, timeoutMs: 2000 })) return conns;
+  const control = updateServerControl(serverRoot);
+  if (!control) throw new Error('启动器没有读到服务定义，无法自动启动数据库：请手动运行 Server\\1.MySQL.bat 后重试。更新中止（文件未提交）');
+  note('正在启动数据库（MySQL 3396）');
+  try {
+    await control.start('mysql');
+    note('数据库已启动');
+  } catch (error) {
+    // 不吞：把真实原因写进更新日志，下一句的失败提示才有依据
+    note(`数据库启动失败：${String(error?.message || error).slice(0, 180)}`);
+  }
+  const ready = await releaseUpdate.waitForMysql(serverRoot, {
+    conn: probe,
+    timeoutMs: 150000,
+    onLine: line => note(String(line).slice(0, 180)),
+  });
+  if (!ready) {
+    throw new Error(`连不上数据库 ${where}。请确认 Server\\mysql 已正常启动（手动可运行 Server\\1.MySQL.bat），然后重新更新。更新中止（文件未提交、数据库未改动）`);
+  }
+  return conns;
+}
+
 function serverTools() {
   if (!config.server || !serverPath()) throw new Error('Choose the server folder first.');
   if (!tools || tools.root !== path.resolve(serverPath())) {
@@ -652,7 +762,7 @@ async function serverInfo() {
   return {
     path: folder,
     installed: !!folder && !!(await statOrNull(path.join(folder, config.server.requiredExecutable)).catch(() => null)),
-    version: folder && repackUpdater ? await repackUpdater.installedVersion(folder) : '',
+    version: await coreVersionLabel(folder),
     progress: repackUpdater?.status || { phase: 'idle' },
     updatesEnabled: !!repackUpdater,
     services: found ? await found.status() : config.server.services.map(service => ({ id: service.id, name: service.name, port: service.port, state: 'unknown' })),
@@ -667,6 +777,18 @@ async function serverInfo() {
     botsBuiltIn: !!folder && !config.server.bots && fs_exists(path.join(folder, 'configs', 'modules', 'playerbots.conf')),
     //By leewheel 2026-11-03 机器人版本：读 playerbots.conf 固定行（打包时由 sync-bot-version.cjs 写入）
     botVersion: folder ? playerbotsConfVersion(folder) : '',
+    //By leewheel 2026年11月8日 玩家判断“到底更新成功没有”的唯一依据：最近一次成功更新的版本与时间。
+    // 核心那栏原来读的是 Settings/repack.json 的 coreVersion（打包时写死，更新包不会改），
+    // 所以永远显示 coa-publish-20261103；这里改成读 .coa-launcher/last-update.json。
+    // ⚠️ 本文件的 fs 是 node:fs/promises，**没有 readFileSync**：用同步 API 会抛 TypeError
+    // 又被 catch 吞掉，lastUpdate 恒为 null —— 我已经踩过一次（老大截图：更新完核心还是旧号）。
+    lastUpdate: (() => {
+      try {
+        const file = path.join(launcherRootFolder(), '.coa-launcher', 'last-update.json');
+        const data = JSON.parse(require('node:fs').readFileSync(file, 'utf8'));
+        return { version: String(data.version || ''), at: String(data.at || ''), sql: Array.isArray(data.sql) ? data.sql.length : 0 };
+      } catch { return null; }
+    })(),
     //By leewheel 2026年11月6日 内置机器人的“重建机器人”也要能用：没有外部命令时走模块自带的一次性删除开关
     canPurgeBots: !!config.server.commands.purgeBots || builtInBots(folder),
     // The extra realms whose world runs or starts: the home page counts the server as running with them alone.
@@ -996,11 +1118,11 @@ function registerIpc() {
     return lines.join('\n');
   });
   // ---- the SquidBots dashboard of the bots package
-  handle('dashboard:status', () => dashboard.status(serverPath()));
-  handle('dashboard:start', async () => { if (!serverPath()) throw new Error('Choose the server folder first.'); return dashboard.start(serverPath()); });
-  handle('dashboard:stop', async () => { dashboard.stop(); return dashboard.status(serverPath()); });
+  handle('dashboard:status', () => dashboard.status(dashboardRoot()));
+  handle('dashboard:start', async () => { if (!serverPath()) throw new Error('Choose the server folder first.'); return dashboard.start(dashboardRoot()); });
+  handle('dashboard:stop', async () => { dashboard.stop(); return dashboard.status(dashboardRoot()); });
   handle('dashboard:open', async realm => {
-    const status = await dashboard.status(serverPath());
+    const status = await dashboard.status(dashboardRoot());
     if (!status.running) throw new Error('Start the dashboard first.');
     // The game folder chosen in "Your game" goes along (?client=), so the dashboard can fill it in (map extraction).
     const page = new URL(status.url);
@@ -1304,13 +1426,13 @@ function registerIpc() {
     componentsBusy = true;
     let restart = false;
     try {
-      if (id === 'dashboard') { restart = (await dashboard.status(serverPath())).running; if (restart) dashboard.stop(); }
+      if (id === 'dashboard') { restart = (await dashboard.status(dashboardRoot())).running; if (restart) dashboard.stop(); }
       const dirs = { cacheDir: path.join(app.getPath('userData'), 'updates'), backupDir: path.join(app.getPath('userData'), 'component-backups'), fetchImpl: netFetch };
       const version = await components.install(serverPath(), offer, dirs);
       let game = '';
       // The addon goes on into the game, as at every start (only when the game is closed).
       if (id === 'addon' && addonPath()) game = await addonSync.gameRunning() ? 'running' : (await addonInstall().then(() => 'installed').catch(() => 'failed'));
-      if (restart) await dashboard.start(serverPath()).catch(() => {});
+      if (restart) await dashboard.start(dashboardRoot()).catch(() => {});
       componentsBusy = false;
       return { version, game, state: componentsState() };
     } finally { componentsBusy = false; send('components:state', componentsState()); }
@@ -1782,13 +1904,25 @@ function registerIpc() {
   });
   handle('repack:start', async id => {
     assertServerFree();
-    if (assembler.state(serverPath()).needed) throw new Error('Prepare the game data from your client first (home page).');
+    //By leewheel 2026年11月8日 数据库和游戏数据没关系：缺 mmaps / dbc 也允许先把库起来，
+    // 否则玩家点"启动数据库"只会收到一句"先准备游戏数据"，看起来就是按钮没用。
+    if (text(id, 30) !== 'mysql' && assembler.state(serverPath()).needed) throw new Error('Prepare the game data from your client first (home page).');
     //By leewheel 2026年11月5日 点“启动服务器 / 启动数据库”前先关掉数据库自动更新，否则服务端起不来
     await enforceDbUpdatesOff(serverPath(), { notify: true }).catch(() => {});
     //By leewheel 2026年11月5日 启动服务器时先把“待办的数据库脚本”补导（上次更新时库没起来过），
     // 导完再拉起服务，避免玩家带着没导的 SQL 进游戏。
-    await retryPendingSql().catch(() => {});
-    if (id === 'all') await startEverything(); else { await prepareStart(); await requireControl().start(text(id, 30)); if (text(id, 30) === 'auth') await realmsOnline(); }
+    const serviceId = text(id, 30);
+    //By leewheel 2026年11月8日 单独启动数据库必须快：SQL 补导在库没起时只会等超时，
+    // prepareStart 那一串（网络/名片/日志）对 mysqld 也没意义。以前串行跑完才拉库，
+    // 玩家点了"启动"十几秒没反应，以为按钮坏了（老大实弹）。
+    if (serviceId === 'mysql') {
+      await modules.keepRotationOff(serverPath()).catch(() => {});
+      await requireControl().start('mysql');
+    } else {
+      await retryPendingSql().catch(() => {});
+      if (id === 'all') await startEverything();
+      else { await prepareStart(); await requireControl().start(serviceId); if (serviceId === 'auth') await realmsOnline(); }
+    }
     return serverInfo();
   });
   // The repack's manager only stops everything (stop-all): one service alone is stopped by the launcher itself.
@@ -2047,6 +2181,72 @@ function registerIpc() {
   });
 
   // ---- the bot package ----
+  //By leewheel 2026年11月8日 机器人名字前缀（acore_world.coa_bot_settings.name_prefix）。
+  // 核心启动时读一次并统一应用到已有机器人，所以改完必须重启服务器才生效。
+  // 存量形态是「艾泽拉斯守护者 张三」（2026-11-03 全服改的）：库表存纯词，分隔空格由核心拼接时补。
+  const BOT_PREFIX_KEY = 'name_prefix';
+  const BOT_PREFIX_DEFAULT = '艾泽拉斯守护者';
+  //By leewheel 2026年11月8日 上限按「字符数」而不是显示宽度：角色名第一段受
+  // MAX_PLAYER_NAME_PART = 12 限制（汉字算 1 个字符），默认值「艾泽拉斯守护者」本身就 7 个，
+  // 按老的「6 汉字」规则连默认值都存不进去。
+  const BOT_PREFIX_MAX_CHARS = 12;
+  const BOT_PREFIX_MIN_CHARS = 2;
+  const botPrefixTarget = () => {
+    const serverRoot = path.join(launcherRootFolder(), 'Server');
+    //By leewheel 2026年11月9日 连哪个库不再看 worldserver.conf 猜：按 Server\my.ini 的 port 决定，
+    // 账号取配套的 admin-client.ini（老大 2026-11-09 明确要求）。
+    // 以前只读 worldserver.conf，配置里写 3396 就往 3396 连，库没起/端口不对全是同一句错。
+    const conn = require('./db-config.cjs').mysqlConnOf(serverRoot);
+    return { serverRoot, conn };
+  };
+  //By leewheel 2026年11月9日 只认 MySQL 错误码，别拿错误文本里的表名当判据：
+  // 以前 /coa_bot_settings/ 匹配到“命令行回显里的表名”，于是连不上库也会显示成“表还没建”，误导排查。
+  const dbErrorOf = error => {
+    const message = String(error?.message || error || '');
+    const code = (/\bERROR\s+(\d{4})\b/.exec(message) || [])[1] || '';
+    const line = message.split(/\r?\n/).map(part => part.trim()).filter(Boolean).pop() || message;
+    if (code === '1146' || /Table '.*' doesn't exist/i.test(line)) return { reason: 'no-table', message: line };
+    if (code === '1049' || /Unknown database/i.test(line)) return { reason: 'no-database', message: line };
+    if (code === '1045' || /Access denied/i.test(line)) return { reason: 'db-auth', message: line };
+    return { reason: 'db-down', message: line };
+  };
+  const connText = conn => `${conn.host}:${conn.port}（用户 ${conn.user || '(未配置)'}，来源 ${conn.source || 'my.ini'}）`;
+  // 字符数：汉字与英文字母都算 1 个（与核心 CheckPlayerName 的口径一致）
+  const prefixChars = text => [...String(text || '')].length;
+  //By leewheel 2026年11月8日 库表只存纯词：所有空白清掉，避免存成「艾泽拉斯守护者 」再拼出两个空格
+  const cleanPrefix = raw => String(raw ?? '').replace(/\s+/g, '');
+  handle('bots:prefix', async () => {
+    if (!serverPath()) return { ok: false, reason: 'no-server', message: '还没设置服务器目录' };
+    const { serverRoot, conn } = botPrefixTarget();
+    try {
+      const value = await releaseUpdate.mysqlQuery(serverRoot, `SELECT setting_value FROM coa_bot_settings WHERE setting_key='${BOT_PREFIX_KEY}'`, conn);
+      return { ok: true, prefix: cleanPrefix(value) || cleanPrefix(BOT_PREFIX_DEFAULT), maxChars: BOT_PREFIX_MAX_CHARS, minChars: BOT_PREFIX_MIN_CHARS, default: cleanPrefix(BOT_PREFIX_DEFAULT) };
+    } catch (error) {
+      // 库没起 / 表还没建 / 账号不对：分别说清是哪一种，并把连的是谁写出来
+      const info = dbErrorOf(error);
+      return { ok: false, reason: info.reason, message: `${info.message}｜连接 ${connText(conn)}`, target: connText(conn), maxChars: BOT_PREFIX_MAX_CHARS, minChars: BOT_PREFIX_MIN_CHARS, default: cleanPrefix(BOT_PREFIX_DEFAULT) };
+    }
+  });
+  handle('bots:prefix:set', async value => {
+    if (!serverPath()) throw new Error('还没设置服务器目录');
+    const text = cleanPrefix(value);
+    if (!text) throw new Error('前缀不能为空');
+    if (prefixChars(text) < BOT_PREFIX_MIN_CHARS) throw new Error(`前缀太短：至少要 ${BOT_PREFIX_MIN_CHARS} 个字符`);
+    if (prefixChars(text) > BOT_PREFIX_MAX_CHARS) throw new Error(`前缀太长：最多 ${BOT_PREFIX_MAX_CHARS} 个字符（汉字也算 1 个，当前 ${prefixChars(text)}）`);
+    const { serverRoot, conn } = botPrefixTarget();
+    // 用 UNHEX 传值，彻底避开引号/反斜杠把 SQL 拼坏
+    const hex = Buffer.from(text, 'utf8').toString('hex');
+    try {
+      await releaseUpdate.mysqlQuery(serverRoot,
+        `INSERT INTO coa_bot_settings (setting_key, setting_value) VALUES ('${BOT_PREFIX_KEY}', CONVERT(UNHEX('${hex}') USING utf8mb4)) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+        conn);
+    } catch (error) {
+      const message = String(error?.message || error).split(/\r?\n/).filter(line => !/Using a password/i.test(line)).pop() || String(error?.message || error);
+      throw new Error(`写入数据库失败（数据库没启动？）：${message}`);
+    }
+    return { ok: true, prefix: text, maxChars: BOT_PREFIX_MAX_CHARS, minChars: BOT_PREFIX_MIN_CHARS };
+  });
+
   const requireBots = () => { if (!bots) throw new Error('No bot package is configured.'); if (!serverPath()) throw new Error('Choose the server folder first.'); };
   handle('bots:check', async force => { requireBots(); return bots.check(serverPath(), { force: force === true }); });
   handle('bots:install', async () => {
@@ -2639,29 +2839,52 @@ function registerIpc() {
     return stat ? stat.mtimeMs : 0;
   };
   //End By leewheel
+  //By leewheel 2026年11月8日 玩家点过「忽略」的版本不再提示。
+  // 版本命名不一致（远端 20261108、本地 2026.11.08.11）会造成误报，比较逻辑兜不住时，
+  // 必须给玩家一个能关掉横幅的出口——老大实弹：横幅一直挂着，更新完也关不掉。
+  const dropIgnored = list => {
+    const ignored = new Set((settings.ignoredReleases || []).map(String));
+    return ignored.size ? list.filter(item => !ignored.has(String(item?.version || ''))) : list;
+  };
+  //By leewheel 2026年11月8日 本机基线：整合包 Server\RELEASE.json 声明的版本，
+  // 或上次整轮更新成功后推进到的版本（.coa-launcher\baseline.json）。
+  // 这条是“记录”，不是“猜文件时间”——取不到就返回 {date:0}，此时一个补丁都不跳过（宁可多装，绝不漏装）。
+  const currentBaseline = root => releaseBaseline.readBaseline({
+    root,
+    serverRoot: serverPath() || (root ? path.join(root, 'Server') : ''),
+  });
   handle('release:check', async () => {
     const root = launcherRootFolder();
     const installed = await releaseUpdate.installedVersion(root);
     const coreRelease = serverPath() ? String(inspectRepack(serverPath()).release || '') : '';
     const history = await releaseUpdate.readHistory(root);
     const current = installed || coreRelease;
-    const builtAt = await coreBuiltAt();
+    //By leewheel 2026年11月8日 基线取代 builtAt：不再用 worldserver.exe 的修改时间去猜“内容已在包里”
+    const baseline = currentBaseline(root);
     let releases = [];
     let error = '';
     //By leewheel 2026-11-05 多取一些 release（最多 30 个），否则只装最新一个会漏掉中间的补丁
     try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); } catch (caught) { error = caught.message; }
     //End By leewheel
+    //By leewheel 2026年11月8日 整合包已经自带的老补丁：这一次补记进 history（标记来源），之后不再反复计算。
+    // 只写 history，不动 last-update.json，免得主页“核心版本”被旧版本顶回去。
+    if (releases.length && baseline.date) {
+      const covered = releaseUpdate.baselineCovered({ releases, history, baseline: baseline.version });
+      if (covered.length) await releaseUpdate.recordBaselineVersions(root, covered).catch(() => {});
+    }
+    const historyNow = releases.length && baseline.date ? await releaseUpdate.readHistory(root) : history;
     const latest = releases[0] || null;
     return {
       current,
-      builtAt,
+      builtAt: await coreBuiltAt(),
+      baseline,
       latest,
       asset: latest ? releaseUpdate.pickAsset(latest) : null,
       //By leewheel 2026-11-05 待装补丁队列：按发布顺序【旧 → 新】，供界面一次装齐
-      pending: releaseUpdate.pendingReleases({ releases, history, current, builtAt }),
+      pending: dropIgnored(releaseUpdate.pendingReleases({ releases, history: historyNow, current, baseline: baseline.version })),
       //End By leewheel
       releases: releases.slice(0, 10),
-      history,
+      history: historyNow,
       updateDir: path.join(root, 'Update'),
       error,
     };
@@ -2692,7 +2915,14 @@ function registerIpc() {
         //By leewheel 2026-11-05 自检改按"还缺几个补丁"判断：第一次运行 history 为空时要能发现全部补丁，
         // 而不是只看最新一个；全部装完后 pending 为空就不会再弹更新。
         const releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 });
-        const pending = releaseUpdate.pendingReleases({ releases, history, current, builtAt: await coreBuiltAt() });
+        //By leewheel 2026年11月8日 同样改用基线（记录），不再看 exe 修改时间
+        const baseline = currentBaseline(root);
+        if (baseline.date) {
+          const covered = releaseUpdate.baselineCovered({ releases, history, baseline: baseline.version });
+          if (covered.length) { await releaseUpdate.recordBaselineVersions(root, covered).catch(() => {}); }
+        }
+        const historyNow = await releaseUpdate.readHistory(root);
+        const pending = dropIgnored(releaseUpdate.pendingReleases({ releases, history: historyNow, current, baseline: baseline.version }));
         const latest = pending.length ? pending[pending.length - 1] : (releases[0] || null);
         if (!latest) { note(`已是最新（未发布任何版本） current=${current || '?'}`); send('release:available', { found: false, current }); return null; }
         const asset = latest.asset || releaseUpdate.pickAsset(latest);
@@ -2716,6 +2946,15 @@ function registerIpc() {
     return releaseAutoPromise;
   };
   handle('release:autoCheck', async () => { const info = await autoCheckRelease(); return { found: !!info, info }; });
+  //By leewheel 2026年11月8日 忽略某个版本：写进设置，横幅立刻消失，之后检查也不再提示这一个版本
+  handle('release:ignore', async version => {
+    const v = String(version || '');
+    if (!v) return false;
+    const next = [...new Set([...(settings.ignoredReleases || []).map(String), v])].slice(-30);
+    await persist({ ...settings, ignoredReleases: next }).catch(() => {});
+    send('release:available', { found: false, current: await releaseUpdate.installedVersion(launcherRootFolder()) });
+    return true;
+  });
   //By leewheel 2026年11月4日 定时器就放在定义旁边（同一作用域），不再从别处引用函数名——
   // 之前把定时器写在 main 末尾、函数写在这里，跨作用域拿不到就是 ReferenceError。
   if (!smokeDir) setTimeout(() => autoCheckRelease().catch(() => {}), 3000).unref();
@@ -2736,20 +2975,32 @@ function registerIpc() {
     const folder = path.join(root, 'Update', version);
     const zip = path.join(folder, options.asset.name || 'update.zip');
     const extract = path.join(folder, 'extracted');
+    //By leewheel 2026年11月9日 老大要求：强制更新与自动更新都必须明确显示“现在下载/执行的是哪一个压缩包”。
+    // 以前界面只有“解压更新包 · 正在解压”，队列里换了包也看不出来装的是哪一版 —— 出问题根本对不上账。
+    // 这里把包名、包序号、版本号一起塞进每一条进度事件，界面单独一行展示，关掉弹窗重开也能读回来。
+    const assetName = String(options.asset?.name || path.basename(zip) || '更新包');
+    const patchInfo = queue
+      ? { pkg: assetName, pkgIndex: queue.index, pkgTotal: queue.total, pkgVersion: version }
+      : { pkg: assetName, pkgIndex: 1, pkgTotal: 1, pkgVersion: version };
+    const patchTag = queue && queue.total > 1 ? `（第 ${queue.index}/${queue.total} 个补丁）` : '';
+    //End By leewheel
     // 每一次进度都同步进主进程状态：界面关了再打开，也能拿到“现在到哪一步了”
     const progress = payload => {
       //By leewheel 2026-11-05 队列里只有最后一个补丁才允许报"完成"，中间改为"第 n/N 个完成，继续下一个"
       //By leewheel 2026年11月8日 中间态原来借用 'apply'，界面会把指示灯整排倒退到“停止服务器”；改专用 'next'，
       // 界面据此把步骤全部标成已完成但不算整体完成（进度条停在 99%，不会跳成 100%）。
-      const actual = queue && !queue.last && payload.phase === 'done'
+      const base = queue && !queue.last && payload.phase === 'done'
         ? { ...payload, phase: 'next', pct: 99, message: `第 ${queue.index}/${queue.total} 个补丁完成，继续下一个` }
         : payload;
+      //By leewheel 2026年11月9日 包信息统一补在最后，调用点不必逐个关心
+      const actual = { ...base, ...patchInfo };
       Object.assign(releaseState, {
         busy: true,
         version,
         phase: actual.phase || releaseState.phase,
         message: actual.message || releaseState.message,
         pct: typeof actual.pct === 'number' ? actual.pct : releaseState.pct,
+        ...patchInfo,
       });
       send('release:progress', actual);
       //End By leewheel
@@ -2757,7 +3008,7 @@ function registerIpc() {
     try {
       await fs.rm(folder, { recursive: true, force: true });
       await fs.mkdir(folder, { recursive: true });
-      progress({ phase: 'download', version, message: `正在下载 ${options.asset.name}`, pct: 0 });
+      progress({ phase: 'download', version, message: `正在下载 ${assetName}${patchTag}`, pct: 0 });
       //By leewheel 2026年11月6日 下载优先走测速最快的源（缓存 6 小时），并给界面带上下载速度与剩余时间。
       const ranked = await rankedMirrors(options.asset.url);
       //By leewheel 2026年11月4日 下载走“国内镜像优先、GitHub 最后”（镜像列表在 launcher.config.json 的 downloadMirrors）
@@ -2779,43 +3030,29 @@ function registerIpc() {
           progress({
             phase: 'download', version, done, total, pct,
             kbps, left,
+            //By leewheel 2026年11月9日 包名在专用那一行（release-pkg）常驻显示，这里只放速度，避免同一行太挤
             message: kbps > 0
-              ? `正在下载 ${formatSpeed(kbps)}${left !== null ? `，剩余约 ${formatLeft(left)}` : ''}`
+              ? `正在下载 · ${formatSpeed(kbps)}${left !== null ? `，剩余约 ${formatLeft(left)}` : ''}`
               : '正在下载',
           });
         },
       });
-      progress({ phase: 'download', version, pct: 100, message: fetched.mirror ? `下载完成（镜像 ${fetched.mirror}）` : '下载完成（GitHub 直连）' });
-      progress({ phase: 'extract', version, message: '正在解压', pct: null });
+      progress({ phase: 'download', version, pct: 100, message: `${assetName} 下载完成${fetched.mirror ? `（镜像 ${fetched.mirror}）` : '（GitHub 直连）'}` });
+      //By leewheel 2026年11月9日 解压阶段必须写明在解压哪一个包（截图里原来只有“解压更新包 · 正在解压”）
+      progress({ phase: 'extract', version, message: `正在解压 ${assetName}`, pct: null });
       await releaseUpdate.extractZip(zip, extract, line => progress({ phase: 'extract', version, message: String(line).slice(0, 200), pct: null }));
       progress({ phase: 'apply', version, message: '正在归位到 Server / Client', pct: null });
       //By leewheel 2026年11月4日 归位前必须先停服：SQL 要导库、exe/配置/MPQ 要被覆盖，
       // 世界服还在跑会锁住文件、还会往库里写数据。国度与主服世界服先停（各自存角色），
       // 然后把 MySQL 拉起来，保证按库名导入 SQL 用的是活的数据库连接。
       progress({ phase: 'apply', version, message: '正在停止服务器（世界服要存角色，可能要 1~2 分钟）', pct: null });
-      await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null })).catch(() => {});
-      await (serverControl()?.start('mysql') || Promise.resolve()).catch(() => {});
-      //By leewheel 2026年11月5日 端口不猜：直接读 worldserver.conf 的三条连接串（世界服连哪个库就导哪个库）。
-      // 等不到库也不再中断更新：文件照常归位，SQL 记成待办，下次启动服务器时自动补导。
-      const dbConns = releaseUpdate.readDbConfig(serverRoot);
-      progress({ phase: 'sql', version, message: '正在等待数据库就绪', pct: null });
-      const mysqlReady = await releaseUpdate.waitForMysql(serverRoot, {
-        conn: dbConns.world || dbConns.auth || dbConns.characters || null,
-        timeoutMs: 120000,
-        onLine: line => progress({ phase: 'sql', version, message: String(line).slice(0, 200), pct: null }),
-      });
-      //By leewheel 2026年11月5日 兜底：worldserver.conf 那套账号连不上时，再用 mysql/admin-client.ini
-      // （trinity 账号）试一次；两条都通不了才转“待办”，无论如何都不让玩家去手动开库。
-      let usableConns = dbConns;
-      if (!mysqlReady) {
-        const adminReady = await releaseUpdate.waitForMysql(serverRoot, {
-          conn: null,
-          timeoutMs: 20000,
-          onLine: line => progress({ phase: 'sql', version, message: String(line).slice(0, 200), pct: null }),
-        });
-        if (adminReady) { usableConns = null; progress({ phase: 'sql', version, message: '数据库已就绪（改用 admin-client.ini 的连接）', pct: null }); }
-        else progress({ phase: 'sql', version, message: '数据库暂未就绪：先归位文件，SQL 转为待办，下次启动服务器时自动补导', pct: null });
-      }
+      await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null }), serverRoot).catch(() => {});
+      //By leewheel 2026年11月8日 换文件之前先把数据库弄活：起不来就当场中止，绝不再“文件换完、库没导”。
+      // 以前这里是 serverControl()?.start('mysql') + .catch(() => {})：设置里没有服务器目录时
+      // serverControl() 直接是 null，整句被 ?. 短路，数据库一步都没启动，最后只报“连不上数据库”。
+      progress({ phase: 'sql', version, message: '正在准备数据库（必要时自动启动 MySQL）', pct: null });
+      const usableConns = await ensureUpdateDatabase(serverRoot, line => progress({ phase: 'sql', version, message: String(line).slice(0, 200), pct: null }));
+      progress({ phase: 'sql', version, message: '数据库已就绪，开始更新', pct: null });
       const sqlRun = { startedAt: Date.now(), ok: 0, failed: 0 };
       //By leewheel 2026年11月8日 livePhase 记住“现在到底在哪一步”：日志行只更新文案，绝不改阶段，
       // 这样“注入客户端补丁档 / 导入数据库”的指示灯才不会被打回“停止服务器”。
@@ -2850,7 +3087,10 @@ function registerIpc() {
         },
         importSqlFiles: options.importSql !== false,
         conns: usableConns,
-        waitMs: mysqlReady || usableConns === null ? 15000 : 5000,
+        //By leewheel 2026年11月8日 库已由 ensureUpdateDatabase 提前确认（连不上早就中止了），
+        // 这里只需要一个兜底等待值；原来引用的 mysqlReady 已经在重构时删掉，残留引用会直接崩
+        // “mysqlReady is not defined”（老大 2026-11-08 在线更新实弹）。
+        waitMs: 120000,
       });
       if (sqlRun.total) {
         sqlLog.finishRun(root, sqlRun, { failed: result.sql?.failures || [], note: `数据脚本日志：${sqlLog.logFile(root)}` });
@@ -2877,7 +3117,11 @@ function registerIpc() {
       }
       //By leewheel 2026年11月5日 更新包会覆盖 configs：更新完成后必须再把数据库自动更新关掉
       await enforceDbUpdatesOff(serverRoot, { notify: false }).catch(() => {});
-      const entry = { version: options.version || version, tag: options.tag || '', asset: options.asset.name, at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings };
+      const entry = { version: options.version || version, tag: options.tag || '', asset: options.asset.name, at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings,
+        //By leewheel 2026年11月9日 数据表核对结果一起入库：以后查“这次更新到底缺没缺表”直接看历史记录
+        dbcheck: result.dbcheck ? { databases: result.dbcheck.databases, tables: result.dbcheck.tables, columns: result.dbcheck.columns, missingTables: result.dbcheck.missingTables, missingColumns: result.dbcheck.missingColumns, report: result.dbcheck.report || '' } : null,
+        //By leewheel 2026年11月8日 把落地核对结果一起记下来：队列收尾要用最后一个补丁的 exe md5 做终局核对
+        verify: result.verify ? { checked: result.verify.checked, hashes: result.verify.hashes || {} } : null };
       await releaseUpdate.recordVersion(root, entry);
       // 更新完是否删除 Update 临时目录（玩家在界面上勾选）
       if (options.deleteAfter !== false) {
@@ -2920,6 +3164,68 @@ function registerIpc() {
   }
   //By leewheel 2026-11-05 补丁队列：按发布顺序【旧 → 新】算出还缺哪些，再逐个下载/归位/记录版本。
   // 一个成功才进下一个，任何一个失败立刻停止（已装的不回滚，下次重开只会补剩下的）。
+  //By leewheel 2026年11月8日 抽成 runQueue：「自动补齐」和「强制更新到指定版本」共用同一套执行 + 核对手册。
+  // 两处硬核对（老大要求，不通过就不许报“更新完成”）：
+  //   ① 队列里每个补丁装完，applyUpdate 内部已核对包内每个文件已按字节数落地、两个 exe 的 md5 一致；
+  //   ② 整轮结束后再核一次目标 Server\worldserver.exe 的 md5 = 最后一个带该 exe 的补丁里的值。
+  async function verifyFinalCore(applied) {
+    const expected = [...applied].reverse()
+      .map(item => item?.verify?.hashes?.['worldserver.exe'])
+      .find(Boolean);
+    if (!expected) return { checked: false, reason: '本轮没有补丁带 worldserver.exe，跳过终局核对' };
+    const serverRoot = path.join(launcherRootFolder(), 'Server');
+    const relative = String(require('./layout.cjs').serverLayout(serverRoot).world || 'worldserver.exe');
+    const target = path.join(serverRoot, ...relative.split('/'));
+    if (!fs_exists(target)) throw new Error(`终局核对失败：Server\\${relative} 不存在`);
+    const actual = await releaseUpdate.fileMd5(target);
+    if (actual !== expected) {
+      throw new Error(`终局核对失败：Server\\${relative} 的 md5 与更新包不一致（包内 ${expected.slice(0, 12)}… ≠ 实际 ${actual.slice(0, 12)}…）。服务端文件没换成功，更新不算完成`);
+    }
+    return { checked: true, hash: actual, file: relative };
+  }
+
+  async function runQueue(queue, options = {}) {
+    if (!queue.length) throw new Error('没有需要安装的补丁。');
+    releaseQueueBusy = true;
+    const applied = [];
+    try {
+      for (let i = 0; i < queue.length; i++) {
+        const item = queue[i];
+        const step = { index: i + 1, total: queue.length, last: i === queue.length - 1 };
+        //By leewheel 2026年11月8日 reset：换到下一个补丁时进度必须归零重来，
+        // 否则会出现“灯回到下载更新包、进度条却还停在 99%”的错位（老大说的对不上）。
+        //By leewheel 2026年11月9日 队列换包时把包名一起带出去：界面那行“更新包”要立刻跟着换
+        const assetName = String(item.asset?.name || '更新包');
+        send('release:progress', {
+          phase: 'download', version: item.version, pct: 0, reset: true,
+          pkg: assetName, pkgIndex: step.index, pkgTotal: step.total, pkgVersion: item.version,
+          message: `正在安装第 ${step.index}/${step.total} 个补丁：${item.version}（${assetName}）`,
+        });
+        applied.push(await applyOnePatch({
+          version: item.version, tag: item.tag, asset: item.asset,
+          deleteAfter: options.deleteAfter !== false, importSql: options.importSql !== false,
+        }, step));
+      }
+      const last = applied[applied.length - 1] || {};
+      //By leewheel 2026年11月8日 收尾核对失败必须把“已完成”翻回去：applyOnePatch 的 finally 已经把
+      //最后一个补丁标成 done=true，这里再抛错如果不同步改状态，界面重开就显示成“更新完成”，等于骗玩家。
+      // 这一步不再发新的阶段事件（每个补丁内部已经跑过一轮“核对文件落地”），只在失败时改写状态。
+      let core;
+      try {
+        core = await verifyFinalCore(applied);
+      } catch (error) {
+        const message = String(error?.message || error);
+        Object.assign(releaseState, { busy: false, done: false, phase: 'failed', error: message, message: '核对没通过', pct: 100 });
+        send('release:progress', { phase: 'failed', message: `核对没通过：${message}`, pct: 100, error: message });
+        throw error;
+      }
+      //By leewheel 2026年11月8日 基线推进到最后装成功的那个补丁：下次检查不会再把这些算成待装。
+      // 写失败不影响本次结果（下次顶多重算一次），所以不抛。
+      const baseline = await releaseBaseline.writeBaseline(launcherRootFolder(), { version: last.version || '' }).catch(() => null);
+      return { applied, total: queue.length, version: last.version || '', files: last.files, dbc: last.dbc, sql: last.sql, warnings: last.warnings, core, baseline };
+    } finally { releaseQueueBusy = false; }
+  }
+
   handle('release:apply', async options => {
     if (releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
     return applyOnePatch(options);
@@ -2936,26 +3242,11 @@ function registerIpc() {
       let releases = [];
       try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); }
       catch (error) { throw new Error(`读取 GitHub 更新列表失败：${error.message}`); }
-      queue = releaseUpdate.pendingReleases({ releases, history, current, builtAt: await coreBuiltAt() });
+      //By leewheel 2026年11月8日 现场重算同样按基线（记录），不再看 exe 时间
+      const baseline = currentBaseline(root);
+      queue = releaseUpdate.pendingReleases({ releases, history, current, baseline: baseline.version });
     }
-    if (!queue.length) throw new Error('没有需要安装的补丁。');
-    releaseQueueBusy = true;
-    const applied = [];
-    try {
-      for (let i = 0; i < queue.length; i++) {
-        const item = queue[i];
-        const step = { index: i + 1, total: queue.length, last: i === queue.length - 1 };
-        //By leewheel 2026年11月8日 reset：换到下一个补丁时进度必须归零重来，
-        // 否则会出现“灯回到下载更新包、进度条却还停在 99%”的错位（老大说的对不上）。
-        send('release:progress', { phase: 'download', version: item.version, message: `正在安装第 ${step.index}/${step.total} 个补丁：${item.version}`, pct: 0, reset: true });
-        applied.push(await applyOnePatch({
-          version: item.version, tag: item.tag, asset: item.asset,
-          deleteAfter: options?.deleteAfter !== false, importSql: options?.importSql !== false,
-        }, step));
-      }
-      const last = applied[applied.length - 1] || {};
-      return { applied, total: queue.length, version: last.version || '', files: last.files, dbc: last.dbc, sql: last.sql, warnings: last.warnings };
-    } finally { releaseQueueBusy = false; }
+    return runQueue(queue, options);
   });
   //End By leewheel
   //By leewheel 2026年11月5日 界面重开/重载后先问主进程：正在更新？已经更新完？——据此决定给不给“开始更新”按钮
@@ -2977,16 +3268,31 @@ function registerIpc() {
     if (!zip || !fs_exists(zip)) throw new Error('没有找到本地更新包：把 CoA-Update-*.zip 放到 Update\\ 目录，或在弹窗里选文件。');
     const version = (/CoA-Update-([0-9.]+)/i.exec(path.basename(zip)) || [])[1] || '';
     releaseBusy = true;
-    const progress = payload => send('release:progress', payload);
+    //By leewheel 2026年11月9日 本地包同样要报包名与包序号，跟远程队列保持一致的界面口径
+    const localName = path.basename(zip);
+    const localInfo = { pkg: localName, pkgIndex: 1, pkgTotal: 1, pkgVersion: version };
+    const progress = payload => {
+      const withPkg = { ...payload, ...localInfo };
+      Object.assign(releaseState, { busy: true, version, ...localInfo, phase: withPkg.phase || releaseState.phase, message: withPkg.message || releaseState.message, pct: typeof withPkg.pct === 'number' ? withPkg.pct : releaseState.pct });
+      send('release:progress', withPkg);
+    };
     try {
-      progress({ phase: 'download', version, message: `使用本地更新包：${path.basename(zip)}`, pct: 2 });
+      progress({ phase: 'download', version, message: `使用本地更新包：${localName}`, pct: 2 });
       const workDir = path.join(root, 'Update', `local-${Date.now()}`);
       await fs.mkdir(workDir, { recursive: true });
-      progress({ phase: 'extract', version, message: '正在解压…', pct: 8 });
+      progress({ phase: 'extract', version, message: `正在解压 ${localName}`, pct: 8 });
       await releaseUpdate.extractZip(zip, workDir, line => progress({ phase: 'extract', version, message: String(line).slice(0, 200), pct: 10 }));
       const serverRoot = path.join(root, 'Server');
       const clientRoot = path.join(root, 'Client');
-      progress({ phase: 'apply', version, message: '正在替换文件…', pct: 30 });
+      //By leewheel 2026年11月8日 本地包更新原来缺了两件事（老大 2026-11-08 12:54 实弹）：
+      // ① 没停服——世界服还占着 exe，覆盖会 EBUSY；② 没启动 MySQL，conns 写死 null，
+      // 直接拿 admin-client.ini 去连 3396，15 秒后报“连不上数据库”。
+      // 现在和远程补丁走同一套：先停服 → 拉起数据库 → 连不上就中止（一个文件都不换）。
+      progress({ phase: 'apply', version, message: '正在停止服务器（世界服要存角色，可能要 1~2 分钟）', pct: 20 });
+      await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null }), serverRoot).catch(() => {});
+      progress({ phase: 'sql', version, message: '正在准备数据库（必要时自动启动 MySQL）', pct: 24 });
+      const localConns = await ensureUpdateDatabase(serverRoot, line => progress({ phase: 'sql', version, message: String(line).slice(0, 200), pct: null }));
+      progress({ phase: 'apply', version, message: '数据库已就绪，正在替换文件…', pct: 30 });
       const localSqlRun = { startedAt: Date.now(), ok: 0, failed: 0 };
       //By leewheel 2026年11月8日 本地包更新同样：日志行只改文案，阶段由 onPhase 独占推进
       let liveLocalPhase = 'apply';
@@ -3015,8 +3321,10 @@ function registerIpc() {
           sqlLog.recordFile(root, file);
         },
         importSqlFiles: options?.importSql !== false,
-        conns: null,
-        waitMs: 15000,
+        //By leewheel 2026年11月8日 用 worldserver.conf 里的真实连接串（本地包原来写死 null），
+        // 等库时间也放到 120 秒（首次启动 MySQL 要恢复 InnoDB，15 秒根本不够）。
+        conns: localConns,
+        waitMs: 120000,
       });
       if (localSqlRun.total) sqlLog.finishRun(root, localSqlRun, { failed: result.sql?.failures || [] });
       await enforceDbUpdatesOff(serverRoot, { notify: false }).catch(() => {});
@@ -3031,8 +3339,13 @@ function registerIpc() {
       if (result.launcherPending) {
         launcherSwap.spawnReplaceHelper(root, process.pid, { restart: false });
       }
-      const entry = { version: version || 'local', tag: 'local', asset: path.basename(zip), at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings };
+      const entry = { version: version || 'local', tag: 'local', asset: path.basename(zip), at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings,
+        //By leewheel 2026年11月9日 本地包同样记下数据表核对结果
+        dbcheck: result.dbcheck ? { databases: result.dbcheck.databases, tables: result.dbcheck.tables, columns: result.dbcheck.columns, missingTables: result.dbcheck.missingTables, missingColumns: result.dbcheck.missingColumns, report: result.dbcheck.report || '' } : null,
+        verify: result.verify ? { checked: result.verify.checked, hashes: result.verify.hashes || {} } : null };
       await releaseUpdate.recordVersion(root, entry);
+      //By leewheel 2026年11月8日 本地包更新成功也要推进基线（只许前进），否则下次检查会把刚装过的排回来
+      await releaseBaseline.writeBaseline(root, { version: version || '' }).catch(() => null);
       await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
       progress({ phase: 'done', version: entry.version, message: '强制更新完成', pct: 100, result: entry });
       Object.assign(releaseState, { busy: false, done: true, failed: false, message: '强制更新完成', version: entry.version });
@@ -3085,6 +3398,42 @@ function registerIpc() {
     await persist({ ...settings, mirrorRanking: { url: assetUrl, at: Date.now(), list: annotated } });
     return { ok: true, list: annotated, best: annotated.find(item => item.ok) || null };
   });
+  //By leewheel 2026年11月8日 列出 GitHub 上所有「带 zip 且能装」的补丁，供“强制更新”里挑选。
+  // 带 installed / isFull / baseline 标记，界面据此显示“已装”“全量包”“比整合包旧”等提示。
+  handle('release:list', async () => {
+    const root = launcherRootFolder();
+    let releases = [];
+    try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); }
+    catch (error) { return { ok: false, message: `读取 GitHub 更新列表失败：${error.message}`, list: [] }; }
+    const history = await releaseUpdate.readHistory(root);
+    const done = new Set(history.map(item => String(item?.version || '')).filter(Boolean));
+    const baseline = currentBaseline(root);
+    const list = releases
+      .filter(release => releaseUpdate.pickAsset(release))
+      .map(release => {
+        const version = String(release.version || '');
+        const asset = releaseUpdate.pickAsset(release);
+        // 日期优先取发布时间，取不到退版本号里的 20YYMMDD；界面按它排序/显示
+        const date = releaseUpdate.dateOf(release.publishedAt) || releaseUpdate.dateOf(version);
+        return {
+          version, tag: release.tag || '', name: release.name || '',
+          publishedAt: release.publishedAt || '', date,
+          //By leewheel 2026年11月8日 只有全量包能单独装；增量包必须“装到这一版为止”，
+          // 否则单装它等于跳过前置补丁，最后必定跑不起来（老大判断）。
+          isFull: /(^|[-_.])full([-_.]|$)/i.test(asset.name),
+          asset: { name: asset.name, size: asset.size, url: asset.url },
+          installed: done.has(version),
+          coveredByBaseline: Boolean(baseline.date && date && date < baseline.date),
+        };
+      })
+      // 界面按【旧 → 新】展示，与安装顺序一致，避免玩家以为最上面的是最早发布的
+      .sort((a, b) => (a.date - b.date) || String(a.publishedAt).localeCompare(String(b.publishedAt)));
+    return { ok: true, baseline, list, current: await releaseUpdate.installedVersion(root) };
+  });
+  //By leewheel 2026年11月8日 强制更新 = 从 GitHub 重装，并且**可选装到哪一版为止**。
+  // 传 version 就是“装到这一版”：目标补丁 + 它之前所有还没装的补丁，按旧→新依次装完。
+  // 为什么不只装选中的那一个：补丁是叠加的，跳过前置任何一个，最后必定跑不起来（老大 2026-11-08 明确）。
+  // 不传 version：取最新一版；若最新那版不是全量包，同样按“装到它为止”补齐前面所有补丁。
   handle('release:forceRemote', async options => {
     if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
     const root = launcherRootFolder();
@@ -3092,17 +3441,23 @@ function registerIpc() {
     try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); }
     catch (error) { throw new Error(`读取 GitHub 更新列表失败：${error.message}`); }
     if (!releases.length) throw new Error('GitHub 上还没有发布任何版本。');
-    // 取最新一个**带 zip 资产**的 release（没有资产的跳过，并明确告诉玩家）
-    const withAsset = releases.find(release => releaseUpdate.pickAsset(release));
-    if (!withAsset) throw new Error('GitHub 上的版本没有附带 zip 更新包：请让管理员上传 zip，或用「从本地包更新」选本地 zip。');
-    const asset = releaseUpdate.pickAsset(withAsset);
-    return applyOnePatch({
-      version: withAsset.version || withAsset.tag_name || withAsset.tag,
-      tag: withAsset.tag_name || withAsset.tag || '',
-      asset,
-      deleteAfter: options?.deleteAfter !== false,
-      importSql: options?.importSql !== false,
-    });
+    const history = await releaseUpdate.readHistory(root);
+    //By leewheel 2026年11月8日 队列计算抽到 release-update.queueUpTo（可单测）：目标一定重装、
+    // 之前的只补没装过的、比目标新的不动，顺序始终旧→新。
+    const { queue, target, isFull, reason } = releaseUpdate.queueUpTo({ releases, history, targetVersion: String(options?.version || '').trim() });
+    if (!target) throw new Error(reason || 'GitHub 上找不到这个版本，或者它没有 zip 更新包。');
+    if (!queue.length) throw new Error(`没有可安装的补丁（目标 ${target.version} 不在可安装列表里）。`);
+    if (!isFull && queue.length > 1) {
+      // 明确告诉玩家：选的是增量包，所以会连它前面的补丁一起装
+      send('release:progress', {
+        phase: 'download', version: target.version,
+        pkg: String(target.asset?.name || ''),
+        pkgIndex: 1, pkgTotal: queue.length, pkgVersion: target.version,
+        message: `${target.version} 是增量包，将连同它之前未装的 ${queue.length - 1} 个补丁一起按顺序安装`,
+        pct: 0, reset: true,
+      });
+    }
+    return runQueue(queue, options);
   });
   handle('release:state', () => ({ ...releaseState }));
   //By leewheel 2026年11月6日 强制更新：仓库里放一份 force-update.json（minVersion + reason），
@@ -3620,9 +3975,11 @@ function closingLog(line) {
 //By leewheel 2026年11月4日 停服（国度 + 主服）统一入口：国度和主服世界服【同时】停（两边各自存角色，互不依赖），
 // authserver 随后，MySQL 最后——世界服存角色要用数据库。以前是"国度全停完(最多300秒) → 再停主服(最多300秒)"，
 // 串起来最坏十分钟，老大反馈"停止服务器特别慢"就是这个。返回 { realmsFailed } 让调用方决定还能不能停库。
-async function stopAllServices(log = () => {}) {
-  const root = serverPath();
-  const control = serverControl();
+//By leewheel 2026年11月8日 第三个参数：更新流程传整合包的 Server 目录，
+// 这样即使“服务器目录”设置为空，也能按包自己的位置停服（以前会静默跳过，世界服占着 exe 导致覆盖失败）。
+async function stopAllServices(log = () => {}, serverRoot = null) {
+  const root = serverRoot || serverPath();
+  const control = serverRoot ? updateServerControl(serverRoot) : serverControl();
   const worldStop = control
     ? control.stop('world').then(() => log('主服世界服已停'), error => log('主服世界服停机失败: ' + error.message))
     : Promise.resolve();

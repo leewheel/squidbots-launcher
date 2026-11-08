@@ -15,7 +15,7 @@ const { spawn, execFile } = require('node:child_process');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
-const { portOpen } = require('./server-control.cjs');
+const { portOpen, listening, runningInside } = require('./server-control.cjs');
 const { validate } = require('./server-config.cjs');
 const CATALOG = require('./data/server-settings.json');
 const live = require('./live.cjs');
@@ -196,29 +196,65 @@ async function ports(root, key) {
 
 function pidAlive(pid) { try { process.kill(Number(pid), 0); return true; } catch { return false; } }
 
-//By leewheel 2026-11-03 查某个 PID 现在的进程镜像名（tasklist，带 3 秒缓存：状态页每 5 秒轮询全部国度）。
-const pidNameCache = new Map();
-function imageNameOfPid(pid) {
-  const cached = pidNameCache.get(pid);
-  if (cached && Date.now() - cached.at < 3000) return Promise.resolve(cached.name);
-  const job = new Promise(resolve => {
-    execFile('tasklist.exe', ['/FI', `PID eq ${Number(pid)}`, '/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 8000 }, (error, stdout) => {
-      resolve(error ? '' : (/^"([^"]+)"/m.exec(String(stdout))?.[1] || ''));
-    });
+//By leewheel 2026年11月8日 【国度的「在跑」必须是自己这个整合包里的世界服】
+// 原来只探端口（portOpen）：8285 只要有人监听就报“运行中”。老大机器上同时开着两个整合包
+// （两个 COA-PUBLISH-REPACK 目录），另一个包的 Reborn 同样监听 8285 → 这个包的国度假报运行中，
+// 玩家还会对着别人的世界服点“停止”、发出 RA 停机命令，把另一个包的世界服关掉。
+// 现在双确认：① 该端口必须由一个 worldserver.exe 进程监听；② 这个进程的 exe 必须在本整合包目录内。
+// 端口有人监听但不是自己的 → state=foreign「端口被其他程序占用」，绝不冒充运行中。
+const insideRoot = (root, file) => !!file && !!root
+  && path.resolve(String(file)).toLowerCase().startsWith(path.resolve(root).toLowerCase() + path.sep);
+
+// 一次问清“哪些端口被哪个进程监听”。复用 server-control 的 netstat 查询（3 秒缓存），
+// 状态页每 5 秒轮询全部国度时不会把 netstat 反复跑。
+function listenOwners() {
+  return listening().then(stdout => {
+    const map = new Map();
+    for (const line of String(stdout).split(/\r?\n/)) {
+      const found = /^\s*TCP\s+\S*:(\d+)\s+\S+\s+LISTENING\s+(\d+)/i.exec(line);
+      // 同一端口可能因 IPv4/IPv6 出现两行：记下最先看到的监听者即可
+      if (found && !map.has(Number(found[1]))) map.set(Number(found[1]), Number(found[2]));
+    }
+    return map;
   });
-  pidNameCache.set(pid, { at: Date.now(), job });
-  return job;
 }
 
+// 本机所有 worldserver.exe：pid + 完整路径（复用 server-control 的进程表，4 秒缓存）。
+function worldProcesses() {
+  return runningInside().then(rows => rows.filter(row => /worldserver\.exe$/i.test(String(row.file || ''))));
+}
+
+// 这个端口上监听的是不是本整合包的世界服：是 → 它的 pid；不是（空着或别人的）→ 0
+async function ownWorldPid(root, port) {
+  const [owners, procs] = await Promise.all([listenOwners(), worldProcesses()]);
+  const pid = owners.get(Number(port));
+  if (!pid) return 0;
+  const row = procs.find(item => item.pid === pid);
+  return row && insideRoot(root, row.file) ? pid : 0;
+}
+
+// 端口被别人的程序占着 → { pid, file }；空着、或就是自己的世界服 → null
+async function portStranger(root, port) {
+  const owners = await listenOwners();
+  const pid = owners.get(Number(port));
+  if (!pid) return null;
+  if (await ownWorldPid(root, port)) return null;
+  const row = (await worldProcesses()).find(item => item.pid === pid);
+  return { pid, file: row?.file || '' };
+}
+//End By leewheel
+
+// 国度自己的世界服进程（由启动器拉起，记在 Royaumes\<key>\.state.json）。
+//By leewheel 2026-11-03 PID 会被系统复用：只查“PID 活着”会把别的进程当成世界服。
+//By leewheel 2026年11月8日 光比镜像名还不够：另一个整合包的 worldserver.exe 也是同名，PID 被它拿走
+// 照样误判“加载中”。现在直接核对进程的完整 exe 路径必须在本整合包内，对不上就当过期记录删掉。
 async function processOf(root, key) {
   const file = path.join(dirOf(root, key), '.state.json');
   const state = await readJson(file);
   if (!state?.pid || !pidAlive(state.pid)) return 0;
-  //By leewheel 2026-11-03 PID 会被系统复用：只查“PID 活着”会把别的进程当成世界服，
-  // Wildcard 的灯没在跑也一直闪就是它（记录里的世界服早退了，PID 被别的程序拿去用）。
-  // 必须镜像名与记录里的 exe 对得上才算活；对不上就是过期记录，删掉再报停止。
-  const name = await imageNameOfPid(state.pid);
-  if (!name || path.basename(String(state.exe || 'worldserver.exe')).toLowerCase() !== name.toLowerCase()) {
+  const row = (await worldProcesses()).find(item => item.pid === Number(state.pid));
+  const expected = path.basename(String(state.exe || worldExe(root))).toLowerCase();
+  if (!row || !insideRoot(root, row.file) || path.basename(row.file).toLowerCase() !== expected) {
     try { await fsp.unlink(file); } catch {}
     return 0;
   }
@@ -284,8 +320,13 @@ async function status(root, { live: withLive = true } = {}) {
     const created = !!saved && fs.existsSync(path.join(dirOf(root, key), 'configs', 'worldserver.conf'));
     if (!created) { list.push({ key, id: m.id, name: m.name, state: 'absent', autostart: false, ready: updaterKnows(root, key) }); continue; }
     const p = await ports(root, key);
-    const open = await portOpen(p.worldPort);
-    const pid = await processOf(root, key);
+    //By leewheel 2026年11月8日 端口开着 ≠ 这个国度在跑：监听者必须是本整合包的世界服进程。
+    // 别人的整合包占着同一个端口时，这里只报「端口被其他程序占用」，不显示运行中、也不发 RA 命令。
+    const minePid = await ownWorldPid(root, p.worldPort);
+    const open = !!minePid;
+    const pid = minePid || (await processOf(root, key));
+    const stranger = open || pid ? null : await portStranger(root, p.worldPort);
+    //End By leewheel
     const own = await ownSettings(root, key);
     const changed = Object.values(own).reduce((sum, keys) => sum + Object.keys(keys).length, 0);
     let bots = Number(own['playerbots.conf']?.[BOT_COUNT[1]]);
@@ -296,7 +337,10 @@ async function status(root, { live: withLive = true } = {}) {
     list.push({
       key, id: saved.id, name: saved.name || m.name,
       // A world being stopped still has its process (its port may already be closed): it is « stopping », not « starting ».
-      state: stopping.has(key) && (open || pid) ? 'stopping' : open ? 'running' : pid ? 'starting' : saved.disabled ? 'disabled' : queued ? 'queued' : 'stopped',
+      state: stopping.has(key) && (open || pid) ? 'stopping' : open ? 'running' : pid ? 'starting' : saved.disabled ? 'disabled' : stranger ? 'foreign' : queued ? 'queued' : 'stopped',
+      //By leewheel 2026年11月8日 端口被别人的程序占着时，把占用者告诉界面（别让玩家以为是自己这个国度在跑）
+      other: stranger?.file || '', strangerPid: stranger?.pid || 0,
+      //End By leewheel
       after: queued ? queue.current : '', skipped: !open && !pid ? skipped.get(key) || null : null,
       firstStart: !saved.startedOnce, worldPort: p.worldPort, raPort: p.raPort, bots, online: open ? botsOnline(root, key) : null,
       changed, autostart: saved.autostart === true, players: info?.players ?? null, characters: info?.characters ?? null, uptime: info?.uptime || '',
@@ -447,7 +491,7 @@ async function setModule(root, key, id, state) {
   const saved = await realmFile(root, key);
   if (!saved) throw new Error('Create the realm first.');
   if (imposed(key, saved)[module.file]?.[module.key] !== undefined) throw new Error('Set by the game mode of this realm.');
-  if (await portOpen(saved.worldPort) || await processOf(root, key)) throw new Error('Stop this realm first: its modules are read when it starts.');
+  if (await ownWorldPid(root, saved.worldPort) || await processOf(root, key)) throw new Error('Stop this realm first: its modules are read when it starts.');
   const own = await ownSettings(root, key);
   const keys = { ...module.on, ...module.off };
   own[module.file] = { ...own[module.file] };
@@ -476,7 +520,7 @@ async function setAhbotSettingsOf(root, key, values, { instantKnown = false } = 
   for (const [name, value] of Object.entries(ahSettings.keys(values, { instantKnown }))) if (String(confValue(coaText, name) ?? '') !== value) mine[name] = value;
   own['mod_ahbot.conf'] = mine;
   await writeOwn(root, key, own);
-  const running = await portOpen(saved.worldPort);
+  const running = !!(await ownWorldPid(root, saved.worldPort));
   if (running) await writeConfigs(root, key, saved);
   return { running, raPort: saved.raPort };
 }
@@ -508,7 +552,14 @@ async function create(root, key, { bots = DEFAULT_BOTS, notify = () => {} } = {}
   const dir = dirOf(root, key);
   await fsp.mkdir(path.join(dir, 'Logs'), { recursive: true });
   const p = await ports(root, key);
-  for (const port of [p.worldPort, p.raPort]) if (await portOpen(port) && !(await processOf(root, key))) throw new Error(`Port ${port} is already used by another program.`);
+  //By leewheel 2026年11月8日 端口被占也要分清：是自己的世界服（同一个国度）就不算被占。
+  for (const port of [p.worldPort, p.raPort]) {
+    if (!(await portOpen(port))) continue;
+    if (port === p.worldPort && (await ownWorldPid(root, port) || await processOf(root, key))) continue;
+    const stranger = port === p.worldPort ? await portStranger(root, port) : null;
+    throw new Error(`Port ${port} is already used by another program${stranger?.file ? ` (${stranger.file})` : ''}. Stop it first.`);
+  }
+  //End By leewheel
 
   // The realm id: the usual one, unless another realm of this server already has it.
   const rows = (await sql(root, 'SELECT id, name FROM acore_auth.realmlist')).split(/\r?\n/).filter(Boolean).map(line => line.split('\t'));
@@ -664,7 +715,15 @@ async function start(root, key, { timeout = 1200 } = {}) {
   const saved = await realmFile(root, key);
   if (!saved) throw new Error('Create the realm first.');
   if (saved.disabled) throw new Error('This realm is switched off: switch it on first.');
-  if (await portOpen(saved.worldPort)) return;
+  //By leewheel 2026年11月8日 端口开着先分清是谁：本国度的世界服 → 已在跑，直接返回；
+  // 别人的程序占着 → 明确报错（原来这里直接 return，玩家点了“启动”像没反应）。
+  if (await portOpen(saved.worldPort)) {
+    if (await ownWorldPid(root, saved.worldPort)) return;
+    if (await processOf(root, key)) throw new Error(`${saved.name} is still starting or stopping.`);
+    const stranger = await portStranger(root, saved.worldPort);
+    throw new Error(`Port ${saved.worldPort} is already used by another program${stranger?.file ? ` (${stranger.file})` : ''}. Stop it first.`);
+  }
+  //End By leewheel
   if (await processOf(root, key)) throw new Error(`${saved.name} is still starting or stopping.`);
   if (await portOpen(saved.raPort)) throw new Error(`Port ${saved.raPort} is already used by another program.`);
   if (await anotherStarting(root, key)) throw new Error('Another realm is starting: wait until it runs (two worlds must never apply their updates at the same time).');
@@ -677,7 +736,17 @@ async function start(root, key, { timeout = 1200 } = {}) {
   const deadline = Date.now() + timeout * 1000;
   skipped.delete(key);
   while (Date.now() < deadline) {
-    if (await portOpen(saved.worldPort)) { await markStarted(root, key); return; }
+    if (await portOpen(saved.worldPort)) {
+      //By leewheel 2026年11月8日 端口开了还要核对监听者是不是我们刚拉起的那个世界服：
+      // 别人的程序抢在中间占了端口，不能当成“起好了”。查询本身失败（一个 worldserver 都查不到）时
+      // 退回“端口开了 + 子进程还活着”，免得 PowerShell 抽风把我们自己的实例判成没起来。
+      const procs = await worldProcesses();
+      const mine = procs.length ? !!(await ownWorldPid(root, saved.worldPort)) : pidAlive(child.pid);
+      if (mine) { await markStarted(root, key); return; }
+      try { child.kill(); } catch {}
+      throw new Error(`Port ${saved.worldPort} was taken by another program while starting. Stop it and start again.`);
+    }
+    //End By leewheel
     if (!pidAlive(child.pid)) throw new Error(`${saved.name} stopped while starting. Look at Royaumes\\${key}\\Logs.`);
     await new Promise(resolve => setTimeout(resolve, 2000));
   }
@@ -714,7 +783,7 @@ async function anotherStarting(root, except) {
   for (const key of Object.keys(MODES)) {
     if (key === except) continue;
     const saved = await realmFile(root, key);
-    if (saved && await processOf(root, key) && !(await portOpen(saved.worldPort))) return key;
+    if (saved && await processOf(root, key) && !(await ownWorldPid(root, saved.worldPort))) return key;
   }
   return '';
 }
@@ -725,7 +794,9 @@ async function stop(root, key) {
   const saved = await realmFile(root, key);
   if (!saved) return;
   const pid = await processOf(root, key);
-  if (!pid && !(await portOpen(saved.worldPort))) return;
+  //By leewheel 2026年11月8日 端口被别人占着不算“本国度在跑”，绝不能去停别人的世界服，所以直接返回。
+  if (!pid && !(await ownWorldPid(root, saved.worldPort))) return;
+  //End By leewheel
   stopping.add(key);
   try { await stopWorld(root, key, saved, pid); } finally { stopping.delete(key); }
 }
@@ -733,7 +804,7 @@ async function stopWorld(root, key, saved, pid) {
   // The repack's RA account (Settings/repack.json) is an account of the shared auth database: valid on every realm.
   await live.raCommand(root, 'server shutdown 1s 0', 20000, saved.raPort).catch(() => {});
   // A world is never killed: one still saving its players would lose them. MySQL stays up for it (the callers stop).
-  const up = async () => (pid ? pidAlive(pid) : await portOpen(saved.worldPort));
+  const up = async () => (pid ? pidAlive(pid) : !!(await ownWorldPid(root, saved.worldPort)));
   const deadline = Date.now() + STOP_WAIT;
   while (Date.now() < deadline && await up()) await new Promise(resolve => setTimeout(resolve, 1000));
   if (await up()) throw Object.assign(new Error(`${saved.name} is still saving: it was left running, and MySQL with it. Press Stop again in a few minutes.`), { code: 'REALM_SAVING' });
@@ -819,7 +890,7 @@ async function startMarked(root, { freeMb = () => os.freemem() / 1048576 } = {})
 async function purgeBots(root, key) {
   const saved = await realmFile(root, key);
   if (!saved) throw new Error('Create the realm first.');
-  if (await portOpen(saved.worldPort) || await processOf(root, key)) throw new Error('Stop this realm first.');
+  if (await ownWorldPid(root, saved.worldPort) || await processOf(root, key)) throw new Error('Stop this realm first.');
   await refreshBotConfigs(root);
   await writeConfigs(root, key, saved);
   const child = launch(root, key, 'deleting the random bots of this realm', { AC_AI_PLAYERBOT_DELETE_RANDOM_BOT_ACCOUNTS: '1' });
@@ -846,11 +917,12 @@ async function setOptions(root, key, { autostart } = {}) {
 async function onlineRunning(root) {
   const rows = (await sql(root, 'SELECT id, port FROM acore_auth.realmlist WHERE flag & 2')).split(/\r?\n/).filter(Boolean).map(line => line.split('\t').map(Number));
   const up = [];
-  for (const [id, port] of rows) if (port && (await listening(port))) up.push(id);
+  //By leewheel 2026年11月8日 端口在响也可能是别的整合包占着同一个端口：确认是本包的世界服才算在线，
+  // 否则会把没跑起来的国度在 realmlist 里标成在线（玩家进游戏后连不上，转圈）。
+  for (const [id, port] of rows) if (port && (await ownWorldPid(root, port))) up.push(id);
   if (up.length) await sql(root, `UPDATE acore_auth.realmlist SET flag = flag & ~2 WHERE id IN (${up.join(',')})`);
   return up;
 }
-const listening = port => new Promise(resolve => { const socket = require('node:net').connect({ host: '127.0.0.1', port }); const done = ok => { socket.destroy(); resolve(ok); }; socket.setTimeout(1500, () => done(false)); socket.once('connect', () => done(true)); socket.once('error', () => done(false)); });
 
 // The authserver marks every realm offline (flag bit 2) when it starts; a world clears that bit only at its own start,
 // then every UpdateUptimeInterval. Cleared again for the worlds already running, so they do not show Offline for minutes.
@@ -860,4 +932,5 @@ async function clearOffline(root, { coa = false } = {}) {
   if (ids.length) await sql(root, `UPDATE acore_auth.realmlist SET flag = flag & ~2 WHERE id IN (${ids.join(',')})`);
   return ids;
 }
-module.exports = { clearOffline, setRealmName, ahbotSettingsOf, setAhbotSettingsOf, onlineRunning, shippedTables, syncShippedTables, MODES, queueMarked, memoryFor, neededMb, botsOnline, setDisabled, versionReady, modulesOf, setModule, coaAutostart, setCoaAutostart, skipCoaAtStart, anotherStarting, refreshBotConfigs, status, create, start, stop, stopAll, startMarked, setOptions, settingsOf, saveSettings, purgeBots, writeConfigs, setKey };
+//By leewheel 2026年11月8日 导出端口归属判定，供回归测试直接验证（别人的程序占着端口时必须判成 foreign）
+module.exports = { clearOffline, setRealmName, ahbotSettingsOf, setAhbotSettingsOf, onlineRunning, shippedTables, syncShippedTables, MODES, queueMarked, memoryFor, neededMb, botsOnline, setDisabled, versionReady, modulesOf, setModule, coaAutostart, setCoaAutostart, skipCoaAtStart, anotherStarting, refreshBotConfigs, status, create, start, stop, stopAll, startMarked, setOptions, settingsOf, saveSettings, purgeBots, writeConfigs, setKey, ownWorldPid, portStranger };

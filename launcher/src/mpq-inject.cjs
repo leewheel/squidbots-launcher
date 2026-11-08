@@ -261,7 +261,48 @@ function injectMany(file, items, { dryRun = false, allowCreate = false, compress
   if (!items || !items.length) return { ok: true, results: [] };
   const archive = openArchive(file, { writable: !dryRun });
   try {
-    const hash = Buffer.from(archive.hashTable);
+    //By leewheel 2026年11月8日 hash 表也要能扩容（MPQ 规范要求它是 2 的幂）。真实玩家档
+    // patch-ZZN.mpq 只有 256 槽、已用 92，一次要新增一千多条时旧实现只会报 no-hash-slot，
+    // 于是地图贴图这类“补丁档里本来没有”的条目永远注不进去。扩容时用 (listfile) 里的名字
+    // 重建全部槽位（hashA/hashB/locale/platform 照抄旧槽，blockIndex 不变），旧条目一条不丢。
+    let hash = Buffer.from(archive.hashTable);
+    let hashEntries = archive.hashEntries;
+    const countedHashUsed = () => {
+      let used = 0;
+      for (let i = 0; i < hashEntries; i++) if (hash.readUInt32LE(i * 16 + 12) !== 0xFFFFFFFF) used++;
+      return used;
+    };
+    const growHash = needed => {
+      let target = Math.max(hashEntries, 1);
+      while (target < needed) target *= 2;
+      if (target <= hashEntries) return 0;
+      const names = (entryList(file) || []).slice();
+      if (!names.some(name => /^\(listfile\)$/i.test(name))) names.push('(listfile)');
+      const fresh = Buffer.alloc(target * 16, 0xFF);
+      let placed = 0;
+      for (const name of names) {
+        const nameA = hashString(name, HASH_NAME_A);
+        const nameB = hashString(name, HASH_NAME_B);
+        let from = -1;
+        let probe = hashString(name, HASH_TABLE_OFFSET) & (hashEntries - 1);
+        for (let i = 0; i < hashEntries; i++) {
+          const at = probe * 16;
+          const entryBlock = hash.readUInt32LE(at + 12);
+          if (entryBlock === 0xFFFFFFFF) break;
+          if (hash.readUInt32LE(at) === nameA && hash.readUInt32LE(at + 4) === nameB) { from = probe; break; }
+          probe = (probe + 1) & (hashEntries - 1);
+        }
+        if (from < 0) continue;
+        let slot = hashString(name, HASH_TABLE_OFFSET) & (target - 1);
+        while (fresh.readUInt32LE(slot * 16 + 12) !== 0xFFFFFFFF) slot = (slot + 1) & (target - 1);
+        hash.copy(fresh, slot * 16, from * 16, from * 16 + 12);
+        fresh.writeUInt32LE(hash.readUInt32LE(from * 16 + 12) >>> 0, slot * 16 + 12);
+        placed++;
+      }
+      hash = fresh;
+      hashEntries = target;
+      return placed;
+    };
     //By leewheel 2026年11月7日 block 表要能扩容：真实的玩家档（检验目录那份）blockEntries 恰好等于已用条目数，
     // 一个空项都没有。旧实现只能"找空项"，于是新条目全部注不进去（正是"包里有文件、玩家却没有"）。
     // MPQ 规范不要求 block 表是 2 的幂（只有 hash 表要求），这里按需翻倍扩容并改写 header 的 blockEntries。
@@ -270,7 +311,8 @@ function injectMany(file, items, { dryRun = false, allowCreate = false, compress
     let blockEntries = archive.blockEntries;
     // 查已有条目（基于内存里的哈希表：同批次刚新增的槽也要能被后续条目查到）
     const lookup = name => {
-      const count = archive.hashEntries;
+      //By leewheel 2026年11月8日 用可变 hashEntries（hash 表可能已扩容），不能用 archive.hashEntries
+      const count = hashEntries;
       if (!count) return { slot: -1, blockIndex: -1 };
       const nameA = hashString(name, HASH_NAME_A);
       const nameB = hashString(name, HASH_NAME_B);
@@ -285,7 +327,7 @@ function injectMany(file, items, { dryRun = false, allowCreate = false, compress
       return { slot: -1, blockIndex: -1 };
     };
     const freeHash = name => {
-      const count = archive.hashEntries;
+      const count = hashEntries;
       if (!count) return -1;
       let slot = hashString(name, HASH_TABLE_OFFSET) & (count - 1);
       for (let i = 0; i < count; i++) {
@@ -308,6 +350,15 @@ function injectMany(file, items, { dryRun = false, allowCreate = false, compress
       return index;
     };
 
+    //By leewheel 2026年11月8日 先数清这次要新建多少条，再决定 hash 表要多大：
+    // 一次注入上千条地图贴图时，256 槽的档根本放不下，必须提前扩容（留 20% 余量）。
+    if (allowCreate) {
+      let createCount = 0;
+      for (const item of items) {
+        if (lookup(String(item.arcName).replace(/\//g, '\\')).slot < 0) createCount++;
+      }
+      if (createCount) growHash(Math.ceil((countedHashUsed() + createCount) * 1.2));
+    }
     const results = [];
     const writes = [];
     let cursor = archive.size;
@@ -349,7 +400,7 @@ function injectMany(file, items, { dryRun = false, allowCreate = false, compress
     const okResults = results.filter(item => item.ok);
     if (!okResults.length) return { ok: false, results };
 
-    const newHashPos = cursor; cursor += archive.hashEntries * 16;
+    const newHashPos = cursor; cursor += hashEntries * 16;
     const newBlockPos = cursor; cursor += blockEntries * 16;
     const newHiBlockPos = cursor; cursor += blockEntries * 2;
     const newTotal = cursor;
@@ -368,6 +419,7 @@ function injectMany(file, items, { dryRun = false, allowCreate = false, compress
       header.writeUInt32LE(newTotal >>> 0, 8);
       header.writeUInt32LE(newHashPos >>> 0, 16);
       header.writeUInt32LE(newBlockPos >>> 0, 20);
+      header.writeUInt32LE(hashEntries >>> 0, 24);   // 哈希表可能扩容过，条目数要同步
       header.writeUInt32LE(blockEntries >>> 0, 28);   // 块表可能扩容过，条目数要同步
       if (archive.headerRaw.length >= 0x2C) {
         header.writeBigUInt64LE(BigInt(newHiBlockPos), 32);

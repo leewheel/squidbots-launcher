@@ -315,7 +315,13 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(3px); }
 .check.warn .check-light { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
 .check.bad { border-color: color-mix(in srgb, var(--bad) 45%, transparent); }
 .check.bad .check-light { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
-.check.info .check-light { background: var(--info); }
+/*By leewheel 2026年11月8日 指示灯要看得出"在不在跑"：
+  以前停止状态用 --info（橙金），和运行中的绿光比只有亮度差，老大截图里三个服务全停
+  但三个点一模一样，看不出是"停了"还是"在跑"。现在停止 = 暗灰、不发光；运行 = 绿光；
+  异常 = 红光；需要注意 = 黄光。*/
+.check.info .check-light { background: transparent; border: 1.5px solid var(--faint); box-sizing: border-box; box-shadow: none; }
+/*By leewheel 2026年11月8日 停止的那一行整体压暗，和"正在运行"的亮行一眼分开*/
+.check.info strong { color: var(--muted); }
 .mini-services { display: flex; flex-wrap: wrap; gap: 8px 16px; color: var(--muted); font-size: 13px; }
 .mini-service { display: inline-flex; align-items: center; gap: 7px; }
 .side-card.verify-card.bad > .icon:first-child { color: var(--bad); }
@@ -488,6 +494,31 @@ dialog.xwide { width: min(980px, 96vw); }
 .release-mirrors li.bad { color: #ff9a9a; }
 /*End By leewheel*/
 
+/*By leewheel 2026年11月9日 当前正在下载/执行的压缩包名（老大要求：更新时必须看得见装的是哪个包）*/
+.release-pkg { display: flex; align-items: center; gap: 6px; margin: 2px 0 4px; color: var(--accent); font-size: 12.5px; word-break: break-all; }
+.release-pkg .icon { width: 14px; height: 14px; flex: 0 0 auto; }
+.release-pkg span { color: var(--text); }
+/*End By leewheel*/
+
 /*By leewheel 2026年11月6日 正在导入的 SQL 文件 */
 .release-sql { margin: 2px 0 6px; color: #ffd479; font-size: 12.5px; word-break: break-all; }
+/*End By leewheel*/
+
+/*By leewheel 2026年11月8日 强制更新：可选补丁列表（一行一版，点一下就装到这一版为止）*/
+.release-picks { list-style: none; padding-left: 0; margin: 10px 0 0; display: grid; gap: 6px; max-height: 46vh; overflow: auto; }
+.release-picks li { margin: 0; }
+.release-picks .pick-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; padding: 9px 12px; border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, .1); background: rgba(255, 255, 255, .03);
+}
+.release-picks .pick-row:hover { border-color: rgba(255, 207, 92, .55); background: rgba(255, 207, 92, .07); }
+.release-picks .pick-name { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.release-picks .pick-name strong { color: #ffcf5c; font-weight: 600; }
+.release-picks .pick-tag {
+  font-style: normal; font-size: 11px; line-height: 1; padding: 3px 6px; border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, .18); color: var(--muted); white-space: nowrap;
+}
+.release-picks .pick-tag.ok { color: #9ff0a8; border-color: rgba(159, 240, 168, .45); }
+.release-picks .pick-tag.warn { color: #ffcf5c; border-color: rgba(255, 207, 92, .45); }
 /*End By leewheel*/

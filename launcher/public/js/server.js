@@ -26,6 +26,10 @@ function loadServerTab(force = false) {
   const s = App.state;
   if (!s.server?.path) return;
   if (s.srvTab === 'settings' && (force || !s.conf)) loadConf();
+  //By leewheel 2026年11月8日 机器人名字前缀要读库：进设置页时拉一次，拿到就不再拉（失败也不反复请求，给「重试」按钮）
+  if (s.srvTab === 'settings' && !s.botPrefix) {
+    loadBotPrefix().then(() => { if (s.srvTab === 'settings') App.refresh('server'); }).catch(() => {});
+  }
   if (s.srvTab === 'backups' && (force || !s.backups)) { loadBackups(); App.api.achievementsSize().then(size => { s.achSize = size; if (s.srvTab === 'backups') App.refresh('server'); }).catch(() => {}); }
   if (s.srvTab === 'modules' && (force || !s.modules)) loadModules();
   if (s.srvTab === 'upgrade' && (force || !s.upgrade)) loadUpgrade();
@@ -438,6 +442,47 @@ function freshWorldDialog(current, title, steps) {
   });
 }
 
+//By leewheel 2026年11月8日 机器人名字前缀：存 acore_world.coa_bot_settings.name_prefix，
+// 核心启动时读一次并统一给已有机器人改名 —— 所以改完必须重启服务器才生效。
+// 数据库没启动时这里必须显眼地拦住玩家，不能让他以为改成功了。
+async function loadBotPrefix() {
+  try { App.state.botPrefix = await App.api.botsPrefix(); }
+  catch (error) { App.state.botPrefix = { ok: false, reason: 'db-down', message: String(error?.message || error) }; }
+  return App.state.botPrefix;
+}
+
+function botPrefixView(state) {
+  const ready = state?.ok === true;
+  const current = ready ? String(state.prefix || '') : '';
+  const reason = !state
+    ? '正在读取当前前缀…'
+    : state.reason === 'no-table'
+      ? '数据库里还没有 coa_bot_settings 表：跑一次更新包（或重启一次服务器）就会自动建好。'
+      : state.reason === 'no-server'
+        ? '还没有设置服务器目录。'
+        : state.reason === 'db-auth'
+          ? '数据库连上了但账号密码不对 —— 检查 Server\\mysql\\admin-client.ini 与 worldserver.conf 里的用户名。'
+          : state.reason === 'no-database'
+            ? '连上了数据库，但里面没有 acore_world 库 —— 整合包没装完整，或连到了别的实例。'
+            : '数据库没有启动 —— 先启动服务器（或手动开 Server\\mysql），再回来改前缀。';
+  const warn = !ready && state
+    ? `<div class="conf-warn"><span>${icon('warning')}<strong>${esc(reason)}</strong>${state.message ? `<br><small class="muted">${esc(String(state.message).slice(0, 200))}</small>` : ''}</span><button class="button ghost small" data-action="bot-prefix-reload">${icon('refresh')}重试</button></div>`
+    : '';
+  return `<section class="conf-group bot-prefix-group">
+    <h3>${icon('bot')}机器人名字前缀</h3>
+    ${warn}
+    <div class="line-action">
+      ${icon('bot')}
+      <span>当前前缀：<strong id="bot-prefix-current">${esc(current || '—')}</strong>${current ? `<span class="muted"> …机器人名字会显示成「${esc(current)} 张三」</span>` : ''}</span>
+    </div>
+    <div class="button-row">
+      <input class="input" id="bot-prefix-input" type="text" maxlength="12" value="${esc(current)}" ${ready ? '' : 'disabled'} placeholder="例如：老王" aria-label="机器人名字前缀">
+      <button class="button primary small" data-action="bot-prefix-save" ${ready ? '' : 'disabled'}>${icon('check')}修改</button>
+    </div>
+    <p class="muted small">2~12 个字符，汉字算 1 个（当前 <span id="bot-prefix-width">0</span>/12）。前缀与名字之间会自动加一个空格，显示成「前缀 张三」。改完<b>要重启服务器</b>才生效：启动时会用新前缀把已有机器人的名字统一换一遍。</p>
+  </section>`;
+}
+
 function settingsView() {
   const conf = App.state.conf;
   if (!conf) return skeleton(6);
@@ -466,7 +511,7 @@ function settingsView() {
   const quick = conf.recipes.filter(recipe => ['coa-recommended', 'fresh-level-1', 'self-found-world', 'bots-around-my-level', 'rexxar-like'].includes(recipe.id))
     .filter(recipe => !recipe.soon || conf.recipes.some(item => item.id === 'self-found-world'));
   const recipes = quick.length ? `<div class="recipes">${quick.map(recipe => `<div class="recipe-cell"><button class="recipe${recipe.soon ? ' soon' : ''}" ${recipe.soon ? 'disabled aria-disabled="true"' : `data-action="conf-recipe" data-id="${esc(recipe.id)}"`}><strong>${esc(loc(recipe.title))}${recipe.soon ? `<span class="soon-tag">${esc(t('conf.soon', 'Coming soon'))}</span>` : ''}</strong><small>${esc(loc(recipe.summary))}</small></button></div>`).join('')}</div>` : '';
-  const body = groups.filter(group => group.id === App.state.confGroup).map(group => `<section class="conf-group"><h3>${icon(group.icon)}${esc(loc(group.label))}</h3>${group.id === 'presets' ? presetsView(recipes) : group.id === 'population' ? ramAdvice(conf) : ''}${group.id === 'levels' && selfFoundOn() ? `<p class="status-line self-found-note">${icon('info')}${esc(t('conf.selfFoundLevels', 'Solo self-found is on: the bots only level up by playing (up to 59 without generated gear, geared as usual at 60). The level settings below do not apply, except the bots online around your level.'))}</p>` : ''}${conf.settings.filter(setting => setting.group === group.id).map(settingRow).join('')}</section>`).join('');
+  const body = `${botPrefixView(App.state.botPrefix)}` + groups.filter(group => group.id === App.state.confGroup).map(group => `<section class="conf-group"><h3>${icon(group.icon)}${esc(loc(group.label))}</h3>${group.id === 'presets' ? presetsView(recipes) : group.id === 'population' ? ramAdvice(conf) : ''}${group.id === 'levels' && selfFoundOn() ? `<p class="status-line self-found-note">${icon('info')}${esc(t('conf.selfFoundLevels', 'Solo self-found is on: the bots only level up by playing (up to 59 without generated gear, geared as usual at 60). The level settings below do not apply, except the bots online around your level.'))}</p>` : ''}${conf.settings.filter(setting => setting.group === group.id).map(settingRow).join('')}</section>`).join('');
   const key = realmKey || 'coa';
   const others = createdRealms().length > 1;
   const banner = !others ? '' : realmBanner(key, realmKey
@@ -632,7 +677,26 @@ App.pages.server = {
     const view = { services: servicesView, install: installView, backups: backupsView, upgrade: upgradeView, modules: modulesView, settings: settingsView }[s.srvTab];
     return `<div class="page server"><div class="page-head"><div><span class="eyebrow">${esc(t('server.eyebrow', 'On this PC'))}</span><h1>${esc(App.state.srvTab === 'settings' ? t('server.settingsTitle', 'Server settings') : t('server.title', 'Local server'))}</h1></div></div>${updateBanner()}<div class="srv-tabs-row">${tabs}${s.srvTab === 'settings' && info.path && App.state.conf && !App.state.conf.error ? realmPicker(App.state.conf.realm?.key || 'coa', 'conf-realm') : ''}</div><div class="srv-body">${view(info)}</div></div>`;
   },
-  mount() { if (!App.state.server) loadServer(); },
+  mount() {
+    if (!App.state.server) loadServer();
+    //By leewheel 2026年11月8日 前缀输入框实时显示已用宽度（汉字 2、英文 1），超出 12 直接标出来
+    const input = document.getElementById('bot-prefix-input');
+    if (input && !input.dataset.bound) {
+      input.dataset.bound = '1';
+      //By leewheel 2026年11月8日 按「字符数」校验（汉字算 1 个）：角色名第一段最多 12 个字符，
+      // 默认前缀「艾泽拉斯守护者」就是 7 个，老的「汉字算 2」口径连默认值都过不了。
+      const update = () => {
+        const chars = [...String(input.value || '').trim()];
+        const count = chars.length;
+        const label = document.getElementById('bot-prefix-width');
+        if (label) label.textContent = count > 12 ? `${count}（超出，最多 12）` : String(count);
+        const save = document.querySelector('[data-action="bot-prefix-save"]');
+        if (save) save.disabled = count > 12 || count < 2;
+      };
+      input.addEventListener('input', update);
+      update();
+    }
+  },
 };
 
 // Says what is new and leads to the sub-tab that installs it.
@@ -715,6 +779,25 @@ document.addEventListener('submit', event => {
 });
 
 Object.assign(App.actions, {
+  //By leewheel 2026年11月8日 机器人名字前缀：保存到数据库 / 数据库起好后重试读取
+  'bot-prefix-save': () => guard(async () => {
+    const input = document.getElementById('bot-prefix-input');
+    const value = String(input?.value || '').trim();
+    if (!value) { toast('前缀不能为空'); return; }
+    // 前端同一套校验（字符数：汉字算 1 个），避免白跑一趟数据库
+    const count = [...value].length;
+    if (count < 2) { toast('前缀太短：至少要 2 个字符'); return; }
+    if (count > 12) { toast(`前缀太长：最多 12 个字符（汉字也算 1 个，当前 ${count}）`); return; }
+    const result = await App.api.botsPrefixSet(value);
+    App.state.botPrefix = { ok: true, prefix: result.prefix, maxChars: 12, minChars: 2 };
+    App.refresh('server');
+    toast(`前缀已改为「${result.prefix}」—— 重启服务器后生效`);
+  }),
+  'bot-prefix-reload': () => guard(async () => {
+    App.state.botPrefix = null;
+    await loadBotPrefix();
+    App.refresh('server');
+  }),
   //By leewheel 2026年11月5日 游戏内时间：读/存 configs\modules\coa.conf 的 CoA.Clock.*
   'clock-mode': button => { const input = document.getElementById('clock-time'); if (input) input.disabled = button.value !== '1'; },
   //By leewheel 2026年11月6日 BUG 反馈：打开表单、加/清截图、提交（product 由主进程固定为 COA）
@@ -791,8 +874,22 @@ Object.assign(App.actions, {
     if (s.tab !== 'server') App.go('server'); else App.refresh('server');
     loadServerTab(true);
   }),
-  'service-start': button => guard(async () => { App.state.server = await App.api.startService(button.dataset.id); App.refresh('server'); probeRealm(); }, button),
-  'service-stop': button => guard(async () => { App.state.server = await App.api.stopService(button.dataset.id); App.refresh('server'); }, button),
+  //By leewheel 2026年11月8日 点了立刻有反馈：拉 mysqld 要 5~10 秒，只把按钮置灰看着像没反应
+  'service-start': button => guard(async () => {
+    const id = button.dataset.id;
+    toast(id === 'mysql' ? '正在启动数据库…' : t('server.startingOne', '正在启动服务…'));
+    App.state.server = await App.api.startService(id);
+    App.refresh('server');
+    //By leewheel 2026年11月8日 首页服务卡的灯和文案来自检查结果，只刷新 server 不会重算，
+    // 于是库已经起来了卡片还写着"已停止"、灯也不变。启动完必须重跑一次检查。
+    if (typeof runVerify === 'function') runVerify(false).catch(() => {});
+    probeRealm();
+  }, button),
+  'service-stop': button => guard(async () => {
+    App.state.server = await App.api.stopService(button.dataset.id);
+    App.refresh('server');
+    if (typeof runVerify === 'function') runVerify(false).catch(() => {});
+  }, button),
   'service-start-all': button => guard(async () => {
     // Starting the server takes a while (with realms: MySQL, their worlds, then the login): the home page says so meanwhile.
     App.state.startingAll = true;
@@ -800,6 +897,7 @@ Object.assign(App.actions, {
     try { App.state.server = await App.api.startService('all'); }
     finally { App.state.startingAll = false; App.render(); if (typeof loadRealms === 'function') loadRealms(); }
     App.refresh('server');
+    if (typeof runVerify === 'function') runVerify(false).catch(() => {});
     toast(t('server.allGood', 'Everything is running'), 'success');
     probeRealm();
   }, button),
@@ -808,6 +906,7 @@ Object.assign(App.actions, {
     App.render();
     try { App.state.server = await App.api.stopService('all'); }
     finally { App.state.stoppingAll = false; App.render(); if (typeof loadRealms === 'function') loadRealms(); }
+    if (typeof runVerify === 'function') runVerify(false).catch(() => {});
   }, button),
   'service-log': button => guard(async () => {
     const id = button.dataset.id;

@@ -170,6 +170,8 @@ const ACTIONS = {
   repair: ['verify-run-in', 'install:server-repair', 'Repair'],
   'bots-install': ['verify-run-in', 'install:bots-install', 'Update'],
   start: ['service-start-all', '', 'Start'],
+  //By leewheel 2026年11月8日 服务卡片每行的「启动」只启动这一项（数据库/登录/世界），不再等同于“启动全部”
+  'service-start': ['service-start', '', 'Start'],
   restart: ['srv-tab', 'services', 'Services'],
   backup: ['backup-create', '', 'Back up now'],
   'crashes-archive': ['crashes-archive', '', 'Put away'],
@@ -207,9 +209,14 @@ function verifyView() {
     col.html += `<section class="panel verify-group"><header><h2>${icon(iconName)}${esc(t(`verify.group.${id}`, label))}</h2></header>${list.map(check => {
       const [title, text] = checkText(check);
       const fix = check.action?.startsWith('fix:') ? check.action.slice(4) : '';
-      const action = !fix && check.action && check.state !== 'ok' ? ACTIONS[check.action] : null;
+      //By leewheel 2026年11月8日 action 可以带参数："start:mysql" → ACTIONS['service-start'] + data-id=mysql
+      const raw = String(check.action || '');
+      const cut = raw.indexOf(':');
+      const actionKey = cut > 0 && !raw.startsWith('fix:') ? raw.slice(0, cut) : raw;
+      const actionArg = cut > 0 && !raw.startsWith('fix:') ? raw.slice(cut + 1) : '';
+      const action = !fix && actionKey && check.state !== 'ok' ? ACTIONS[actionKey] : null;
       const button = fix ? `<button class="button primary small" data-action="verify-fix" data-id="${esc(fix)}">${icon('check')}${esc(t('verify.fix', 'Fix'))}</button>`
-        : action ? `<button class="button ${check.state === 'ok' || check.state === 'info' ? 'ghost' : 'primary'} small" data-action="${action[0]}" ${action[1] ? `data-id="${action[1]}"` : ''}>${esc(check.id === 'bots.installed' ? t('verify.action.bots-new', 'Install the bots') : t(`verify.action.${check.action}`, action[2]))}</button>` : '';
+        : action ? (() => { const id = action[1] || actionArg; return `<button class="button ${check.state === 'ok' || check.state === 'info' ? 'ghost' : 'primary'} small" data-action="${action[0]}" ${id ? `data-id="${esc(id)}"` : ''}>${esc(check.id === 'bots.installed' ? t('verify.action.bots-new', 'Install the bots') : t(`verify.action.${actionKey === 'service-start' ? 'start' : actionKey}`, action[2]))}</button>`; })() : '';
       return `<div class="check ${check.state}"><span class="check-light"></span><div><strong>${esc(title)}</strong>${text ? `<small>${esc(text)}</small>` : ''}</div>${button}</div>`;
     }).join('')}</section>`;
   });
@@ -289,6 +296,13 @@ App.pages.verify = {
 };
 
 // ---------------------------------------------------------------- home
+//By leewheel 2026年11月9日 首页标题下面一行小字：显示启动器版本号（与右下角那个 v 是同一个数）
+// 老大报问题时先说版本，一眼就能对上是哪一个构建。
+function launcherVersionLine() {
+  const version = String(App.state.version || '').trim();
+  if (!version) return '';
+  return `<p class="launcher-ver">${esc(t('home.launcherVersion', '启动器版本 v{version}', { version }))}</p>`;
+}
 function homeView() {
   const s = App.state;
   const info = s.server;
@@ -368,6 +382,7 @@ function homeView() {
     <section class="hero classic-hero server-hero">${homeLinks()}
       <div class="classic-main">
         <h1>${esc(t('home.heroTitle', 'My server'))}</h1>
+        ${launcherVersionLine()}
         <p class="status-line ${foreign ? 'bad' : ''}">${esc(status)}</p>
         <div class="mini-services">${lights}</div>
         <div class="play-row"><div class="split-button ${button[3]}">
@@ -380,11 +395,11 @@ function homeView() {
         <span class="chip classic-folder" title="${esc(info.path)}">${icon('folder')}<span>${esc(info.path)}</span></span>
       </div>
       <aside class="classic-side">${updateCard()}${componentCards()}
-        <button class="side-card" ${s.update?.state?.state === 'available' ? 'data-action="update-open"' : 'data-tab="verify"'}>${icon('layers')}<span><strong>${esc(t('home.core', 'Core'))}</strong><small>${esc(shortRelease(info.details?.release || info.version) || '—')}</small></span>${s.config.hasUpdates ? `<span class="card-tool" role="button" data-action="update-check" title="${esc(t('settings.checkRepack', 'Check for a repack and bots update'))}">${icon('refresh')}</span>` : ''}${s.updates.core || s.update?.state?.state === 'available' ? '<i class="dot"></i>' : icon('next')}</button>
+        <button class="side-card" ${s.update?.state?.state === 'available' ? 'data-action="update-open"' : 'data-tab="verify"'}>${icon('layers')}<span><strong>${esc(t('home.core', 'Core'))}</strong><small>${esc(info.lastUpdate?.version ? t('home.updatedTo', '已更新 {v}', { v: prettyUpdateVersion(info.version || info.lastUpdate.version) }) : (prettyUpdateVersion(info.version || info.details?.release || '') || '—'))}</small></span>${s.config.hasUpdates ? `<span class="card-tool" role="button" data-action="update-check" title="${esc(t('settings.checkRepack', 'Check for a repack and bots update'))}">${icon('refresh')}</span>` : ''}${s.updates.core || s.update?.state?.state === 'available' ? '<i class="dot"></i>' : icon('next')}</button>
         <button class="side-card" data-tab="verify">${icon('bot')}<span><strong>${esc(t('home.botsCard', 'Bots'))}</strong><small>${esc(info.bots?.installed ? `${info.bots.version}${info.bots.builtFor ? ` · ${shortRelease(info.bots.builtFor)}` : ''}` : info.botsBuiltIn ? `${t('bots.builtin', 'Built into the core')}${info.botVersion ? ` · v${info.botVersion}` : ''}` : t('bots.notInstalled', 'Not installed'))}</small></span><span class="card-tool" role="button" data-action="srv-tab" data-id="settings" title="${esc(t('srv.tab.settings', 'Server settings'))}">${icon('settings')}</span>${s.updates.bots ? '<i class="dot"></i>' : icon('next')}</button>
         <button class="side-card verify-card ${verifyState}" data-tab="verify">${icon('shield')}<span><strong>${esc(t('tab.verify', 'Verification'))}</strong><small>${esc(verifyText)}</small></span>${icon('next')}</button>
         ${addonCard()}
-        ${dash?.available ? `<button class="side-card" data-action="${dash.running ? 'dashboard-open' : 'dashboard-start'}">${icon('chart')}<span><strong>${esc(t('home.dashboard', 'Bots dashboard'))}</strong><small>${esc(dash.running ? t('home.dashboardOpen', 'Running on localhost:{port}: open it', { port: dash.port }) : t('home.dashboardStart', 'Map, bots, stats, chat: start it'))}</small></span>${icon('next')}</button>` : ''}
+        <button class="side-card" ${dash?.available ? `data-action="${dash.running ? 'dashboard-open' : 'dashboard-start'}"` : 'disabled'}>${icon('chart')}<span><strong>${esc(t('home.dashboard', 'Bots dashboard'))}</strong><small>${esc(!dash?.available ? t('home.dashboardMissing', '需要 Runtime\\python 与 CoA-Bots：更新一次就会出现') : dash.running ? t('home.dashboardOpen', 'Running on localhost:{port}: open it', { port: dash.port }) : t('home.dashboardStart', 'Map, bots, stats, chat: start it'))}</small></span>${icon('next')}</button>
         <button class="side-card" data-action="network-open">${icon('globe')}<span><strong>${esc(t('net.card', 'Who can join'))}</strong><small>${esc(s.network?.mode === 'open' ? t('net.cardOpen', 'Other PCs: {address}', { address: s.network.address }) : t('net.cardLocal', 'This PC only'))}</small></span>${icon('next')}</button>
       </aside>
     </section>
@@ -956,7 +971,7 @@ function showReleaseUpdate() {
   Promise.all([App.api.releaseCheck(), statePromise]).then(([info, state]) => {
     App.state.releaseInfo = info;
     if (state && (state.busy || state.done || state.error)) {
-      App.state.releaseRun = { phase: state.phase, pct: state.pct, message: state.message, done: !!state.done, error: state.error || '', version: state.version, errorLog: state.errorLog || '' };
+      App.state.releaseRun = { phase: state.phase, pct: state.pct, message: state.message, done: !!state.done, error: state.error || '', version: state.version, errorLog: state.errorLog || '', pkg: state.pkg || '', pkgIndex: state.pkgIndex, pkgTotal: state.pkgTotal, pkgVersion: state.pkgVersion || '' };
     }
     const asset = info.asset;
     //By leewheel 2026-11-05 "开始更新"按待装补丁队列依次执行，不再只装最新一个；
@@ -1005,14 +1020,13 @@ function showReleaseUpdate() {
       ${finished ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}${esc(t('release.recheck', '重新检查'))}</button>` : ''}
       ${failed ? `<button class="button ghost" data-action="release-recheck">${icon('refresh')}重新检查</button>` : ''}
       ${pending.length && !running && !finished && !failed ? `<button class="button primary" data-action="release-apply">${icon('download')}${esc(pending.length > 1 ? `开始更新（${pending.length} 个补丁）` : t('release.start', '开始更新'))}</button>` : ''}
-      ${!running ? `<button class="button ghost" data-action="release-force-remote" title="${esc('从 GitHub 重新下载最新更新包并覆盖安装（已经是最新版本也会重装，用来修坏掉的文件）')}">${icon('refresh')}强制更新（从 GitHub 下载）</button>` : ''}
+      ${!running ? `<button class="button ghost" data-action="release-force-remote" title="${esc('从 GitHub 重新下载更新包并覆盖安装（已经是最新版本也会重装，用来修坏掉的文件）。可以选择装到哪一版')}">${icon('refresh')}强制更新（从 GitHub 下载）</button>` : ''}
       ${!running ? `<button class="button ghost" data-action="release-speedtest" title="${esc('给所有下载镜像测速，下载时自动用最快的那个')}">${icon('chart')}镜像测速</button>` : ''}
       ${!running ? `<button class="button ghost" data-action="release-local" title="${esc('GitHub 上没有 zip 资产时，用本地的 CoA-Update-*.zip 覆盖安装')}">${icon('download')}从本地包更新</button>` : ''}
     </footer>`;
     dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${running || finished || failed ? '' : historyHtml}</div>${footer}`, 'xwide');
-    // 重开时如果正在更新/失败，把进度条按当前状态画出来（CSP 下宽度用 CSSOM 设）
-    const box = document.getElementById('release-progress');
-    if (box && running) { box.innerHTML = releaseRunView(run); applyBars(box); }
+    //By leewheel 2026年11月8日 重开时按当前状态画一次（走统一入口，带结构指纹，避免重复重建）
+    if (running) paintReleaseProgress(run);
   }).catch(error => {
     dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content"><p class="conf-warn">${icon('warning')}<span>${esc(translateError(error.message))}</span></p></div><footer class="dialog-foot"><button class="button primary" data-action="dialog-close">${esc(t('common.close', '关闭'))}</button></footer>`);
   });
@@ -1021,7 +1035,7 @@ function showReleaseUpdate() {
 //By leewheel 2026年11月5日 更新进度：老大要求“看得见完成没完成”。原来只有下载/完成两个阶段画进度条，
 // 中间停服、替换文件、注入 MPQ、导库几分钟里界面毫无反应。现在：整段都有百分比 + 每一步的状态清单。
 //By leewheel 2026年11月8日 步骤表必须与后端 onPhase 的真实顺序一一对应，否则指示灯会整排熄灭：
-// 后端实际顺序是 server → configs → client → mpq-entries → dbc → sql → launcher → config-patch → done。
+// 后端实际顺序是 server → configs → client → runtime → mpq-entries → dbc → sql → launcher → config-patch → verify → done。
 // 这次补上“更新启动器”和“写入新配置参数”两步（以前它们不在表里，一到这两步 9 个灯全灭）。
 const RELEASE_STEPS = [
   ['download', '下载更新包', 0, 40],
@@ -1030,17 +1044,30 @@ const RELEASE_STEPS = [
   ['server', '写入服务端文件', 50, 58],
   ['configs', '覆盖配置', 58, 61],
   ['client', '写入客户端文件', 61, 66],
-  ['mpq-entries', '注入客户端补丁档', 66, 80],
+  ['runtime', '分发机器人面板（Runtime / CoA-Bots）', 66, 68],
+  ['mpq-entries', '注入客户端补丁档', 68, 80],
   ['dbc', '处理 DBC', 80, 86],
   ['sql', '导入数据库', 86, 96],
-  ['launcher', '更新启动器', 96, 98],
-  ['config-patch', '写入新配置参数', 98, 99],
+  //By leewheel 2026年11月9日 导完库按包里的表清单核一遍：缺哪张表、缺哪个字段都要能说出来
+  ['dbcheck', '核对数据表', 96, 98],
+  ['launcher', '更新启动器', 98, 99],
+  ['config-patch', '写入新配置参数', 99, 99],
+  //By leewheel 2026年11月8日 最后一步核对：文件大小 + 两个 exe 的 md5，对不上就不算更新成功
+  ['verify', '核对文件落地', 99, 99],
   ['done', '完成', 100, 100],
 ];
 function releaseStepLabel(phase) {
   if (phase === 'next') return '当前补丁完成，继续下一个';
   const step = RELEASE_STEPS.find(item => item[0] === phase);
   return step ? step[1] : String(phase || '');
+}
+function releasePkgLine(run) {
+  //By leewheel 2026年11月9日 老大要求：强制更新与自动更新都必须明确显示“当前下载/执行的是哪一个压缩包”。
+  // 以前只有“解压更新包 · 正在解压”，队列里换了包也看不出来装的是哪一版，出问题对不上账。
+  if (!run.pkg) return '';
+  const order = typeof run.pkgIndex === 'number' && run.pkgTotal > 1 ? `第 ${run.pkgIndex}/${run.pkgTotal} 个 · ` : '';
+  const version = run.pkgVersion ? `（${run.pkgVersion}）` : '';
+  return `<p class="release-pkg">${icon('layers')}<span>${esc(t('release.package', '更新包'))}：${esc(order)}${esc(run.pkg)}${esc(version)}</span></p>`;
 }
 function releaseRunView(run) {
   const pct = Math.max(0, Math.min(100, Math.round(run.pct || 0)));
@@ -1057,9 +1084,8 @@ function releaseRunView(run) {
   const sqlLine = run.phase === 'sql' && run.sqlCurrent
     ? `<p class="release-sql">${esc(t('release.sql', '正在导入'))} ${typeof run.sqlIndex === 'number' ? `${run.sqlIndex}/${run.sqlTotal} · ` : ''}${esc(run.sqlCurrent)}</p>`
     : '';
-  const speedLine = run.phase === 'download' && typeof run.kbps === 'number' && run.kbps > 0
-    ? `<p class="release-speed">${esc(t('release.speed', '下载速度'))} ${esc(run.kbps >= 1024 ? `${(run.kbps / 1024).toFixed(1)} MB/s` : `${Math.round(run.kbps)} KB/s`)}${typeof run.left === 'number' ? ` · ${esc(t('release.left', '剩余'))} ${esc(run.left < 60 ? `${Math.round(run.left)} 秒` : `${Math.floor(run.left / 60)} 分 ${Math.round(run.left % 60)} 秒`)}` : ''}</p>`
-    : '';
+  const speedText = releaseSpeedLine(run);
+  const speedLine = speedText ? `<p class="release-speed">${esc(speedText)}</p>` : '';
   const status = run.error
     ? `<p class="release-status bad">${icon('warning')}<span>更新失败：${esc(run.error)}</span></p>`
     : run.done
@@ -1079,6 +1105,7 @@ function releaseRunView(run) {
   return `<div class="release-run">
     <div class="release-bar"><span data-pct="${pct}"></span></div>
     <div class="release-pct">${pct}%</div>
+    ${releasePkgLine(run)}
     ${sqlLine}
     ${speedLine}
     ${status}
@@ -1104,7 +1131,14 @@ function releaseProgress(payload) {
   }
   run.allDone = false;
   //By leewheel 2026年11月8日 队列换包（reset）：进度归零重来，避免灯在“下载”而条还停在 99%
-  if (payload.reset) { run.pct = 0; run.done = false; run.error = ''; run.allDone = false; run.sqlCurrent = ''; }
+  if (payload.reset) { run.pct = 0; run.done = false; run.error = ''; run.allDone = false; run.sqlCurrent = ''; run.pkg = ''; run.pkgIndex = 0; run.pkgTotal = 0; }
+  //By leewheel 2026年11月9日 当前压缩包（包名 / 队列序号 / 版本号）：换包时立刻跟着变
+  if (payload.pkg) {
+    run.pkg = String(payload.pkg);
+    run.pkgIndex = typeof payload.pkgIndex === 'number' ? payload.pkgIndex : run.pkgIndex;
+    run.pkgTotal = typeof payload.pkgTotal === 'number' ? payload.pkgTotal : run.pkgTotal;
+    run.pkgVersion = payload.pkgVersion || run.pkgVersion || '';
+  }
   //By leewheel 2026年11月8日 只认步骤表里的阶段：以后后端即使新增阶段，也不至于把已经点亮的灯全灭
   // （unknown 阶段只更新文案，灯保持在上一个已知阶段）。
   if (payload.phase && RELEASE_STEPS.some(item => item[0] === payload.phase)) run.phase = payload.phase;
@@ -1136,11 +1170,47 @@ function releaseProgress(payload) {
   paintReleaseProgress(run);
 }
 //By leewheel 2026年11月8日 统一刷新入口：更新弹窗（含关掉再打开）与首页横幅都用它
+//By leewheel 2026年11月8日 不再整块重建 DOM：下载时每秒几十次进度回调，原来每次都
+// `innerHTML = releaseRunView(run)`，进度条过渡动画与步骤列表被反复重置 —— 老大反馈
+// “下载过程中 UI 一直在闪烁”。现在结构指纹不变（同一阶段、没出错、没完成）就只改数字与文案。
+function releaseSpeedLine(run) {
+  if (run.phase !== 'download' || typeof run.kbps !== 'number' || run.kbps <= 0) return '';
+  const speed = run.kbps >= 1024 ? `${(run.kbps / 1024).toFixed(1)} MB/s` : `${Math.round(run.kbps)} KB/s`;
+  const left = typeof run.left === 'number'
+    ? ` · 剩余 ${run.left < 60 ? `${Math.round(run.left)} 秒` : `${Math.floor(run.left / 60)} 分 ${Math.round(run.left % 60)} 秒`}`
+    : '';
+  return `${t('release.speed', '下载速度')} ${speed}${left}`;
+}
+function releaseStatusLine(run) {
+  if (run.error) return `更新失败：${run.error}`;
+  if (run.done) return '更新完成，可以重新启动服务器了。';
+  const allDone = !!run.allDone || run.phase === 'next';
+  if (allDone) return run.message || '当前补丁完成，继续下一个';
+  return `${releaseStepLabel(run.phase)}${run.message ? ` · ${run.message}` : ''}`;
+}
 function paintReleaseProgress(run) {
-  // 1) 更新窗口开着：刷新容器（CSP 会挡内联 style，宽度必须用 CSSOM 设）
   const box = document.getElementById('release-progress');
-  if (box) { box.innerHTML = releaseRunView(run); applyBars(box); }
-  // 2) 首页横幅的百分比
+  if (box) {
+    // 结构指纹：阶段 / 完成 / 出错 / 当前 SQL 文件变了才重建，其余只改数字
+    const key = [run.phase, run.done ? 1 : 0, run.allDone ? 1 : 0, run.error ? 1 : 0, run.sqlCurrent || '', run.pkg || ''].join('|');
+    if (box.dataset.paintKey !== key) {
+      box.innerHTML = releaseRunView(run);
+      box.dataset.paintKey = key;
+      applyBars(box);
+    } else {
+      const pct = Math.max(0, Math.min(100, Math.round(run.pct || 0)));
+      const bar = box.querySelector('.release-bar > span');
+      if (bar) { bar.setAttribute('data-pct', String(pct)); bar.style.width = `${pct}%`; }
+      const pctText = box.querySelector('.release-pct');
+      if (pctText) pctText.textContent = `${pct}%`;
+      const speed = box.querySelector('.release-speed');
+      if (speed) speed.textContent = releaseSpeedLine(run);
+      // 只有“进行中”才用纯文本刷新状态（失败/完成带图标，走上面的重建分支）
+      const status = box.querySelector('.release-status');
+      if (status && !run.error && !run.done) status.textContent = releaseStatusLine(run);
+    }
+  }
+  // 首页横幅的百分比
   const label = document.getElementById('release-banner-progress');
   if (label) label.textContent = `${Math.round(run.pct || 0)}%`;
 }
@@ -1204,6 +1274,25 @@ function applyReleaseUpdate(button) {
   }, button);
 }
 
+//By leewheel 2026年11月8日 强制更新执行体：version 为空 = 装到最新版；否则“装到这一版为止”。
+// 主进程会把它展开成【旧 → 新】的队列，同样走逐补丁下载 → 归位 → 落地核对 → 记版本那一套。
+function forceRemote(version) {
+  guard(async () => {
+    App.state.releaseRun = { phase: 'download', pct: 0, message: version ? `准备重装到 ${version}` : '准备从 GitHub 重装', done: false, error: '' };
+    ensureReleaseProgressWatch();
+    const box = document.getElementById('release-progress');
+    if (box) { box.innerHTML = releaseRunView(App.state.releaseRun); applyBars(box); }
+    try {
+      const result = await App.api.releaseForceRemote({ version: version || '', deleteAfter: true, importSql: true });
+      toast(`强制更新完成：已按顺序安装 ${result?.total || 1} 个补丁，当前 ${result?.version || version || ''}`, 'success');
+      App.state.releaseRun = null;
+      showReleaseUpdate();
+    } catch (error) {
+      toast(`强制更新失败：${String(error?.message || error)}`, 'warning');
+    }
+  });
+}
+
 function showReleaseHistory() {
   App.api.releaseHistory().then(history => {
     const list = (history || []).slice().reverse();
@@ -1214,7 +1303,22 @@ function showReleaseHistory() {
   }).catch(() => toast(t('release.noHistory', '还没有更新记录。')));
 }
 
-//By leewheel 2026年11月4日 首页最上方的“有新版本”横幅：启动器每次打开都会自动查一次，
+//By leewheel 2026年11月8日 更新记录里的版本号有两套写法（在线更新记 release tag 全名
+// COA-UPDATE-20261108，本地包更新记 2026.11.08.11），主页卡片上一律规整成 2026.11.08
+//By leewheel 2026年11月8日 版本号显示：凡是串里带日期的，一律显示成年月日。
+// 原来只认「COA-UPDATE-数字」和「纯数字」，整合包 RELEASE.json 的 releaseId
+// （coa-publish-20261106）匹配不上就原样吐出来 —— 老大截图里「核心」那栏显示的就是这条原始 ID。
+// 现在和主进程 release-baseline.dateOf 同一套规则：先找连续 8 位日期，再找带分隔符的日期。
+function prettyUpdateVersion(value) {
+  const text = String(value || '').trim();
+  const compact = /20(\d{2})(\d{2})(\d{2})/.exec(text);
+  if (compact) return `20${compact[1]}.${compact[2]}.${compact[3]}`;
+  const split = /(20\d{2})[.\-_/](\d{1,2})[.\-_/](\d{1,2})/.exec(text);
+  if (split) return `${split[1]}.${String(split[2]).padStart(2, '0')}.${String(split[3]).padStart(2, '0')}`;
+  return text;
+}
+
+//By leewheel 2026年11月8日 首页最上方的“有新版本”横幅：启动器每次打开都会自动查一次，
 // 查到就推给页面（不自动下载）。点“开始更新”进入同一个更新弹窗，玩家不用自己翻菜单。
 function releaseBanner() {
   //By leewheel 2026年11月5日 更新进行中 / 已完成也要在首页看得见（关掉更新窗口也不丢信息）
@@ -1236,6 +1340,7 @@ function releaseBanner() {
     <i class="dot"></i>
     <span><strong>${esc(t('release.newer', '有新版本'))} ${esc(info.version)}</strong> · ${esc(t('release.currentVersion', '当前版本'))} ${esc(info.current || '—')}${info.publishedAt ? ` · ${esc(formatDate(info.publishedAt))}` : ''}${info.pendingCount > 1 ? ` · 共 ${info.pendingCount} 个补丁待依次安装` : ''}</span>
     <button class="button primary small" data-action="release-open">${icon('download')}${esc(t('release.start', '开始更新'))}</button>
+    <button class="button ghost small" data-action="release-ignore" data-version="${esc(info.version)}" title="${esc(t('release.ignoreHint', '不再提示这个版本（版本号命名不一致时用来关掉横幅）'))}">${esc(t('release.ignore', '忽略'))}</button>
   </div>`;
 }
 
@@ -1258,7 +1363,7 @@ App.pages.home = {
       App.state.releaseStateRead = true;
       App.api.releaseState().then(state => {
         if (state && (state.busy || state.done || state.error)) {
-          App.state.releaseRun = { phase: state.phase, pct: state.pct, message: state.message, done: !!state.done, error: state.error || '', version: state.version };
+          App.state.releaseRun = { phase: state.phase, pct: state.pct, message: state.message, done: !!state.done, error: state.error || '', version: state.version, pkg: state.pkg || '', pkgIndex: state.pkgIndex, pkgTotal: state.pkgTotal, pkgVersion: state.pkgVersion || '' };
           if (App.state.tab === 'home') App.refresh('home');
         }
       }).catch(() => {});
@@ -1519,6 +1624,15 @@ Object.assign(App.actions, {
   'verify-update': () => showReleaseUpdate(),
   //By leewheel 2026年11月4日 首页横幅上的“立即更新”：直接打开同一个更新弹窗
   'release-open': () => showReleaseUpdate(),
+  //By leewheel 2026年11月8日 横幅上的「忽略」：立刻隐藏横幅，并把版本记进设置，之后不再提示这一个版本
+  'release-ignore': async target => {
+    const version = String(target?.dataset?.version || App.state.releaseAvailable?.version || '');
+    App.state.releaseAvailable = null;
+    if (App.state.tab === 'home') App.refresh('home');
+    if (!version) return;
+    try { await App.api.releaseIgnore(version); } catch { /* 记不上也不影响本次隐藏 */ }
+    toast(t('release.ignored', '已忽略 {v}：不会再提示这个版本', { v: version }));
+  },
   // 更新完成后重新检查：清掉“已完成”状态，重新走一遍检查流程
   'release-recheck': () => { App.state.releaseRun = null; showReleaseUpdate(); },
   //By leewheel 2026年11月5日 更新失败：错误可复制、可打开日志、可重试（老大要求）
@@ -1572,20 +1686,46 @@ Object.assign(App.actions, {
       if (button) button.disabled = false;
     }
   }, button),
+  //By leewheel 2026年11月8日 强制更新改成“先选装到哪一版，再装”。
+  // 老大要求：强制更新要能选装哪一个补丁。补丁是叠加的，所以选中一版 = 装到这一版为止
+  // （目标 + 它之前还没装的补丁，按旧→新依次装），单装中间那个包等于跳过前置，最后必定跑不起来。
   'release-force-remote': button => guard(async () => {
     if (button) button.disabled = true;
-    toast('正在从 GitHub 重新下载更新包…');
     try {
-      const result = await App.api.releaseForceRemote({ deleteAfter: true, importSql: true });
-      toast(`强制更新完成：${result?.version || ''}`, 'success');
-      App.state.releaseRun = null;
-      showReleaseUpdate();
+      const info = await App.api.releaseList();
+      if (!info?.ok) { toast(info?.message || '读取 GitHub 更新列表失败', 'warning'); return; }
+      const list = (info.list || []).slice().reverse();
+      if (!list.length) { toast('GitHub 上没有可安装的补丁（没有 zip 更新包）', 'warning'); return; }
+      const rows = list.map(item => {
+        const size = item.asset?.size ? `${(item.asset.size / 1048576).toFixed(1)} MB` : '';
+        const tags = [
+          item.installed ? '<em class="pick-tag ok">已装</em>' : '',
+          item.isFull ? '<em class="pick-tag">全量包</em>' : '<em class="pick-tag warn">增量包</em>',
+          item.coveredByBaseline && !item.installed ? '<em class="pick-tag">整合包已含</em>' : '',
+        ].join('');
+        const when = item.publishedAt ? formatDate(item.publishedAt, true) : '';
+        return `<li><button class="button ghost small pick-row" data-action="release-force-pick" data-version="${esc(item.version)}">
+          <span class="pick-name"><strong>${esc(item.version)}</strong>${tags}</span>
+          <span class="muted small">${esc(when)}${size ? ` · ${esc(size)}` : ''}</span>
+        </button></li>`;
+      }).join('');
+      dialog.open(`${dialog.header('强制更新：选择要装到哪一版')}
+        <div class="dialog-content">
+          <p class="muted small">补丁是叠加的：选中的那一版会连同它之前还没装的补丁一起，按发布顺序依次安装。整合包已含的补丁自动跳过。选“装到最新版”＝一次性补齐所有缺失补丁。</p>
+          <ul class="notes release-picks">${rows}</ul>
+        </div>
+        <footer class="dialog-foot">
+          <button class="button ghost" data-action="release-force-latest">装到最新版</button>
+          <button class="button" data-action="dialog-close">取消</button>
+        </footer>`);
     } catch (error) {
-      toast(`强制更新失败：${String(error?.message || error)}`, 'warning');
+      toast(`读取更新列表失败：${String(error?.message || error)}`, 'warning');
     } finally {
       if (button) button.disabled = false;
     }
   }),
+  'release-force-pick': button => { const version = button?.dataset?.version || ''; dialog.close(); forceRemote(version); },
+  'release-force-latest': () => { dialog.close(); forceRemote(''); },
   //By leewheel 2026年11月6日 强制更新（本地包）：GitHub 没 zip 资产、或版本号相同但文件坏了时，
   // 选一个 CoA-Update-*.zip 直接重装，跳过版本比较（今天这种启动不了的情况就靠它救）。
   'release-local': button => guard(async () => {

@@ -218,6 +218,25 @@ App.smoke = step => {
   // Screenshot tours: show the launcher-update bar as if a new launcher were downloading / ready.
   if (step.startsWith('launcher:')) { App.state.launcherUpdate = { phase: step.slice(9), version: '9.9.9', percent: 56 }; const bar = $('#launcher-banner'); if (bar) bar.innerHTML = launcherBanner(); return; }
   if (step.startsWith('click:')) { $(step.slice(6))?.click(); return; }
+  //By leewheel 2026年11月9日 巡检专用：用假数据把“更新进度”那一块单独画出来拍图，
+  // 免得为了确认“包名有没有显示”真去跑一次 80MB 的更新。只在 --smoke 巡检时才会走到这里。
+  if (step.startsWith('release-preview:')) {
+    // 参数用 k=v;k=v 传（巡检步骤本身按逗号切分，不能用 JSON）
+    const fake = {};
+    for (const pair of step.slice('release-preview:'.length).split(';')) {
+      const at = pair.indexOf('=');
+      if (at <= 0) continue;
+      const key = pair.slice(0, at).trim();
+      const value = pair.slice(at + 1);
+      fake[key] = /^(pct|pkgIndex|pkgTotal|sqlIndex|sqlTotal)$/.test(key) ? Number(value) : value;
+    }
+    const host = document.createElement('div');
+    host.className = 'dialog-content';
+    host.style.cssText = 'position:fixed;left:40px;top:40px;width:900px;z-index:9999;background:#1c100a;padding:16px;border:1px solid rgba(224,160,80,.35);border-radius:12px';
+    host.innerHTML = releaseRunView({ phase: fake.phase || 'extract', pct: fake.pct || 20, message: fake.message || '', done: false, error: '', pkg: fake.pkg, pkgIndex: fake.pkgIndex, pkgTotal: fake.pkgTotal, pkgVersion: fake.pkgVersion, sqlCurrent: fake.sqlCurrent, sqlIndex: fake.sqlIndex, sqlTotal: fake.sqlTotal });
+    document.body.appendChild(host);
+    return;
+  }
   if (step.startsWith('scroll:')) { $(step.slice(7))?.scrollIntoView({ block: 'center' }); return; }
   if (step.startsWith('fill:')) {
     const [selector, value] = step.slice(5).split('::');

@@ -224,9 +224,10 @@ class ServerControl {
   async strayProcess(service) {
     if (!service.exe) return null;
     const rows = await runningInside();
-    //By leewheel 2026年11月4日 只认本服务自己的 exe（MySQL 就是 Server\mysql\bin\mysqld.exe），
-    // 包内别处的同名程序不再算成“本服务正在加载”。
-    return rows.find(row => this.ownsExe(service, row.file)) || null;
+    //By leewheel 2026年11月8日 只认本服务自己的 exe（MySQL 就是 Server\mysql\bin\mysqld.exe），
+    // 包内别处的同名程序不再算成“本服务正在加载”；国度自己的世界服进程也要排除（同一个 exe）。
+    const others = realmPids(this.root);
+    return rows.find(row => this.ownsExe(service, row.file) && !others.has(row.pid)) || null;
     //End By leewheel
   }
   //End By leewheel
@@ -587,6 +588,25 @@ class ServerControl {
 
 }
 
+//By leewheel 2026年11月8日 国度与主服共用同一个 worldserver.exe：国度在跑时，按 exe 路径归属会把国度进程
+// 认成主服“正在加载”，主服卡就永远转圈（8085 一直不开）。这里把国度自己的进程记录
+// （Royaumes\<key>\.state.json 里的 pid，且确认还活着）排除掉，主服只认剩下的那些。
+function realmPids(root) {
+  const out = new Set();
+  try {
+    for (const entry of fs.readdirSync(path.join(root, 'Royaumes'), { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const state = JSON.parse(fs.readFileSync(path.join(root, 'Royaumes', entry.name, '.state.json'), 'utf8'));
+        const pid = Number(state?.pid);
+        if (!pid) continue;
+        try { process.kill(pid, 0); out.add(pid); } catch {}
+      } catch {}
+    }
+  } catch {}
+  return out;
+}
+
 // netstat once for every question of the same tick (status() asks it for each running service).
 let netstatCache = { at: 0, job: null };
 function listening() {
@@ -617,5 +637,7 @@ function runningInside() {
 //End By leewheel
 
 //By leewheel 2026-11-05 导出 RA 配置自愈函数，供回归测试直接验证
-module.exports = { ServerControl, validateServices, validateCommand, portOpen, ensureWorldConsole };
+//By leewheel 2026年11月8日 顺带导出进程表与端口表的查询（都带缓存），国度的归属判定复用同一份，
+// 免得状态页每隔 5 秒把 PowerShell 和 netstat 各跑两次。
+module.exports = { ServerControl, validateServices, validateCommand, portOpen, ensureWorldConsole, listening, runningInside };
 //End By leewheel

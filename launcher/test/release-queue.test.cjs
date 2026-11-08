@@ -56,22 +56,48 @@ test('同一时刻发布时按 GitHub 顺序反转（API 里越靠后越旧，�
   assert.deepEqual(pendingReleases({ releases: sameTime, history: [] }).map(item => item.version), ['patch-01', 'patch-02', 'patch-03']);
 });
 
-test('补丁发布时间早于本机核心编译时间：算已内置，不再提示有新版本（老大反馈的误报）', () => {
-  // 真实数据：补丁 COA-Update-20261105 于 2026-11-05T00:00Z 上传，本机 worldserver.exe 编译于 2026-11-05T06:53Z
-  const builtAt = Date.parse('2026-11-05T06:53:00Z');
+//By leewheel 2026年11月8日 判定依据从“猜 exe 修改时间”改成“整合包基线记录”。
+// 老大判断：补丁必须依次装，跳过中间任何一个，最后装完必定跑不起来。
+// 所以规则只有一条方向 —— 补丁日期**严格早于**基线才跳过；同日、晚于基线的一律照装。
+test('补丁比整合包基线旧：算已内置，不再提示（基线是记录，不是猜文件时间）', () => {
   const releases = [release(5, { version: 'COA-Update-20261105', publishedAt: '2026-11-05T00:00:00Z' })];
-  assert.deepEqual(pendingReleases({ releases, history: [], current: 'coa-publish-20261105', builtAt }), []);
+  assert.deepEqual(pendingReleases({ releases, history: [], current: '', baseline: 'coa-publish-20261106' }), []);
 });
 
-test('补丁发布时间晚于本机核心编译时间：仍然算待装，该提示就提示', () => {
-  const builtAt = Date.parse('2026-11-05T06:53:00Z');
+test('补丁比整合包基线新：必须待装', () => {
   const releases = [release(6, { version: 'COA-Update-20261106', publishedAt: '2026-11-06T00:00:00Z' })];
-  assert.deepEqual(pendingReleases({ releases, history: [], current: 'coa-publish-20261105', builtAt }).map(item => item.version), ['COA-Update-20261106']);
+  assert.deepEqual(
+    pendingReleases({ releases, history: [], current: '', baseline: 'coa-publish-20261105' }).map(item => item.version),
+    ['COA-Update-20261106'],
+  );
 });
 
-test('没有编译时间可比时退回版本/日期比较：比当前包旧的不算待装', () => {
+test('补丁与基线同一天：照装，绝不因为“同一天”被跳过', () => {
+  // 这是老实现的致命洞：整合包 11-07 打包，11-07 当天补发的补丁会被判成“已包含”
+  const releases = [release(7, { version: 'COA-Update-20261107', publishedAt: '2026-11-07T18:00:00Z' })];
+  assert.deepEqual(
+    pendingReleases({ releases, history: [], current: '', baseline: 'coa-publish-20261107' }).map(item => item.version),
+    ['COA-Update-20261107'],
+  );
+});
+
+test('没有基线、也没有当前版本：一个都不跳过（宁多装不漏装）', () => {
+  const releases = [release(3), release(4), release(5)];
+  assert.deepEqual(
+    pendingReleases({ releases, history: [], current: '', baseline: '' }).map(item => item.version),
+    ['patch-03', 'patch-04', 'patch-05'],
+  );
+});
+
+test('没有基线时按当前版本兜底：只在严格更旧时跳过', () => {
   const releases = [release(3, { version: 'COA-Update-20261103', publishedAt: '2026-11-03T00:00:00Z' })];
-  assert.deepEqual(pendingReleases({ releases, history: [], current: 'coa-publish-20261105', builtAt: 0 }), []);
+  assert.deepEqual(pendingReleases({ releases, history: [], current: 'coa-publish-20261105' }), []);
+  // 同日不跳
+  const sameDay = [release(5, { version: 'COA-Update-20261105', publishedAt: '2026-11-05T20:00:00Z' })];
+  assert.deepEqual(
+    pendingReleases({ releases: sameDay, history: [], current: 'coa-publish-20261105' }).map(item => item.version),
+    ['COA-Update-20261105'],
+  );
 });
 
 test('核心版本号里的日期不能被当成 git 哈希截断', () => {
@@ -93,9 +119,10 @@ test('队列入口与界面改动都在源码里', () => {
   assert.match(read('src/preload.cjs'), /releaseApplyAll/);
   assert.match(read('public/js/serverhome.js'), /releaseApplyAll\(\{ queue: pending/);
   assert.match(read('public/locales/zh.json'), /"err:The full server is not on the channel yet\.": "请从百度网盘下载完整整合包"/);
-  //By leewheel 2026-11-05 误报修复：待装队列必须带上本机核心编译时间，界面徽标只认队列
-  assert.match(read('src/main.cjs'), /releaseUpdate\.pendingReleases\(\{ releases, history, current, builtAt/);
+  //By leewheel 2026-11-05 误报修复：待装队列必须带本机基线（2026-11-08 起取代 builtAt 的 exe 时间猜测）
+  assert.match(read('src/main.cjs'), /releaseUpdate\.pendingReleases\(\{ releases, history, current, baseline/);
   assert.match(read('src/main.cjs'), /const coreBuiltAt = async \(\) =>/);
+  assert.match(read('src/main.cjs'), /const currentBaseline = root => releaseBaseline\.readBaseline\(/);
   assert.match(read('public/js/serverhome.js'), /const newer = \(info\.pending\?\.length \|\| 0\) > 0;/);
   //End By leewheel
   const card = /function directInstallCard\(working, p\) \{[\s\S]*?\n\}/.exec(read('public/js/server.js'))?.[0] || '';

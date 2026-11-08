@@ -52,11 +52,9 @@ function compareVersions(a, b) {
 // COA-Update-20261105——两套命名不能直接按数字比大小（20261103 < 20261105 只是日期，不代表内容旧）。
 // 这里改成：① 都是 x.y.z 就按语义版本比；② 否则各取一个 20YYMMDD 日期比；
 // ③ 只有一方能取到日期时才退回数字比较。本地日期 ≥ 远端日期 = 不提示更新。
-function dateOf(text) {
-  const match = /20(\d{2})(\d{2})(\d{2})/.exec(String(text || ''));
-  if (!match) return 0;
-  return Number(`20${match[1]}${match[2]}${match[3]}`);
-}
+//By leewheel 2026年11月8日 日期提取挪到 release-baseline.cjs（单一实现），
+// 那边同时负责“整合包基线”的读写；这里只引用，避免同一套正则存在两份、改一处漏一处。
+const { dateOf } = require('./release-baseline.cjs');
 function isSemver(text) { return /^\s*v?\d+\.\d+(\.\d+)?([-.+].*)?$/.test(String(text || '')); }
 function releaseIsNewer(latest, current) {
   if (!latest) return false;
@@ -116,21 +114,31 @@ function pickAsset(release) {
 // GitHub API 返回的顺序是"最新在前"；这里翻成【旧 → 新】的安装顺序，并用更新历史跳过已装过的。
 // 第一次运行（history 为空）→ 返回全部补丁；装过 7 个还缺 3 个 → 按旧到新只返回那 3 个。
 // 没有 zip 更新包的 release 直接跳过（无从安装），同刻发布的按 API 顺序反转（API 里越靠后越旧）。
-//By leewheel 2026-11-05 待装补丁的判定（老大指出：整合包已经含了这个补丁，还提示“有新版本”就是误报）
-// 三条：① 更新历史里记过的不再装；② 没有 zip 的（纯说明版本）跳过；
-// ③ 补丁的发布时间早于本机核心的编译时间（builtAt，取发布包里 worldserver.exe 的时间戳）就说明内容已经在包里，跳过。
-//    没有编译时间可比时，退回到“版本号/日期谁更新”的判断（current）。
-function pendingReleases({ releases = [], history = [], current = '', builtAt = 0, limit = 30 } = {}) {
+//By leewheel 2026年11月8日 判定依据换成“记录”，见 release-baseline.cjs 里的说明。
+// 老实现拿 Server\worldserver.exe 的修改时间猜“内容已在包里”，会把纯 SQL 补丁误杀、
+// 也会在链条中断后重试时吃掉后面的补丁 —— 老大判断得对：跳着装，最后必定跑不起来。
+// 现在三条：① history 里记过的不装；② 没有 zip 的跳过；
+//  ③ 补丁日期 **严格早于** 整合包基线日期才跳过（同日不跳，宁可多装一个也不漏装）。
+// 基线（baseline）由调用方从 release-baseline.cjs 读出来传进来；取不到就传空 = 一个都不跳过。
+function pendingReleases({ releases = [], history = [], current = '', baseline = '', limit = 30 } = {}) {
   const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
-  const built = Number(builtAt) || 0;
+  const baseDate = dateOf(baseline);
   return releases
     .map((release, index) => ({ ...release, index }))
     .filter(release => {
       const version = String(release?.version || '');
       if (!version || done.has(version) || !pickAsset(release)) return false;
-      const published = Date.parse(release.publishedAt || '') || 0;
-      if (built && published && published <= built) return false;
-      if (!built && current && !releaseIsNewer(version, current)) return false;
+      // 日期优先取发布时间（一定有），取不到再退版本号里的 20YYMMDD
+      const patchDate = dateOf(release.publishedAt) || dateOf(version);
+      if (baseDate && patchDate && patchDate < baseDate) return false;
+      //By leewheel 2026年11月8日 完全没有基线可比时（RELEASE.json 被删、也没跑过一次更新），
+      // 才退回和“已安装版本/整合包版本”比。同样只在**严格更旧**时跳过：
+      // 同一天发布的一律照装——多装一个是幂等的，漏装一个就是半残，方向不能搞反。
+      if (!baseDate && current) {
+        const currentDate = dateOf(current);
+        if (currentDate && patchDate) { if (patchDate < currentDate) return false; }
+        else if (!releaseIsNewer(version, current)) return false;
+      }
       return true;
     })
     .sort((a, b) => {
@@ -145,13 +153,54 @@ function pendingReleases({ releases = [], history = [], current = '', builtAt = 
       asset: pickAsset(release),
     }));
 }
+//By leewheel 2026年11月8日 被基线覆盖、但 history 里还没记的补丁：一次性补记成 origin=baseline。
+// 为什么要记：基线的来源（RELEASE.json）会随下一个整合包变，历史记录才是稳定档；
+// 记过之后 done 命中，永远不用再算，界面的“更新记录”也能看见“这一版整合包已自带”。
+function baselineCovered({ releases = [], history = [], baseline = '' } = {}) {
+  const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
+  const baseDate = dateOf(baseline);
+  if (!baseDate) return [];
+  return releases
+    .filter(release => {
+      const version = String(release?.version || '');
+      if (!version || done.has(version) || !pickAsset(release)) return false;
+      const patchDate = dateOf(release.publishedAt) || dateOf(version);
+      return Boolean(patchDate && patchDate < baseDate);
+    })
+    .map(release => ({ version: String(release.version || ''), asset: pickAsset(release) }));
+}
 //End By leewheel
 
-// 已安装版本：读历史记录里最后一条
+//By leewheel 2026年11月8日 「强制更新：装到某一版为止」的队列计算（抽出来是为了能单测）。
+// 语义（“强制”不能被跳过机制破坏）：
+//   ① 目标那一版**一定重装**，哪怕历史里记着装过 —— 强制更新就是用来修坏文件的；
+//   ② 目标之前的补丁只补没装过的；
+//   ③ 比目标新的不动。
+// 返回的 queue 顺序始终是【旧 → 新】，绝不出现“只装中间某一个”的情况。
+// targetVersion 为空 = 取最新一版。
+function queueUpTo({ releases = [], history = [], targetVersion = '', limit = 30 } = {}) {
+  const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
+  const all = pendingReleases({ releases, history: [], current: '', baseline: '', limit })
+    .map(item => ({ ...item, date: dateOf(item.publishedAt) || dateOf(item.version) }));
+  if (!all.length) return { queue: [], target: null, isFull: false, reason: '没有带 zip 更新包的版本' };
+  const target = targetVersion ? all.find(item => item.version === targetVersion) : all[all.length - 1];
+  if (!target) return { queue: [], target: null, isFull: false, reason: `找不到版本 ${targetVersion}，或者它没有 zip 更新包` };
+  const isFull = /(^|[-_.])full([-_.]|$)/i.test(String(target.asset?.name || ''));
+  const queue = all.filter(item => {
+    if (target.date && item.date && item.date > target.date) return false;
+    if (item.version === target.version) return true;
+    return !done.has(item.version);
+  });
+  return { queue, target, isFull, reason: '' };
+}
+//End By leewheel
+// 已安装版本：读历史记录里最后一条「真正装过的」（基线补记的条目不算）
+//By leewheel 2026年11月8日 基线补记（origin=baseline）只是“这一版整合包已自带”的存档，
+// 不代表玩家装过；拿它当“已安装版本”会让主页版本号跳回旧值。
 async function installedVersion(root) {
   try {
     const history = JSON.parse(await fsp.readFile(path.join(root, HISTORY), 'utf8'));
-    const list = Array.isArray(history) ? history : [];
+    const list = (Array.isArray(history) ? history : []).filter(item => item && item.origin !== 'baseline');
     return list.length ? String(list[list.length - 1].version || '') : '';
   } catch { return ''; }
 }
@@ -169,6 +218,26 @@ async function recordVersion(root, entry) {
   await fsp.writeFile(file, JSON.stringify(history.slice(-200), null, 2));
   await fsp.writeFile(path.join(root, LAST), JSON.stringify(entry, null, 2));
   return history;
+}
+//By leewheel 2026年11月8日 基线补记：只往 history 追加，不动 last-update.json（那才是“装了哪一版”）。
+// 目的：整合包自带的老补丁记成“已有”，之后不再反复算；RELEASE.json 哪天被改写也不会把补丁全捞回来重装。
+async function recordBaselineVersions(root, items = []) {
+  if (!items.length) return;
+  const history = await readHistory(root);
+  const done = new Set(history.map(item => String(item?.version || '')));
+  for (const item of items) {
+    const version = String(item?.version || '');
+    if (!version || done.has(version)) continue;
+    history.push({
+      version, tag: String(item.tag || version),
+      asset: String(item.asset || '(整合包已自带)'),
+      origin: 'baseline', at: new Date().toISOString(),
+    });
+    done.add(version);
+  }
+  const file = path.join(root, HISTORY);
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, JSON.stringify(history.slice(-200), null, 2));
 }
 
 // ---------------------------------------------------------------- 下载 / 解压
@@ -245,6 +314,13 @@ async function downloadOnce(url, target, { fetchImpl, onProgress, signal, timeou
   const total = Number(response.headers.get('content-length')) || 0;
   const file = fs.createWriteStream(target);
   let done = 0;
+  //By leewheel 2026年11月8日 进度回调节流到 100ms：每个 chunk 都往界面推一次会让渲染进程
+  // 每秒重建几十次进度条（老大反馈“下载过程中 UI 一直在闪烁”）。最后一块照常报，保证 100% 到位。
+  let lastReport = 0;
+  const report = (now, totalBytes) => {
+    const stamp = Date.now();
+    if (stamp - lastReport >= 100 || (totalBytes && now === totalBytes)) { lastReport = stamp; onProgress(now, totalBytes); }
+  };
   try {
     if (response.body && typeof response.body.getReader === 'function') {
       const reader = response.body.getReader();
@@ -253,7 +329,7 @@ async function downloadOnce(url, target, { fetchImpl, onProgress, signal, timeou
         if (finished) break;
         done += value.length;
         file.write(Buffer.from(value));
-        onProgress(done, total);
+        report(done, total);
       }
     } else {
       const buffer = Buffer.from(await response.arrayBuffer());
@@ -551,6 +627,20 @@ function mysqlPaths(serverRoot) {
   return { exe, ini };
 }
 
+//By leewheel 2026年11月9日 有连接串就不需要 admin-client.ini。
+// 原来 mysqlQuery/importSqlFile 无条件调 mysqlPaths，只要整合包里没有 ini 就直接抛
+// 「读不到表结构：缺少 mysql/admin-client.ini」——开发机正是这种情况，worldserver.conf 里
+// 那三条连接串本来就够用。现在按“有 conn 走 -h/-P/-u/-p，没 conn 才回落到 ini”。
+function mysqlClient(serverRoot, conn = null) {
+  const exe = path.join(serverRoot, 'mysql', 'bin', 'mysql.exe');
+  if (!fs.existsSync(exe)) throw new Error('服务器目录里没有 mysql.exe');
+  if (conn) return { exe, args: mysqlArgsFor(conn) };
+  const ini = path.join(serverRoot, 'mysql', 'admin-client.ini');
+  if (!fs.existsSync(ini)) throw new Error('缺少 mysql/admin-client.ini，且 worldserver.conf 里没有可用的数据库连接串');
+  return { exe, args: [`--defaults-file=${ini}`, '--default-character-set=utf8mb4'] };
+}
+//End By leewheel
+
 //By leewheel 2026年11月5日 连库不猜端口：直接读 worldserver.conf 里那三条连接串
 // （LoginDatabaseInfo / WorldDatabaseInfo / CharacterDatabaseInfo）。
 // 之前用 mysql/admin-client.ini（3396），但世界服实际连的是 3395——启动器自己拉起的 3396 实例起不来时，
@@ -578,12 +668,25 @@ function mysqlArgsFor(conn) {
   return ['-h', conn.host, '-P', String(conn.port), '-u', conn.user, `-p${conn.pass}`, '--connect-timeout=5', '--default-character-set=utf8mb4'];
 }
 
+//By leewheel 2026年11月9日 把 execFile 的「Command failed: <整条命令行>\n<stderr>」收成一行 MySQL 原文。
+// 两个作用：① 界面不再刷一整行 mysql.exe 参数；② 错误分类不会再把命令行里出现的表名当成“表不存在”。
+function mysqlFailLine(error) {
+  const text = String(error?.message || error || '');
+  const line = text.split(/\r?\n/).map(part => part.trim())
+    .filter(part => part && !/^Command failed:/i.test(part) && !/Using a password on the command line/i.test(part))
+    .pop();
+  return line || '连接数据库失败（没有任何输出）';
+}
+
 async function mysqlQuery(serverRoot, sql, conn = null) {
-  const { exe, ini } = mysqlPaths(serverRoot);
-  const args = conn ? [...mysqlArgsFor(conn), '--batch', '--skip-column-names', '-e', sql]
-    : [`--defaults-file=${ini}`, '--batch', '--skip-column-names', '-e', sql];
-  const { stdout } = await exec(exe, args, { windowsHide: true, timeout: 30000 });
-  return String(stdout).trim();
+  const { exe, args } = mysqlClient(serverRoot, conn);
+  try {
+    const { stdout } = await exec(exe, [...args, '--batch', '--skip-column-names', '-e', sql], { windowsHide: true, timeout: 30000 });
+    return String(stdout).trim();
+  } catch (error) {
+    //By leewheel 2026年11月9日 只抛 MySQL 的原文，别把整条命令行甩给界面
+    throw new Error(mysqlFailLine(error));
+  }
 }
 
 //By leewheel 2026年11月5日 等 MySQL 真正能连：轮询 SELECT 1，默认最多等 120 秒。
@@ -602,9 +705,9 @@ async function waitForMysql(serverRoot, { timeoutMs = 120000, onLine = () => {},
 
 // 单个 SQL 文件（可指定数据库；conn 为 worldserver.conf 里的连接串）
 async function importSqlFile(serverRoot, file, database = '', conn = null) {
-  const { exe, ini } = mysqlPaths(serverRoot);
-  const args = conn ? mysqlArgsFor(conn) : [`--defaults-file=${ini}`, '--default-character-set=utf8mb4', '--batch'];
-  if (!conn) args.push('--batch');
+  //By leewheel 2026年11月9日 走 mysqlClient：有连接串就不依赖 admin-client.ini（同 mysqlQuery）
+  const { exe, args: base } = mysqlClient(serverRoot, conn);
+  const args = [...base, '--batch'];
   if (database) args.push(`--database=${database}`);
   await new Promise((resolve, reject) => {
     const child = spawn(exe, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -759,6 +862,73 @@ function snapshotWriter(root, dir) {
 // ---------------------------------------------------------------- 一次更新的编排
 // options: { root, world(解压目录), serverRoot, clientRoot, onPhase, onLine, importSqlFiles, conns, waitMs }
 // conns：worldserver.conf 里读出来的三条连接串（readDbConfig），决定 SQL 导到哪个库
+//By leewheel 2026年11月8日 装完自检：不核对“文件真的换成包里的了”，就敢写“更新成功”——
+// 上一个包把服务端弄坏却没人发现，就是缺这一步（老大 2026-11-08 要求）。
+// 规则：包里 Server\ / Configs\ / Client\ / Runtime\ / CoA-Bots\ / mpq\ 的每一个文件，
+// 落到目标位置后必须存在且**字节数一致**；worldserver.exe / authserver.exe 再加一道 md5 硬核对。
+// 跑完返回 { checked, problems, hashes }：problems 非空 = 这次更新不算成功。
+async function fileMd5(file) {
+  return new Promise((resolve, reject) => {
+    const hash = require('node:crypto').createHash('md5');
+    require('node:fs').createReadStream(file)
+      .on('data', chunk => hash.update(chunk))
+      .on('end', () => resolve(hash.digest('hex')))
+      .on('error', reject);
+  });
+}
+
+async function verifyInstalled({ folder, root, serverRoot, clientRoot }) {
+  const content = await contentRoot(folder);
+  const problems = [];
+  let checked = 0;
+  const hashes = {};
+  // 每个归位目标照着 applyUpdate 的实际规则来写，规则不一致的核对等于没核对
+  const areas = [];
+  const serverFrom = await findDir(content, ['Server']);
+  if (serverFrom) areas.push({ label: 'Server', from: serverFrom, to: serverRoot, skip: rel => /^sql(\/|$)/i.test(rel) });
+  const configsFrom = await findDir(content, ['Configs']);
+  if (configsFrom) areas.push({ label: 'Configs', from: configsFrom, to: path.join(serverRoot, 'configs') });
+  const clientFrom = await findDir(content, ['Client']);
+  if (clientFrom) areas.push({
+    label: 'Client', from: clientFrom, to: clientRoot,
+    // data\mpq 是“注入进补丁档”的条目、data\dbc 是“注入进 MPQ + 拷进服务端 ClientData”，
+    // 这两类在客户端目录里本来就不该出现同名文件，不能按普通文件核对
+    skip: rel => /^data\/(mpq|dbc)(\/|$)/i.test(rel),
+  });
+  for (const name of ['Runtime', 'CoA-Bots']) {
+    const from = await findDir(content, [name]);
+    if (from) areas.push({ label: name, from, to: path.join(root, name), skip: rel => /(^|\/)dashboard\.json$/i.test(rel) });
+  }
+  const mpqFrom = await findDir(content, ['mpq']);
+  if (mpqFrom) areas.push({ label: 'mpq', from: mpqFrom, to: path.join(clientRoot, 'Data'), only: /\.mpq$/i });
+
+  for (const area of areas) {
+    for (const item of await walkFiles(area.from)) {
+      const rel = item.rel.split(path.sep).join('/');
+      if (area.skip && area.skip(rel)) continue;
+      if (area.only && !area.only.test(path.basename(item.file))) continue;
+      const target = path.join(area.to, item.rel);
+      const src = await fsp.stat(item.file).catch(() => null);
+      const dst = await fsp.stat(target).catch(() => null);
+      checked++;
+      if (!src) { problems.push(`${area.label}/${rel}：包里的源文件读不到`); continue; }
+      if (!dst) { problems.push(`${area.label}/${rel}：目标位置没有这个文件`); continue; }
+      if (src.size !== dst.size) { problems.push(`${area.label}/${rel}：大小不一致（包内 ${src.size} ≠ 目标 ${dst.size}）`); continue; }
+      // 两个服务端可执行文件是“能不能起来”的关键，字节数一样也要再核一次内容
+      if (area.label === 'Server' && /^(worldserver|authserver)\.exe$/i.test(rel)) {
+        try {
+          const [a, b] = [await fileMd5(item.file), await fileMd5(target)];
+          hashes[rel.toLowerCase()] = b;
+          if (a !== b) problems.push(`${area.label}/${rel}：md5 不一致（包内 ${a.slice(0, 12)}… ≠ 目标 ${b.slice(0, 12)}…）`);
+        } catch (error) {
+          problems.push(`${area.label}/${rel}：md5 计算失败（${error.message}）`);
+        }
+      }
+    }
+  }
+  return { checked, problems, hashes };
+}
+
 async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () => {}, onLine = () => {}, onPhaseProgress = () => {}, onSqlPlan = () => {}, onSqlFileStart = () => {}, onSqlFileDone = () => {}, importSqlFiles = true, conns = null, waitMs = 120000 }) {
   const folder = await contentRoot(world);
   const result = { server: 0, client: 0, dbc: [], mpq: 0, mpqEntries: 0, sql: [], warnings: [], backup: '' };
@@ -796,12 +966,52 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
     onLine(`客户端：${result.client} 个文件已放入 Client\\`);
   }
 
+  // 3d) Runtime / CoA-Bots：机器人仪表盘的两块硬前提。
+  //By leewheel 2026年11月8日 老大定（2026-11-08）：仪表盘要求 <根>\Runtime\python\python.exe 与
+  // <根>\CoA-Bots\Tools\Dashboard\squidbots.py 同时存在，缺一个主页那张卡都不渲染。
+  // 以前这两个目录不在更新包里，从零安装的玩家永远看不到面板 —— 现在随包发到整合包根目录。
+  for (const name of ['Runtime', 'CoA-Bots']) {
+    const from = await findDir(folder, [name]);
+    if (!from) continue;
+    onPhase('runtime');
+    // dashboard.json 是玩家本地设置（端口、页脚）：已经有的绝不覆盖，只在缺失时补一份默认值
+    const count = await copyTree(from, path.join(root, name), {
+      beforeOverwrite: snapshot.beforeOverwrite,
+      skip: rel => /(^|\/)dashboard\.json$/i.test(rel),
+    });
+    const settings = path.join(root, name, 'Tools', 'Dashboard', 'dashboard.json');
+    if (name === 'CoA-Bots' && !fs.existsSync(settings)) {
+      const fallback = path.join(from, 'Tools', 'Dashboard', 'dashboard.json');
+      if (fs.existsSync(fallback)) {
+        await fsp.mkdir(path.dirname(settings), { recursive: true });
+        await fsp.copyFile(fallback, settings);
+      }
+    }
+    result[name.toLowerCase()] = count;
+    onLine(`${name}：${count} 个文件已放入 ${name}\\`);
+  }
+
   // 3c) MPQ 内部条目补丁：client\data\mpq\<档名.mpq>\<内部路径> → 注入 Client\Data\<档名.mpq> 的同名条目。
   // 只发变了的那几条（一个 292MB 的 enUS 档，实际改动可能只有一个 0.5MB 的 lua）。
   //By leewheel 2026年11月7日 三条硬规则：① 支持多级档路径（enUS\xxx.MPQ）；
   // ② 母本有、玩家档没有的新条目必须能新增（allowCreate），否则新 DBC/新贴图永远到不了玩家；
   // ③ 任何一条注入失败都中止更新，绝不静默跳过（这就是“包里有文件、玩家却没有”的根因）。
   const mpqPatchRoot = clientFrom ? path.join(clientFrom, 'data', 'mpq') : '';
+  //By leewheel 2026年11月8日 老家底清理：v3~v10 曾把地图档 patch-ZZZ.mpq 整档发给玩家，
+  // 而 ZZZ 的加载优先级最高，会盖住本包注入到 ZZN / ZZM 的同名条目（地图贴图、AreaTable）。
+  // 本包已改成“把 ZZZ 的内容拆进 ZZN / ZZM”，所以玩家那边那份 ZZZ 必须让位：
+  // 只改名成 .old（绝不删除，玩家可手动改回来），且仅当本包自己不再提供 ZZZ 时才动手。
+  const packageHasZzz = fs.existsSync(path.join(folder, 'mpq', 'patch-ZZZ.mpq'))
+    || (clientFrom ? fs.existsSync(path.join(clientFrom, 'data', 'mpq', 'patch-ZZZ.mpq')) : false);
+  const legacyZzz = path.join(clientRoot, 'Data', 'patch-ZZZ.mpq');
+  if (!packageHasZzz && fs.existsSync(legacyZzz)) {
+    try {
+      await fsp.rename(legacyZzz, `${legacyZzz}.old`);
+      onLine('旧地图档 Data\\patch-ZZZ.mpq 已改名为 .old：避免它盖住本次注入到 ZZN / ZZM 的地图内容（需要恢复就把 .old 去掉）');
+    } catch (error) {
+      throw new Error(`旧地图档 patch-ZZZ.mpq 改名失败（可能被客户端占用，请先完全退出游戏）：${error.message}。更新中止`);
+    }
+  }
   if (mpqPatchRoot && fs.existsSync(mpqPatchRoot)) {
     onPhase('mpq-entries');
     const groups = await collectMpqPatchGroups(mpqPatchRoot);
@@ -883,6 +1093,49 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
     }
   }
 
+  //By leewheel 2026年11月9日 数据表核对（老大要求）：SQL 导完立刻按包里的 dbcheck 清单核一遍。
+  // 清单是打包时从 3395 导出的“每个库有哪些表、每张表有哪些字段”，这里只读、只比、不改库。
+  // 缺表/缺字段分两种处理：本包 SQL 声明要建的 → 抛错中止（脚本没生效）；本来不归本包管的 → 记警告 + 写明细。
+  {
+    const manifest = await require('./db-schema.cjs').readManifest(folder).catch(() => null);
+    if (manifest) {
+      onPhase('dbcheck');
+      const dbSchema = require('./db-schema.cjs');
+      const report = await dbSchema.checkSchema({
+        query: (sql, database) => mysqlQuery(serverRoot, sql, connForDatabase(conns, database)),
+        manifest,
+        sqlRoot: result.sqlRoot || '',
+        onLine,
+      }).catch(error => ({ databases: 0, tables: 0, columns: 0, problems: [], warnings: [`数据表核对没跑起来：${error.message}`], details: [], missingTables: 0, missingColumns: 0, failed: true }));
+      result.dbcheck = {
+        databases: report.databases, tables: report.tables, columns: report.columns,
+        missingTables: report.missingTables, missingColumns: report.missingColumns,
+        problems: report.problems, warnings: report.warnings, manifest: manifest.name,
+      };
+      // 报告落盘：界面只说摘要，具体缺哪张表哪个字段写文件，方便老大直接拿去对账
+      try {
+        const at = new Date().toISOString();
+        const dir = path.join(root, '.coa-launcher', 'dbcheck');
+        await fsp.mkdir(path.join(dir, '..'), { recursive: true });
+        await fsp.mkdir(dir, { recursive: true });
+        const stamp = at.replace(/[:.]/g, '-').slice(0, 19);
+        await fsp.writeFile(path.join(dir, `dbcheck-${stamp}.md`), dbSchema.renderReport({ manifest, result: report, at }), 'utf8');
+        await fsp.writeFile(path.join(dir, `dbcheck-${stamp}.json`), JSON.stringify({ at, manifest: manifest.name, source: manifest.data.source || '', ...report }, null, 2), 'utf8');
+        result.dbcheck.report = path.join(dir, `dbcheck-${stamp}.md`);
+        onLine(`数据表核对报告：${path.join('.coa-launcher', 'dbcheck', `dbcheck-${stamp}.md`)}`);
+      } catch (error) {
+        result.warnings.push(`数据表核对报告没写成：${error.message}`);
+      }
+      if (report.problems.length) {
+        const list = report.problems.slice(0, 4).join('；');
+        throw new Error(`数据表核对没通过（缺少 ${report.problems.length} 项，本包 SQL 该建的表/字段没生效）：${list}${report.problems.length > 4 ? ' …' : ''}。详见 .coa-launcher\\dbcheck 下的报告。更新中止`);
+      }
+      if (report.missingTables || report.missingColumns) {
+        result.warnings.push(`数据表核对：目标库比清单少 ${report.missingTables} 张表、${report.missingColumns} 个字段（不是本包负责创建的，只做提示，详见 .coa-launcher\\dbcheck）`);
+      }
+    }
+  }
+
   //By leewheel 2026年11月6日 启动器自己也能随包更新：
   // 🔴 正在运行的 exe 不能改名也不能覆盖（运行镜像不共享删除权限），会报
   //    EBUSY: resource busy or locked, copyfile ... -> CoA启动器.exe（老大实测）。
@@ -925,13 +1178,28 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
   }
 
   if (snapshot.saved) { result.backup = snapshotDir; onLine(`被覆盖的 ${snapshot.saved} 个文件已留底：${path.relative(root, snapshotDir)}`); }
+
+  //By leewheel 2026年11月8日 最后一道门：文件是不是真的换成包里的了。
+  // 放在 configs.patch.json 之后、return 之前，覆盖所有归位动作（服务端/配置/客户端/Runtime/CoA-Bots/mpq）。
+  // 对不上就抛错 → 不记版本、界面报失败，绝不写“更新成功”。
+  if (serverFrom || clientFrom || configsFrom) {
+    onPhase('verify');
+    result.verify = await verifyInstalled({ folder, root, serverRoot, clientRoot });
+    onLine(`核对：${result.verify.checked} 个文件已按包内容落地`);
+    if (result.verify.problems.length) {
+      const list = result.verify.problems.slice(0, 5).join('；');
+      throw new Error(`文件落地核对没通过（共 ${result.verify.problems.length} 处）：${list}${result.verify.problems.length > 5 ? ' …' : ''}。更新中止`);
+    }
+  }
   return result;
 }
 
 module.exports = {
   API, HISTORY, LAST, SNAPSHOT, DEFAULT_MIRRORS, mirrorCandidates, parseVersion, compareVersions, releaseIsNewer, versionOf,
-  listReleases, pickAsset, pendingReleases, installedVersion, readHistory, recordVersion,
+  listReleases, pickAsset, pendingReleases, baselineCovered, queueUpTo, installedVersion, readHistory, recordVersion, recordBaselineVersions, dateOf,
   download, downloadOnce, extractZip, contentRoot, copyTree, clientMpqs, readDbcMap, injectDbc, injectIntoArchive,
+  //By leewheel 2026年11月8日 装完自检（队列收尾的主进程侧也要用 fileMd5 核世界服 exe）
+  verifyInstalled, fileMd5,
   //By leewheel 2026年11月6日 镜像测速：给“下载优先走最快的源”用
   probeMirror, rankMirrors, mirrorsFromRanking, parseReleaseUrl, describeProbeFailure,
   applyDbcTree, mysqlPaths, readDbConfig, mysqlQuery, waitForMysql, importSqlFile, importSqlTree, importSql, applyUpdate, findDir, walkFiles,
