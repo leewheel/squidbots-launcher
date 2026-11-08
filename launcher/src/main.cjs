@@ -39,6 +39,8 @@ const realmCards = require('./realm-cards.cjs');
 const botAchievements = require('./bot-achievements.cjs');
 const tweaks = require('./repack-tweaks.cjs');
 const live = require('./live.cjs');
+//By leewheel 2026年11月9日 省电模式：国度无人 10 分钟后让机器人休眠（开关挂在 Settings\repack.json 与各国的 realm.json）
+const eco = require('./eco.cjs');
 const modules = require('./modules.cjs');
 const realms = require('./realms.cjs');
 const { mysqlLender } = require('./mysql-lender.cjs');
@@ -622,7 +624,11 @@ function serverControl() {
 // 直接拿 mysql\admin-client.ini 去连 3396，15 秒后报“连不上数据库”。
 function updateServerControl(serverRoot) {
   if (!config.server?.services?.length) return null;
-  const control = new ServerControl({ root: serverRoot, services: config.server.services, commands: config.server.commands, notify: () => {} });
+  //By leewheel 2026年11月9日 更新路径也用整合包自己的端口（my.ini 优先），别再按 config 里写死的 3396 拉 mysqld：
+  // 否则 my.ini 说 3395、这里按 3396 起库，更新完世界服照样连不上。
+  const ports = inspectRepack(serverRoot).ports;
+  const services = config.server.services.map(service => ({ ...service, port: ports[service.id] || service.port }));
+  const control = new ServerControl({ root: serverRoot, services, commands: config.server.commands, notify: () => {} });
   control.key = `update|${path.resolve(serverRoot)}`;
   return control;
 }
@@ -639,7 +645,7 @@ async function ensureUpdateDatabase(serverRoot, note = () => {}) {
   if (await releaseUpdate.waitForMysql(serverRoot, { conn: probe, timeoutMs: 2000 })) return conns;
   const control = updateServerControl(serverRoot);
   if (!control) throw new Error('启动器没有读到服务定义，无法自动启动数据库：请手动运行 Server\\1.MySQL.bat 后重试。更新中止（文件未提交）');
-  note('正在启动数据库（MySQL 3396）');
+  note(`正在启动数据库（MySQL ${inspectRepack(serverRoot).ports.mysql || '?'}）`);
   try {
     await control.start('mysql');
     note('数据库已启动');
@@ -1514,7 +1520,23 @@ function registerIpc() {
       update.phase = null;
     }
     if (wasRunning && update.last && !update.last.code && !update.last.error) {
-      network.applyNetwork(folder).catch(() => {}).then(() => modules.keepRotationOff(folder)).then(() => quietLogs(folder)).then(() => requireControl().startAll()).then(() => realms.startMarked(folder)).catch(() => {});
+      //By leewheel 2026年11月9日 更新后重启世界：不再用 .catch(() => {}) 静默吞掉失败。
+      // 更新工具自己的“试启动”刚停下时，manager 会拒绝立刻再启（“still finishing”），
+      // 以前这种情况等于更新完整套流程走完、服务器却停在关闭状态，玩家还以为更新成功。
+      const startAgain = async (tries = 12) => {
+        for (let attempt = 1; ; attempt += 1) {
+          try { return await requireControl().startAll(); } catch (error) {
+            if (attempt >= tries || !/still finishing/i.test(String(error?.message || error))) throw error;
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        }
+      };
+      network.applyNetwork(folder).catch(() => {}).then(() => modules.keepRotationOff(folder)).then(() => quietLogs(folder)).then(() => startAgain()).then(() => realms.startMarked(folder))
+        .catch(error => {
+          const text = `更新完成，但服务器没有自动重新启动：${String(error?.message || error).slice(0, 180)}`;
+          send('update:event', { event: 'warn', text });
+          try { fs.appendFileSync(requireControl().logFile('world'), `\n==== ${new Date().toISOString()} ${text} ====\n`); } catch { /* 日志只是留痕，写不进去也不该再抛 */ }
+        });
     }
     const state2 = repackUpdateState();
     send('update:state', state2);
@@ -1859,7 +1881,8 @@ function registerIpc() {
     const coa = (await requireControl().status()).some(service => /world/i.test(service.id) && service.state === 'running');
     await realms.clearOffline(serverPath(), { coa }).catch(() => {});
   };
-  const prepareStart = async () => { await fixManage(serverPath()).catch(() => {}); await applyCards(serverPath()).catch(() => {}); await network.applyNetwork(serverPath()).catch(() => {}); await modules.keepRotationOff(serverPath()); await quietLogs(serverPath()); };
+  //By leewheel 2026年11月9日 启动前统一把省电模式写进去的值还回去（休眠中开服会让机器人一直睡着）
+  const prepareStart = async () => { await eco.wakeStopped(serverPath()).catch(() => {}); await fixManage(serverPath()).catch(() => {}); await applyCards(serverPath()).catch(() => {}); await network.applyNetwork(serverPath()).catch(() => {}); await modules.keepRotationOff(serverPath()); await quietLogs(serverPath()); };
   //By leewheel 2026年11月4日 老大规则：只要检测到 CoA 的世界服已经在跑（启动器起的、脚本起的、外面手动起的都算），
   // 勾了"随服务器启动"（realm.json 的 autostart）的国度就要跟着起来。
   // 以前只有首页"启动全部"才会带国度：单独启动世界服、或世界服从别处拉起来时，国度一直停着（老大实弹：
@@ -1969,7 +1992,8 @@ function registerIpc() {
     // Screenshot tours only (--smoke): made-up realms, like COA_SMOKE_LIVE for the home page.
     if (smokeDir && process.env.COA_SMOKE_REALMS) return JSON.parse(process.env.COA_SMOKE_REALMS);
     if (!serverPath()) throw new Error('Choose the server folder first.');
-    return { ...(await realms.status(serverPath())), coa: await coaRealm() };
+    //By leewheel 2026年11月9日 省电模式的状态跟着国度列表一起回：支不支持、开关、现在有没有在休眠
+    return { ...(await realms.status(serverPath())), coa: await coaRealm(), eco: await eco.status(serverPath()).catch(() => null) };
   };
   // MySQL (and the authserver to log in) of the repack, started through its own scripts when needed.
   const realmBase = async withAuth => { const c = requireControl(); await c.start('mysql'); if (withAuth) await c.start('auth'); };
@@ -2054,6 +2078,9 @@ function registerIpc() {
     await fixManage(serverPath()).catch(() => {});
     await applyCards(serverPath()).catch(() => {});
     await network.applyNetwork(serverPath()).catch(() => {});
+    //By leewheel 2026年11月9日 省电模式：开服前先把休眠时写进去的 AiPlayerbot.BotActiveAlone 还成玩家自己的值，
+    // 免得机器人在"休眠值"上开起来，玩家进门还是没人跟。
+    await eco.wakeStopped(serverPath(), text(key, 12)).catch(() => {});
     if (!(await mysqlRunning())) baseByRealm = true;
     await realmBase(false);
     // The CoA realm alone (its own world through the repack's scripts), without the realms marked to start with the server.
@@ -2076,6 +2103,8 @@ function registerIpc() {
   handle('realms:modules', key => realms.modulesOf(serverPath(), text(key, 12)));
   handle('realms:module', (key, id, state) => realms.setModule(serverPath(), text(key, 12), text(id, 20), text(state, 4)));
   handle('realms:options', async (key, options) => { if (text(key, 12) === 'coa') { await realms.setCoaAutostart(serverPath(), options?.autostart === true); return realmsStatus(); } await realms.setOptions(serverPath(), text(key, 12), { autostart: options?.autostart, bots: options?.bots }); return realmsStatus(); });
+  //By leewheel 2026年11月9日 省电模式开关：写 Settings\repack.json（主服）或 Royaumes\<国度>\realm.json，关掉时立刻还原原值
+  handle('realms:eco', async (key, on) => { await eco.setEnabled(serverPath(), text(key, 12), on === true); return realmsStatus(); });
   const onePurge = (name, work) => oneServerJob(`recreating the bots of ${name}`, () => withMysql(work));
   handle('realms:purge', async key => { await onePurge(realms.MODES[text(key, 12)]?.title || key, () => realms.purgeBots(serverPath(), text(key, 12))); return realmsStatus(); });
   handle('realms:disable', async (key, off) => { await withMysql(() => realms.setDisabled(serverPath(), text(key, 12), off === true)); return realmsStatus(); });
@@ -2208,6 +2237,9 @@ function registerIpc() {
     if (code === '1146' || /Table '.*' doesn't exist/i.test(line)) return { reason: 'no-table', message: line };
     if (code === '1049' || /Unknown database/i.test(line)) return { reason: 'no-database', message: line };
     if (code === '1045' || /Access denied/i.test(line)) return { reason: 'db-auth', message: line };
+    //By leewheel 2026年11月9日 1046 = 连上了但没选库。以前这条落到 db-down 分支，
+    // 界面上显示成“数据库没有启动”，同样误导；现在单列一条。
+    if (code === '1046' || /No database selected/i.test(line)) return { reason: 'db-no-schema', message: line };
     return { reason: 'db-down', message: line };
   };
   const connText = conn => `${conn.host}:${conn.port}（用户 ${conn.user || '(未配置)'}，来源 ${conn.source || 'my.ini'}）`;
@@ -2320,7 +2352,7 @@ function registerIpc() {
     return { ...(await sqlConsole.run(serverPath(), String(query).slice(0, 20000), { allowChanges: allowChanges === true })), backup };
   });
   const verify = require('./verify.cjs');
-  const watch = { world: null, crashes: null, restarts: [] };
+  const watch = { world: null, crashes: null, restarts: [], ecoAt: 0 };
   serverStartOnOpen = async () => {
     if (!serverPath() || !inspectRepack(serverPath()).repack || serverBusy()) return;
     const services = await requireControl().status();
@@ -2336,6 +2368,9 @@ function registerIpc() {
     const quiet = !serverBusy() && !found.states.size;
     const services = await found.status().catch(() => null);
     if (!services) return;
+    //By leewheel 2026年11月9日 省电模式每分钟看一眼（serverWatch 本身 20 秒一轮，这里自己节流）：
+    // 更新、备份、国度任务进行中（quiet 为假）一律不动配置，免得和别的写配置撞车。
+    if (quiet && Date.now() - watch.ecoAt >= 60000) { watch.ecoAt = Date.now(); await eco.tick(root).catch(() => {}); }
     const world = services.find(service => /world/i.test(service.id))?.state || null;
     const count = (await verify.crashes(root, 2).catch(() => [])).length;
     const crashed = watch.crashes !== null && count > watch.crashes;
@@ -4188,6 +4223,8 @@ async function main() {
   if (!smokeDir) setInterval(() => serverWatch?.().catch(() => {}), 20000).unref();
   // Scripts/manage.py fixed at once: a realm task can start MySQL before any server start.
   if (!smokeDir) fixManage(serverPath()).catch(() => {});
+  //By leewheel 2026年11月9日 启动器一打开就把没在跑的世界从省电值还原：上次断电/强杀留下的 eco 值不能带进下一次开服
+  if (!smokeDir) eco.wakeStopped(serverPath()).catch(() => {});
   if (!smokeDir) setTimeout(() => applyCards(serverPath()).catch(() => {}), 5000).unref();
   if (settings.startServerOnOpen && !smokeDir) setTimeout(() => serverStartOnOpen?.().catch(() => {}), 4000).unref();
   // A new launcher and the news are looked for every 30 minutes (two small signed files).

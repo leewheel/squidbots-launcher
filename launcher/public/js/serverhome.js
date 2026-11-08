@@ -1116,6 +1116,27 @@ function releaseRunView(run) {
 //By leewheel 2026年11月5日 老大反馈：关掉更新窗口再打开，进度条和百分比不动。
 // 根因：老代码一找不到 #release-progress 就 return，连 App.state.releaseRun 都不更新；
 // 重开后的“进行中”视图又没有这个容器 → 永远冻结。现在：先更新状态，再刷新所有正在显示的视图。
+//By leewheel 2026年11月9日 更新装完立刻把首页右侧那六张卡的数据重新读一遍：
+// 核心（已更新到哪天）、机器人（内置版本）、检查、你的游戏（插件版本 / realmlist）、
+// 机器人仪表盘、谁可以加入。此前只把 run.done 置真，卡片还挂着更新前的值 ——
+// 装完看到「核心 已更新 2026.11.08」会让人以为白装了。
+const RELOAD_AFTER_UPDATE_KEYS = ['server', 'verify', 'dashboard', 'network'];
+function refreshHomeAfterUpdate() {
+  if (!App.api?.serverInfo) return;
+  const pull = attempt => {
+    App.api.serverInfo().then(info => {
+      if (!info) return;
+      // server 直接换新值；其余四项都是懒加载缓存，清空后 mount 会按下新装的东西重读
+      App.state.server = info;
+      for (const key of RELOAD_AFTER_UPDATE_KEYS) if (key !== 'server') App.state[key] = null;
+      if (typeof refreshAddon === 'function') refreshAddon(true);
+      if (App.state.tab === 'home') App.render();
+    }).catch(() => { if (attempt < 3) setTimeout(() => pull(attempt + 1), 800); });
+  };
+  // 主进程这一刻可能还在写 last-update.json、或按更新结果重启世界：稍等一拍再读，失败最多重试 3 次
+  setTimeout(() => pull(0), 700);
+}
+
 function releaseProgress(payload) {
   const run = App.state.releaseRun || (App.state.releaseRun = { phase: '', pct: 0, message: '', done: false, error: '' });
   //By leewheel 2026年11月8日 队列中间态（第 n 个补丁装完、还在装下一个）：步骤全绿，整体不算完成
@@ -1154,7 +1175,7 @@ function releaseProgress(payload) {
   if (payload.error) { run.error = String(payload.error); run.done = false; }
   if (payload.errorLog) run.errorLog = payload.errorLog;
   //By leewheel 2026年11月7日 更新完成：清掉“有新版本”的缓存，保证首页提示条立刻消失（即使马上重画首页也不会再冒出来）
-  if (payload.phase === 'done') { run.done = true; run.pct = 100; run.error = ''; App.state.releaseAvailable = null; }
+  if (payload.phase === 'done') { run.done = true; run.pct = 100; run.error = ''; App.state.releaseAvailable = null; refreshHomeAfterUpdate(); }
   const step = RELEASE_STEPS.find(item => item[0] === run.phase);
   if (step) {
     //By leewheel 2026年11月8日 阶段内按真实进度推进（注入补丁档 66→80%、导库 86→96%），

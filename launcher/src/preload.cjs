@@ -193,6 +193,8 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   realmsStart: key => call('realms:start', key),
   realmsStop: key => call('realms:stop', key),
   realmsOptions: (key, options) => call('realms:options', key, options || {}),
+  //By leewheel 2026年11月9日 省电模式开关（国度无人 10 分钟后机器人休眠）
+  realmsEco: (key, on) => call('realms:eco', key, on === true),
   realmsOpenLogs: key => call('realms:openLogs', key),
   realmsPurge: key => call('realms:purge', key),
   realmsDisable: (key, off) => call('realms:disable', key, off === true),

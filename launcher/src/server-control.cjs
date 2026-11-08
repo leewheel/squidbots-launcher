@@ -58,7 +58,9 @@ function validateCommand(value, label) {
   if (typeof value.exe !== 'string' || path.isAbsolute(value.exe) || value.exe.split(/[\\/]/).includes('..') || !/\.exe$/i.test(value.exe)) throw new Error(`${label}: exe must be a relative path inside the repack.`);
   const args = (value.args || []).map(String);
   if (args.some(arg => arg.includes('..'))) throw new Error(`${label}: arguments cannot leave the repack folder.`);
-  return { exe: value.exe, args, timeout: Math.min(600, Math.max(5, Number(value.timeout) || 180)) };
+  //By leewheel 2026年11月9日 上限从 600 秒放宽到 1800 秒：慢磁盘上首次导入 500MB 的 world 库
+  // （老大那台机械盘）本来就是十几分钟的事，600 秒会被判成“启动失败”。
+  return { exe: value.exe, args, timeout: Math.min(1800, Math.max(5, Number(value.timeout) || 180)) };
 }
 
 function validateServices(list) {
@@ -87,7 +89,7 @@ function validateServices(list) {
       stopCommand: typeof service.stopCommand === 'string' ? service.stopCommand.slice(0, 80) : '',
       stopExe: typeof service.stopExe === 'string' && !path.isAbsolute(service.stopExe) && !service.stopExe.includes('..') ? service.stopExe : '',
       stopArgs: (service.stopArgs || []).map(String),
-      startTimeout: Math.min(600, Math.max(10, Number(service.startTimeout) || 120)),
+      startTimeout: Math.min(1800, Math.max(10, Number(service.startTimeout) || 120)),
     };
   });
 }

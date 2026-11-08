@@ -42,7 +42,7 @@
           "--defaults-file={root}/my.ini",
           "--port=3396"
         ],
-        "startTimeout": 240,
+        "startTimeout": 960,
         "stopExe": "mysql/bin/mysqladmin.exe",
         "stopArgs": [
           "--defaults-file=mysql/admin-client.ini",

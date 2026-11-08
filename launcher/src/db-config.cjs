@@ -23,16 +23,54 @@ const FORCED_SETTINGS = [
   { relative: 'worldserver.conf', key: 'Quests.IgnoreAutoAccept', value: '1' },
 ];
 
+function readText(file) {
+  try { return require('node:fs').readFileSync(file, 'utf8'); } catch { return ''; }
+}
+
+//By leewheel 2026年11月9日 端口以 `Server\my.ini` 为准（老大 2026-11-09 明确要求）。
+// 为什么改优先级：my.ini 决定 mysqld 真正监听哪个端口；repack.json / worldserver.conf 只是“以为”的端口。
+// 以前 repack.json 优先，出现过 mysqld 听 3396、配置被改成 3395 的错位（server-control 那边也踩过）。
 function mysqlPortOf(root) {
   const L = layout.serverLayout(root);
+  const fromIni = Number(layout.iniValue(readText(path.join(L.path('my.ini'))), 'mysqld', 'port'));
+  if (fromIni > 0) return fromIni;
   const settings = layout.readJson(L.path('Settings/repack.json')) || {};
   const fromSettings = Number(settings.mysqlPort);
   if (fromSettings > 0) return fromSettings;
-  const fromIni = Number(layout.iniValue(path.join(L.path('my.ini')), 'mysqld', 'port'));
-  if (fromIni > 0) return fromIni;
-  //By leewheel 2026年11月6日 兜底写死 3396：整合包自带的 MySQL 一直是 3396，
-  // 退到 3306 会让世界服去连一个根本不存在的实例（老大点名要求的就是 3396）。
-  return 3396;
+  // 再看世界服自己的连接串：能跑起来的服，这里的端口一定是对的
+  const fromConf = Number((/^\s*WorldDatabaseInfo\s*=\s*"[^"]*?;(\d{2,5});/m.exec(readText(path.join(root, 'configs', 'worldserver.conf'))) || [])[1]);
+  if (fromConf > 0) return fromConf;
+  // 最后才退回 MySQL 默认端口：不再猜 3396（老写死值害过两次）
+  return 3306;
+}
+
+//By leewheel 2026年11月9日 连库的连接串同理：端口听 my.ini 的，账号密码按配套的 admin-client.ini 取。
+// 以前这里只有“读 worldserver.conf”，没有 ini 就直接拿 3396 硬连 —— 库没起、端口不对、账号不对，
+// 三种情况全报成同一句话，看不出到底哪一步错。
+function mysqlConnOf(root) {
+  const port = mysqlPortOf(root);
+  const L = layout.serverLayout(root);
+  const iniText = readText(path.join(root, 'mysql', 'admin-client.ini'));
+  const iniPort = Number(layout.iniValue(iniText, 'client', 'port'));
+  const iniUser = layout.iniValue(iniText, 'client', 'user');
+  const iniPass = layout.iniValue(iniText, 'client', 'password');
+  //By leewheel 2026年11月9日 库名也要带出来。
+  // 只给 -h/-P/-u/-p 而不给库，`SELECT ... FROM coa_bot_settings` 会报
+  // ERROR 1046 No database selected；界面把这句话当成“表还没建”，老大看到的就是
+  // 「数据库里还没有 coa_bot_settings 表」。库名一律取世界服连接串里的那个。
+  const conf = readText(path.join(root, 'configs', 'worldserver.conf'));
+  const match = /^\s*WorldDatabaseInfo\s*=\s*"([^"]+)"/m.exec(conf);
+  const confParts = match ? match[1].split(';') : [];
+  const db = (confParts[4] || 'acore_world').trim() || 'acore_world';
+  // 只有 ini 的端口与 my.ini 一致时才采信它的账号：端口不同说明是另一个实例的存档，账号不一定存在
+  if (iniUser && (!iniPort || iniPort === port)) {
+    return { host: '127.0.0.1', port, user: iniUser, pass: iniPass || '', db, source: 'mysql/admin-client.ini' };
+  }
+  if (match) {
+    const [host, confPort, user, pass] = confParts;
+    return { host: host || '127.0.0.1', port, user: user || '', pass: pass || '', db, source: 'configs/worldserver.conf' };
+  }
+  return { host: '127.0.0.1', port, user: '', pass: '', db, source: 'my.ini（包里既没有 admin-client.ini 也没有世界服连接串，按无账号连接）' };
 }
 
 /** 把 "host;port;user;pass;db" 里的端口换掉，host 固定本机回环 */
@@ -107,4 +145,4 @@ async function ensureDatabaseConfig(root) {
   return changed;
 }
 
-module.exports = { ensureDatabaseConfig, mysqlPortOf, rewriteDatabaseInfo };
+module.exports = { ensureDatabaseConfig, mysqlPortOf, mysqlConnOf, rewriteDatabaseInfo };

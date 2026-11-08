@@ -665,7 +665,13 @@ function readDbConfig(serverRoot) {
 
 // 按连接串拼 mysql.exe 参数（用 -h/-P/-u/-p 直连，不依赖 admin-client.ini）
 function mysqlArgsFor(conn) {
-  return ['-h', conn.host, '-P', String(conn.port), '-u', conn.user, `-p${conn.pass}`, '--connect-timeout=5', '--default-character-set=utf8mb4'];
+  const args = ['-h', conn.host, '-P', String(conn.port), '-u', conn.user, `-p${conn.pass}`, '--connect-timeout=5', '--default-character-set=utf8mb4'];
+  //By leewheel 2026年11月9日 必须带默认库。
+  // 少了 --database，`SELECT setting_value FROM coa_bot_settings` 会直接报
+  // ERROR 1046 (3D000) No database selected —— 界面上这句话又被当成“表还没建”，
+  // 于是老大看到的是「数据库里还没有 coa_bot_settings 表」，实际上表存在、只是没选库。
+  if (DATABASE.test(String(conn.db || ''))) args.push(`--database=${conn.db}`);
+  return args;
 }
 
 //By leewheel 2026年11月9日 把 execFile 的「Command failed: <整条命令行>\n<stderr>」收成一行 MySQL 原文。
@@ -706,8 +712,9 @@ async function waitForMysql(serverRoot, { timeoutMs = 120000, onLine = () => {},
 // 单个 SQL 文件（可指定数据库；conn 为 worldserver.conf 里的连接串）
 async function importSqlFile(serverRoot, file, database = '', conn = null) {
   //By leewheel 2026年11月9日 走 mysqlClient：有连接串就不依赖 admin-client.ini（同 mysqlQuery）
-  const { exe, args: base } = mysqlClient(serverRoot, conn);
-  const args = [...base, '--batch'];
+  // mysqlArgsFor 现在自带 --database=<连接串里的库>，导入指定库时要先摘掉它，避免两个 --database 打架。
+  const { exe, args: raw } = mysqlClient(serverRoot, conn);
+  const args = [...raw.filter(arg => !/^--database=/.test(arg)), '--batch'];
   if (database) args.push(`--database=${database}`);
   await new Promise((resolve, reject) => {
     const child = spawn(exe, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });

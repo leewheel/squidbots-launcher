@@ -56,8 +56,11 @@ function serverLayout(rootInput) {
   const authConf = readText(joined(...`${configs}/authserver.conf`.split('/')));
   //By leewheel 2026-11-02 端口的 my.ini：优先用服务端根目录的那份（启动脚本用的就是它），其次 mysql/my.ini
   const myIni = readText(joined('my.ini')) || readText(joined('mysql', 'my.ini'));
+  //By leewheel 2026年11月9日 数据库端口以 my.ini 为第一真相源（老大 2026-11-09 明确要求）。
+  // 原来 repack.json 优先：repack.json 存 3395、my.ini 写 3396 时，启动器照 3395 拉 mysqld，
+  // 而 my.ini 与其它工具都按 3396 —— 同一个包两套端口，连不上库还查不出来。
   const ports = {
-    mysql: positive(settings.mysqlPort) || positive(iniValue(myIni, 'mysqld', 'port')) || 3306,
+    mysql: positive(iniValue(myIni, 'mysqld', 'port')) || positive(settings.mysqlPort) || 3306,
     auth: positive(settings.authPort) || positive(confValue(authConf, 'RealmServerPort')) || 3724,
     world: positive(settings.worldPort) || positive(confValue(worldConf, 'WorldServerPort')) || 8085,
     ra: positive(settings.raPort) || positive(confValue(worldConf, 'Ra.Port')) || 3443,

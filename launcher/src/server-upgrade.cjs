@@ -46,7 +46,9 @@ function inspect(folder) {
     started: hasFile('mysql/admin-client.ini'),
     hasData: fs.existsSync(path.join(root, 'mysql', 'data', 'acore_characters')) || fs.existsSync(path.join(root, 'mysql', 'Data', 'acore_characters')),
     ports: {
-      mysql: Number(settings.mysqlPort) || Number(layout.ports.mysql) || 0,
+      //By leewheel 2026年11月9日 mysql 一律用 layout 算好的那个（my.ini 优先）；
+      // auth/world 仍由 repack.json 说了算，它们的端口是给玩家连的，与 my.ini 无关。
+      mysql: Number(layout.ports.mysql) || 0,
       auth: Number(settings.authPort) || Number(layout.ports.auth) || 0,
       world: Number(settings.worldPort) || Number(layout.ports.world) || 0,
     },

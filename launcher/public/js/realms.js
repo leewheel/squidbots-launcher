@@ -128,9 +128,18 @@ function realmCard(realm, busy) {
   const startStop = on
     ? `<button class="button ghost small" data-action="realm-stop" data-key="${realm.key}" ${busy || realm.state === 'starting' ? 'disabled' : ''}>${icon('pause')}${esc(t('realms.stop', 'Stop'))}</button>`
     : `<button class="button primary small" data-action="realm-start" data-key="${realm.key}" ${busy || realm.state === 'queued' ? 'disabled' : ''}>${icon('play')}${esc(t('realms.start', 'Start'))}</button>`;
+  //By leewheel 2026年11月9日 省电模式开关：国度里 10 分钟没有真人就让机器人休眠，有人进来立刻醒。
+  const ecoInfo = App.state.realms?.eco || null;
+  const ecoSwitch = key => {
+    const info = ecoInfo?.realms?.[key] || null;
+    const supported = ecoInfo?.supported !== false;
+    const minutes = Math.max(1, Math.round(Number(ecoInfo?.after || 600000) / 60000));
+    const asleep = info?.asleep === true;
+    return `<label class="realm-auto${supported ? '' : ' off'}" title="${esc(supported ? t('realms.ecoHint', 'When nobody has been in this realm for {n} minutes, the bots far from players go to sleep; they wake as soon as a player is there.', { n: minutes }) : t('realms.ecoUnsupported', 'These bots are older than 2.9.1: they do not read the sleep setting again, so eco mode stays off.'))}"><input type="checkbox" data-action="realm-eco" data-key="${key}" ${info?.on === true ? 'checked' : ''} ${supported ? '' : 'disabled'}>${esc(t('realms.eco', 'Eco mode'))}${asleep ? `<em class="count">${esc(t('realms.ecoSleeping', 'sleeping'))}</em>` : ''}</label>`;
+  };
   const more = realm.main
-    ? `<label class="realm-auto"><input type="checkbox" data-action="realm-auto" data-key="coa" ${realm.autostart !== false ? 'checked' : ''}>${esc(t('realms.autostart', 'Start with the server'))}</label><small class="muted">${esc(t('realms.mainFoot', 'Its settings are the base of the other realms.'))}</small>`
-    : `<label class="realm-auto"><input type="checkbox" data-action="realm-auto" data-key="${realm.key}" ${realm.autostart ? 'checked' : ''}>${esc(t('realms.autostart', 'Start with the server'))}</label>
+    ? `<label class="realm-auto"><input type="checkbox" data-action="realm-auto" data-key="coa" ${realm.autostart !== false ? 'checked' : ''}>${esc(t('realms.autostart', 'Start with the server'))}</label>${ecoSwitch('coa')}<small class="muted">${esc(t('realms.mainFoot', 'Its settings are the base of the other realms.'))}</small>`
+    : `<label class="realm-auto"><input type="checkbox" data-action="realm-auto" data-key="${realm.key}" ${realm.autostart ? 'checked' : ''}>${esc(t('realms.autostart', 'Start with the server'))}</label>${ecoSwitch(realm.key)}
        <span class="realm-links"><button class="link-button" data-action="realm-logs" data-key="${realm.key}">${icon('book')}${esc(t('realms.logs', 'Logs'))}</button>
        <button class="link-button" data-action="realm-purge" data-key="${realm.key}" ${on || busy ? 'disabled' : ''} title="${esc(t('realms.purgeHint', 'Deletes the random bots of this realm only; they are made again at its next start.'))}">${icon('refresh')}${esc(t('realms.purge', 'New bots'))}</button>
        <button class="link-button" data-action="realm-disable" data-key="${realm.key}" ${busy ? 'disabled' : ''} title="${esc(t('realms.disableHint', 'Stops it and takes it out of the realm list; nothing is deleted.'))}">${icon('close')}${esc(t('realms.disable', 'Switch off'))}</button></span>`;
@@ -214,6 +223,13 @@ Object.assign(App.actions, {
     toast(t('realms.stopped2', '{name} is stopped.', { name: realmTitle(key) }), 'success');
   }, button),
   'realm-auto': input => guard(async () => { await App.api.realmsOptions(input.dataset.key, { autostart: input.checked }); await loadRealms(); }),
+  //By leewheel 2026年11月9日 省电模式：勾上就写入该国度存档，取消立刻把原值还回 playerbots.conf
+  'realm-eco': input => guard(async () => {
+    try { await App.api.realmsEco(input.dataset.key, input.checked); }
+    catch (error) { input.checked = !input.checked; throw error; }
+    await loadRealms();
+    toast(input.checked ? t('realms.ecoOn', 'Eco mode on: the bots sleep when nobody is in for a while.') : t('realms.ecoOff', 'Eco mode off: the bots stay on.'), 'success');
+  }),
   'realm-logs': button => guard(() => App.api.realmsOpenLogs(button.dataset.key)),
   'realm-purge': button => guard(async () => {
     const key = button.dataset.key;

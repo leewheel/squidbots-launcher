@@ -464,7 +464,9 @@ function botPrefixView(state) {
           ? '数据库连上了但账号密码不对 —— 检查 Server\\mysql\\admin-client.ini 与 worldserver.conf 里的用户名。'
           : state.reason === 'no-database'
             ? '连上了数据库，但里面没有 acore_world 库 —— 整合包没装完整，或连到了别的实例。'
-            : '数据库没有启动 —— 先启动服务器（或手动开 Server\\mysql），再回来改前缀。';
+            : state.reason === 'db-no-schema'
+              ? '连上了数据库，但这次查询没选中库 —— 世界服的库名没读到（检查 Server\\configs\\worldserver.conf 的 WorldDatabaseInfo）。'
+              : '数据库没有启动 —— 先启动服务器（或手动开 Server\\mysql），再回来改前缀。';
   const warn = !ready && state
     ? `<div class="conf-warn"><span>${icon('warning')}<strong>${esc(reason)}</strong>${state.message ? `<br><small class="muted">${esc(String(state.message).slice(0, 200))}</small>` : ''}</span><button class="button ghost small" data-action="bot-prefix-reload">${icon('refresh')}重试</button></div>`
     : '';

@@ -132,6 +132,26 @@
       }
     },
     {
+      "id": "damage",
+      "icon": "chart",
+      "label": {
+        "en": "Bot damage",
+        "fr": "Dégâts des bots",
+        "ru": "Урон ботов",
+        "zh": "机器人伤害"
+      }
+    },
+    {
+      "id": "progression",
+      "icon": "trophy",
+      "label": {
+        "en": "Progression (released content)",
+        "fr": "Progression (contenu sorti)",
+        "ru": "Прогрессия (открытый контент)",
+        "zh": "进度（已开放内容）"
+      }
+    },
+    {
       "id": "chat",
       "icon": "news",
       "label": {
@@ -524,6 +544,28 @@
         "fr": "Durabilité perdue en ressuscitant auprès du gardien des âmes. 25 par défaut, 0 = jamais.",
         "ru": "Потеря прочности при воскрешении у целителя душ. По умолчанию 25, 0 — никогда.",
         "zh": "由灵魂医者复活时损失的耐久度。默认 25，0 = 从不损耗。"
+      }
+    },
+    {
+      "key": "AccountInstancesPerHour",
+      "file": "worldserver.conf",
+      "group": "realm",
+      "kind": "int",
+      "when": "restart",
+      "min": 1,
+      "max": 1000,
+      "default": "5",
+      "label": {
+        "en": "Instances per hour",
+        "fr": "Instances par heure",
+        "ru": "Подземелий в час",
+        "zh": "每小时副本数"
+      },
+      "help": {
+        "en": "How many different dungeons or raids an account may enter in one hour. CoA ships 5; raise it to chain dungeons alone or with bots.",
+        "fr": "Le nombre de donjons ou raids différents qu'un compte peut ouvrir en une heure. CoA est livré avec 5 ; augmentez-le pour enchaîner les donjons seul ou avec des bots.",
+        "ru": "Сколько разных подземелий или рейдов аккаунт может открыть за час. В CoA по умолчанию 5; увеличьте, чтобы проходить подземелья подряд одному или с ботами.",
+        "zh": "一个账号每小时可进入的不同副本或团队副本数量。CoA 默认为 5；独自或带机器人连续刷副本时可调高。"
       }
     },
     {
@@ -1934,6 +1976,25 @@
       }
     },
     {
+      "key": "AiPlayerbot.GearRollRandomSuffix",
+      "file": "playerbots.conf",
+      "group": "behaviour",
+      "kind": "bool",
+      "when": "restart",
+      "label": {
+        "en": "Random suffixes of the bots' gear: rolled at random (like loot)",
+        "fr": "Suffixes aléatoires de l'équipement des bots : tirés au hasard (comme un butin)",
+        "ru": "Случайные суффиксы снаряжения ботов: выпадают наугад (как добыча)",
+        "zh": "机器人装备的随机后缀：随机生成（如同掉落）"
+      },
+      "help": {
+        "en": "Off: every item given to the bots takes the random suffix (« of the Bear »…) best for their specialization. On: the suffix is rolled at random like a looted item: more variety (useful with your own suffix pools), bots a little weaker.",
+        "fr": "Désactivé : chaque objet donné aux bots prend le suffixe aléatoire (« of the Bear »…) le meilleur pour leur spé. Activé : le suffixe est tiré au hasard comme un objet ramassé : plus de variété (utile avec des pools de suffixes perso), bots un peu moins forts.",
+        "ru": "Выкл.: каждый предмет ботов получает случайный суффикс («of the Bear»…), лучший для их специализации. Вкл.: суффикс выпадает наугад, как у добычи: больше разнообразия, боты чуть слабее.",
+        "zh": "关闭：给机器人的每件物品都取最适合其专精的随机后缀（如“of the Bear”）。开启：后缀像掉落物品一样随机生成：更多样化，机器人略弱。"
+      }
+    },
+    {
       "key": "AiPlayerbot.Missions.Enable",
       "file": "playerbots.conf",
       "group": "alts",
@@ -2087,6 +2148,26 @@
         "fr": "À partir de ce niveau, un bot utilise sa monture terrestre rapide, s'il en a une. Par défaut 40.",
         "ru": "С этого уровня бот пользуется быстрым наземным ездовым животным, если оно у него есть. По умолчанию 40.",
         "zh": "从此等级起，机器人会使用快速地面坐骑（如果有）。默认 40。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.AutoPickTalentsAltBots",
+      "file": "playerbots.conf",
+      "group": "alts",
+      "kind": "bool",
+      "when": "restart",
+      "default": "0",
+      "label": {
+        "en": "Your own bots spend their talent points",
+        "fr": "Vos propres bots dépensent leurs talents",
+        "ru": "Ваши боты сами распределяют таланты",
+        "zh": "你自己的机器人自动分配天赋点"
+      },
+      "help": {
+        "en": "Your alts added as bots spend their free talent points by themselves, on levelup and at login. Points already spent stay as they are. Off by default.",
+        "fr": "Vos alts ajoutés en bots dépensent eux-mêmes leurs points de talent libres, en montant de niveau et à la connexion. Les points déjà dépensés restent tels quels. Désactivé par défaut.",
+        "ru": "Ваши альты-боты сами тратят свободные очки талантов при повышении уровня и при входе. Уже потраченные очки не меняются. По умолчанию выключено.",
+        "zh": "作为机器人加入的小号会在升级和登录时自行分配空闲天赋点。已分配的点数保持不变。默认关闭。"
       }
     },
     {
@@ -3143,6 +3224,136 @@
       }
     },
     {
+      "key": "CoA.LegacyMountFlight",
+      "file": "coa.conf",
+      "group": "collections",
+      "kind": "bool",
+      "when": "restart",
+      "default": "0",
+      "label": {
+        "en": "Legacy mount flight",
+        "fr": "Vol des montures à l'ancienne",
+        "ru": "Старые правила полёта на маунтах",
+        "zh": "旧版坐骑飞行规则"
+      },
+      "help": {
+        "en": "Off (default): every mount follows the flight rule: flying in Outland with Expert Riding, in Northrend with Cold Weather Flying, never in Azeroth, battlegrounds or no-fly areas, and a rider leaving a flying area is dismounted. On: the rule only covers mounts in the spellbook; Ash'adar never flies, other mounts fly wherever their own spell allows, and nobody is dismounted.",
+        "fr": "Désactivé (par défaut) : toutes les montures suivent la règle de vol : vol en Outreterre avec la monte experte, en Norfendre avec le Vol par temps froid, jamais en Azeroth, en champ de bataille ni en zone interdite, et un cavalier qui quitte une zone de vol est démonté. Activé : la règle ne couvre que les montures du grimoire ; Ash'adar ne vole jamais, les autres montures volent là où leur propre sort le permet, et personne n'est démonté.",
+        "ru": "Выкл. (по умолчанию): все маунты следуют правилу полёта: полёт в Запределье с мастерской верховой ездой, в Нордсколе с «Полётами в холодную погоду», никогда в Азероте, на полях боя и в зонах без полётов; всадника, покинувшего зону полётов, спешивают. Вкл.: правило касается только маунтов из книги заклинаний; Ash'adar никогда не летает, остальные маунты летают там, где позволяет их заклинание, и никого не спешивают.",
+        "zh": "关闭（默认）：所有坐骑遵循飞行规则：在外域需专家级骑术，在诺森德需寒冷天气飞行，在艾泽拉斯、战场和禁飞区永远不能飞行，离开飞行区域的骑手会被打下坐骑。开启：该规则只适用于法术书中的坐骑；Ash'adar 永远不能飞行，其他坐骑可在其自身法术允许的任何地方飞行，且不会有人被打下坐骑。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.RandomBotTransmog",
+      "file": "playerbots.conf",
+      "group": "collections",
+      "kind": "bool",
+      "when": "restart",
+      "default": "1",
+      "offWhen": {
+        "key": "CoA.CollectionsForBots",
+        "values": [
+          "2"
+        ]
+      },
+      "label": {
+        "en": "Transmog of the random bots",
+        "fr": "Transmog des bots aléatoires",
+        "ru": "Трансмог случайных ботов",
+        "zh": "随机机器人的幻化"
+      },
+      "help": {
+        "en": "Random bots wear the look of a set that fits their level. Purely visual: their gear and stats do not change. Off when every bot uses the collections.",
+        "fr": "Les bots aléatoires portent l'apparence d'un set adapté à leur niveau. Purement visuel : leur équipement et leurs stats ne changent pas. Sans effet quand tous les bots utilisent les collections.",
+        "ru": "Случайные боты носят облик комплекта под свой уровень. Только внешний вид: снаряжение и характеристики не меняются. Не действует, когда все боты используют коллекции.",
+        "zh": "随机机器人穿上符合其等级的套装外观。仅为外观：装备和属性不变。所有机器人都使用收藏时无效。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.RandomBotTransmogPercent",
+      "file": "playerbots.conf",
+      "group": "collections",
+      "kind": "int",
+      "when": "restart",
+      "min": 0,
+      "max": 100,
+      "default": "50",
+      "offWhen": {
+        "key": "CoA.CollectionsForBots",
+        "values": [
+          "2"
+        ]
+      },
+      "label": {
+        "en": "Random bots with a transmog (%)",
+        "fr": "Bots aléatoires avec une transmog (%)",
+        "ru": "Случайные боты с трансмогом (%)",
+        "zh": "使用幻化的随机机器人（%）"
+      },
+      "help": {
+        "en": "Share of the random bots that wear a transmog, always the same bots.",
+        "fr": "La part des bots aléatoires qui portent une transmog, toujours les mêmes.",
+        "ru": "Доля случайных ботов с трансмогом, всегда одни и те же боты.",
+        "zh": "使用幻化的随机机器人比例，始终是同一批机器人。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.RandomBotTransmogMinLevel",
+      "file": "playerbots.conf",
+      "group": "collections",
+      "kind": "int",
+      "when": "restart",
+      "min": 1,
+      "max": 80,
+      "default": "10",
+      "offWhen": {
+        "key": "CoA.CollectionsForBots",
+        "values": [
+          "2"
+        ]
+      },
+      "label": {
+        "en": "Transmog from level",
+        "fr": "Transmog à partir du niveau",
+        "ru": "Трансмог с уровня",
+        "zh": "幻化起始等级"
+      },
+      "help": {
+        "en": "Random bots below this level keep their own look.",
+        "fr": "Les bots aléatoires sous ce niveau gardent leur propre apparence.",
+        "ru": "Случайные боты ниже этого уровня сохраняют свой облик.",
+        "zh": "低于此等级的随机机器人保持自身外观。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.RandomBotTransmogCosmeticSets",
+      "file": "playerbots.conf",
+      "group": "collections",
+      "kind": "int",
+      "when": "restart",
+      "min": 0,
+      "max": 100,
+      "default": "50",
+      "offWhen": {
+        "key": "CoA.CollectionsForBots",
+        "values": [
+          "2"
+        ]
+      },
+      "label": {
+        "en": "Full cosmetic sets (%)",
+        "fr": "Sets cosmétiques entiers (%)",
+        "ru": "Полные косметические комплекты (%)",
+        "zh": "完整外观套装（%）"
+      },
+      "help": {
+        "en": "Among the random bots with a transmog, the share that wears a whole cosmetic set.",
+        "fr": "Parmi les bots aléatoires avec une transmog, la part qui porte un set cosmétique entier.",
+        "ru": "Среди случайных ботов с трансмогом доля тех, кто носит полный косметический комплект.",
+        "zh": "在使用幻化的随机机器人中，穿着完整外观套装的比例。"
+      }
+    },
+    {
       "key": "AiPlayerbot.SyncLevelWithPlayers",
       "file": "playerbots.conf",
       "group": "levels",
@@ -3178,6 +3389,392 @@
         "fr": "Un bot qui entre dans la tranche la plus basse repart au premier niveau, dans la zone de départ de sa race : c'est ce qui repeuple les zones de début.",
         "ru": "Бот, попавший в нижний диапазон, начинает с первого уровня в стартовой зоне своей расы: так заполняются стартовые зоны.",
         "zh": "被调入最低等级区间的机器人会从 1 级、在其种族的新手区域重新开始：新手区域就是这样填满的。"
+      }
+    },
+    {
+      "key": "Ascension.CallboardCache.ReleaseStage",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "choice",
+      "when": "reload",
+      "choices": [
+        {
+          "value": "0",
+          "label": {
+            "en": "0 - Normal dungeons only",
+            "fr": "0 - Donjons normaux seulement",
+            "ru": "0 - Только обычные подземелья",
+            "zh": "0 - 仅普通地下城"
+          }
+        },
+        {
+          "value": "1",
+          "label": {
+            "en": "1 - Heroic dungeons",
+            "fr": "1 - Donjons héroïques",
+            "ru": "1 - Героические подземелья",
+            "zh": "1 - 英雄地下城"
+          }
+        },
+        {
+          "value": "2",
+          "label": {
+            "en": "2 - Mythic dungeons",
+            "fr": "2 - Donjons mythiques",
+            "ru": "2 - Мифические подземелья",
+            "zh": "2 - 史诗地下城"
+          }
+        },
+        {
+          "value": "3",
+          "label": {
+            "en": "3 - Molten Core",
+            "fr": "3 - Cœur du Magma",
+            "ru": "3 - Огненные Недра",
+            "zh": "3 - 熔火之心"
+          }
+        },
+        {
+          "value": "4",
+          "label": {
+            "en": "4 - Zul'Gurub",
+            "fr": "4 - Zul'Gurub",
+            "ru": "4 - Зул'Гуруб",
+            "zh": "4 - 祖尔格拉布"
+          }
+        },
+        {
+          "value": "5",
+          "label": {
+            "en": "5 - Onyxia's Lair",
+            "fr": "5 - Repaire d'Onyxia",
+            "ru": "5 - Логово Ониксии",
+            "zh": "5 - 奥妮克希亚的巢穴"
+          }
+        },
+        {
+          "value": "6",
+          "label": {
+            "en": "6 - Blackwing Lair",
+            "fr": "6 - Repaire de l'Aile noire",
+            "ru": "6 - Логово Крыла Тьмы",
+            "zh": "6 - 黑翼之巢"
+          }
+        },
+        {
+          "value": "7",
+          "label": {
+            "en": "7 - Ahn'Qiraj (ruins and temple)",
+            "fr": "7 - Ahn'Qiraj (ruines et temple)",
+            "ru": "7 - Ан'Кираж (руины и храм)",
+            "zh": "7 - 安其拉（废墟和神殿）"
+          }
+        },
+        {
+          "value": "8",
+          "label": {
+            "en": "8 - Naxxramas (its caches and tokens too)",
+            "fr": "8 - Naxxramas (ses coffres et jetons aussi)",
+            "ru": "8 - Наксрамас (и его сундуки и жетоны)",
+            "zh": "8 - 纳克萨玛斯（包括其宝箱和代币）"
+          }
+        }
+      ],
+      "label": {
+        "en": "Content released on the realm",
+        "fr": "Contenu sorti sur le royaume",
+        "ru": "Контент, открытый в мире",
+        "zh": "本服务器已开放的内容"
+      },
+      "help": {
+        "en": "8 = everything released, Naxxramas included. This also closes the raids: a dungeon difficulty or a raid above the stage cannot be entered (« Instance is closed »), Game Masters still enter. Each stage opens the ones before it. Naxxramas is never closed; stage 8 adds its caches and tokens. Callboard Caches follow the same stages. Players see the new difficulty list at their next login.",
+        "fr": "8 = tout le contenu sorti, Naxxramas compris. Ce réglage ferme aussi les raids : une difficulté de donjon ou un raid au-dessus du palier est inaccessible (« Instance is closed »), les MJ entrent quand même. Chaque palier ouvre les précédents. Naxxramas n'est jamais fermé ; le palier 8 ajoute ses coffres et jetons. Les coffres du Callboard suivent les mêmes paliers. Les joueurs voient la nouvelle liste des difficultés à leur prochaine connexion.",
+        "ru": "8 = открыт весь контент, включая Наксрамас. Этот параметр также закрывает рейды: сложность подземелья или рейд выше этапа недоступны («Instance is closed»), ГМ всё равно могут войти. Каждый этап открывает предыдущие. Наксрамас никогда не закрывается; этап 8 добавляет его сундуки и жетоны. Сундуки Callboard следуют тем же этапам. Игроки увидят новый список сложностей при следующем входе.",
+        "zh": "8 = 已开放全部内容，包括纳克萨玛斯。此设置也会关闭团队副本：高于该阶段的地下城难度或团队副本无法进入（“Instance is closed”），GM 仍可进入。每个阶段会开放之前的所有阶段。纳克萨玛斯从不关闭；阶段 8 会加入其宝箱和代币。Callboard 宝箱遵循相同阶段。玩家下次登录时才会看到新的难度列表。"
+      }
+    },
+    {
+      "key": "Ascension.CallboardCache.PreviousStageOnly",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "bool",
+      "when": "reload",
+      "label": {
+        "en": "Callboard Caches: one stage behind",
+        "fr": "Coffres du Callboard : un palier en retard",
+        "ru": "Сундуки Callboard: на этап позади",
+        "zh": "Callboard 宝箱：落后一个阶段"
+      },
+      "help": {
+        "en": "Generic Callboard Caches give gear of the stage before the released one. Off by default.",
+        "fr": "Les coffres génériques du Callboard donnent l'équipement du palier précédant celui qui est sorti. Désactivé par défaut.",
+        "ru": "Обычные сундуки Callboard дают снаряжение предыдущего этапа. По умолчанию выключено.",
+        "zh": "通用 Callboard 宝箱给予已开放阶段之前一个阶段的装备。默认关闭。"
+      }
+    },
+    {
+      "key": "Ascension.CallboardCache.ItemLevelAllowance",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 0,
+      "max": 100,
+      "label": {
+        "en": "Callboard Caches: item levels above yours",
+        "fr": "Coffres du Callboard : niveaux d'objet au-dessus du vôtre",
+        "ru": "Сундуки Callboard: уровни предметов выше вашего",
+        "zh": "Callboard 宝箱：高于你的物品等级"
+      },
+      "help": {
+        "en": "How far above the average item level of the one who opens it a Callboard Cache may reach. 6 by default.",
+        "fr": "Jusqu'où un coffre du Callboard peut monter au-dessus du niveau d'objet moyen de celui qui l'ouvre. 6 par défaut.",
+        "ru": "Насколько сундук Callboard может превышать средний уровень предметов открывающего. По умолчанию 6.",
+        "zh": "Callboard 宝箱最多可高于开启者平均物品等级多少。默认 6。"
+      }
+    },
+    {
+      "key": "Ascension.CallboardCache.CachePoints",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 1,
+      "max": 10000,
+      "label": {
+        "en": "Callboard Caches: points for one cache",
+        "fr": "Coffres du Callboard : points pour un coffre",
+        "ru": "Сундуки Callboard: очков за сундук",
+        "zh": "Callboard 宝箱：每个宝箱所需点数"
+      },
+      "help": {
+        "en": "Progress points that pay one cache. The game shows a tenth of it (150 shows as 15). 150 by default.",
+        "fr": "Points de progression qui paient un coffre. Le jeu en affiche un dixième (150 s'affiche 15). 150 par défaut.",
+        "ru": "Очки прогресса за один сундук. Игра показывает десятую часть (150 отображается как 15). По умолчанию 150.",
+        "zh": "兑换一个宝箱所需的进度点数。游戏显示其十分之一（150 显示为 15）。默认 150。"
+      }
+    },
+    {
+      "key": "Ascension.CallboardCache.GoldMin",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 0,
+      "max": 100000,
+      "label": {
+        "en": "Callboard Caches: minimum gold",
+        "fr": "Coffres du Callboard : or minimum",
+        "ru": "Сундуки Callboard: минимум золота",
+        "zh": "Callboard 宝箱：最少金币"
+      },
+      "help": {
+        "en": "Gold paid on top of the item. 5 by default.",
+        "fr": "Or donné en plus de l'objet. 5 par défaut.",
+        "ru": "Золото сверх предмета. По умолчанию 5.",
+        "zh": "物品之外额外给予的金币。默认 5。"
+      }
+    },
+    {
+      "key": "Ascension.CallboardCache.GoldMax",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 0,
+      "max": 100000,
+      "label": {
+        "en": "Callboard Caches: maximum gold",
+        "fr": "Coffres du Callboard : or maximum",
+        "ru": "Сундуки Callboard: максимум золота",
+        "zh": "Callboard 宝箱：最多金币"
+      },
+      "help": {
+        "en": "0 pays no gold. 15 by default.",
+        "fr": "0 ne donne pas d'or. 15 par défaut.",
+        "ru": "0 — без золота. По умолчанию 15.",
+        "zh": "0 表示不给金币。默认 15。"
+      }
+    },
+    {
+      "key": "Ascension.PrestigiousCache.ReleaseStage",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 1,
+      "max": 6,
+      "label": {
+        "en": "Prestigious Caches: newest tier released (1-6)",
+        "fr": "Coffres prestigieux : dernier palier de set sorti (1-6)",
+        "ru": "Престижные сундуки: последний открытый тир (1-6)",
+        "zh": "荣耀宝箱：最新开放的套装层级（1-6）"
+      },
+      "help": {
+        "en": "A Prestigious Cache never gives a token of a tier above this one. 6 by default.",
+        "fr": "Un coffre prestigieux ne donne jamais de jeton d'un palier au-dessus. 6 par défaut.",
+        "ru": "Престижный сундук никогда не даёт жетон тира выше этого. По умолчанию 6.",
+        "zh": "荣耀宝箱绝不会给出高于此层级的代币。默认 6。"
+      }
+    },
+    {
+      "key": "Ascension.PrestigiousCache.ClassicStages",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 0,
+      "max": 8,
+      "label": {
+        "en": "Prestigious Caches: Classic caches released (0-8)",
+        "fr": "Coffres prestigieux : coffres Classic sortis (0-8)",
+        "ru": "Престижные сундуки: открыто Classic (0-8)",
+        "zh": "荣耀宝箱：已开放的经典宝箱（0-8）"
+      },
+      "help": {
+        "en": "In order: heroic dungeons, Zul'Gurub, Molten Core, Onyxia, Blackwing Lair, Ruins and Temple of Ahn'Qiraj, Naxxramas. 8 by default.",
+        "fr": "Dans l'ordre : donjons héroïques, Zul'Gurub, Cœur du Magma, Onyxia, Aile noire, ruines et temple d'Ahn'Qiraj, Naxxramas. 8 par défaut.",
+        "ru": "По порядку: героические подземелья, Зул'Гуруб, Огненные Недра, Ониксия, Крыло Тьмы, руины и храм Ан'Киража, Наксрамас. По умолчанию 8.",
+        "zh": "依次为：英雄地下城、祖尔格拉布、熔火之心、奥妮克希亚、黑翼之巢、安其拉废墟和神殿、纳克萨玛斯。默认 8。"
+      }
+    },
+    {
+      "key": "Ascension.PrestigiousCache.TbcStages",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 0,
+      "max": 9,
+      "label": {
+        "en": "Prestigious Caches: Burning Crusade caches released (0-9)",
+        "fr": "Coffres prestigieux : coffres Burning Crusade sortis (0-9)",
+        "ru": "Престижные сундуки: открыто Burning Crusade (0-9)",
+        "zh": "荣耀宝箱：已开放的燃烧的远征宝箱（0-9）"
+      },
+      "help": {
+        "en": "0 keeps them on the Classic ladder. 0 by default.",
+        "fr": "0 les garde sur les paliers Classic. 0 par défaut.",
+        "ru": "0 — остаются на этапах Classic. По умолчанию 0.",
+        "zh": "0 表示保持在经典阶段。默认 0。"
+      }
+    },
+    {
+      "key": "Ascension.PrestigiousCache.TokenChancePercent",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 0,
+      "max": 100,
+      "label": {
+        "en": "Prestigious Caches: token chance (%)",
+        "fr": "Coffres prestigieux : chance de jeton (%)",
+        "ru": "Престижные сундуки: шанс жетона (%)",
+        "zh": "荣耀宝箱：代币几率（%）"
+      },
+      "help": {
+        "en": "Chance for a cache to also give a token of its tier. 25 by default.",
+        "fr": "Chance qu'un coffre donne aussi un jeton de son palier. 25 par défaut.",
+        "ru": "Шанс, что сундук также даст жетон своего тира. По умолчанию 25.",
+        "zh": "宝箱额外给予其层级代币的几率。默认 25。"
+      }
+    },
+    {
+      "key": "Ascension.PrestigiousCache.SecondTokenChancePercent",
+      "file": "coa.conf",
+      "group": "progression",
+      "kind": "int",
+      "when": "reload",
+      "min": 0,
+      "max": 100,
+      "label": {
+        "en": "Prestigious Caches: chance of a second token (%)",
+        "fr": "Coffres prestigieux : chance d'un second jeton (%)",
+        "ru": "Престижные сундуки: шанс второго жетона (%)",
+        "zh": "荣耀宝箱：第二个代币几率（%）"
+      },
+      "help": {
+        "en": "Chance for that token to be two. 5 by default.",
+        "fr": "Chance que ce jeton soit double. 5 par défaut.",
+        "ru": "Шанс, что жетонов будет два. По умолчанию 5.",
+        "zh": "该代币变为两个的几率。默认 5。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.CoaBotDamageByClass",
+      "file": "playerbots.conf",
+      "group": "damage",
+      "kind": "quoted",
+      "when": "reload",
+      "label": {
+        "en": "Damage by class",
+        "fr": "Dégâts par classe",
+        "ru": "Урон по классам",
+        "zh": "按职业的伤害"
+      },
+      "help": {
+        "en": "Percent of their damage the bots of each class deal: \"Tinker:200, Ranger:150\". 100 = unchanged.",
+        "fr": "Pourcentage de leurs dégâts infligés par les bots de chaque classe : « Tinker:200, Ranger:150 ». 100 = inchangé.",
+        "ru": "Процент урона ботов каждого класса: «Tinker:200, Ranger:150». 100 = без изменений.",
+        "zh": "每个职业机器人造成伤害的百分比：“Tinker:200, Ranger:150”。100 = 不变。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.CoaBotDamageBySpec",
+      "file": "playerbots.conf",
+      "group": "damage",
+      "kind": "quoted",
+      "when": "reload",
+      "label": {
+        "en": "Damage by specialization",
+        "fr": "Dégâts par spécialisation",
+        "ru": "Урон по специализациям",
+        "zh": "按专精的伤害"
+      },
+      "help": {
+        "en": "The same by specialization id, \"40:120\"; a specialization wins over its class.",
+        "fr": "La même chose par id de spécialisation, « 40:120 » ; une spécialisation l'emporte sur sa classe.",
+        "ru": "То же по id специализации, «40:120»; специализация важнее класса.",
+        "zh": "按专精 id 设置，“40:120”；专精优先于职业。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.CoaBotDamageVsPlayers",
+      "file": "playerbots.conf",
+      "group": "damage",
+      "kind": "bool",
+      "when": "reload",
+      "label": {
+        "en": "Also against players",
+        "fr": "Aussi contre les joueurs",
+        "ru": "Также против игроков",
+        "zh": "也对玩家生效"
+      },
+      "help": {
+        "en": "Off: the scaled damage only hits creatures. On: it also hits players and other bots (PvP).",
+        "fr": "Désactivé : seuls les dégâts sur les créatures changent. Activé : aussi sur les joueurs et les autres bots (JcJ).",
+        "ru": "Выкл.: меняется только урон по существам. Вкл.: также по игрокам и другим ботам (PvP).",
+        "zh": "关闭：只改变对生物的伤害。开启：对玩家和其他机器人（PvP）同样生效。"
+      }
+    },
+    {
+      "key": "AiPlayerbot.CoaTankThreatBonus",
+      "file": "playerbots.conf",
+      "group": "damage",
+      "kind": "int",
+      "when": "reload",
+      "label": {
+        "en": "Threat of the bot tanks",
+        "fr": "Menace des bots tanks",
+        "ru": "Угроза ботов-танков",
+        "zh": "机器人坦克的威胁"
+      },
+      "help": {
+        "en": "Extra threat of the bot tanks in percent: 0 = unchanged, 100 = ×2, 200 = ×3.",
+        "fr": "Menace en plus des bots tanks, en pourcentage : 0 = inchangée, 100 = ×2, 200 = ×3.",
+        "ru": "Дополнительная угроза ботов-танков в процентах: 0 = без изменений, 100 = ×2, 200 = ×3.",
+        "zh": "机器人坦克额外威胁的百分比：0 = 不变，100 = ×2，200 = ×3。"
       }
     }
   ],
