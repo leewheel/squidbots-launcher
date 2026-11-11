@@ -397,3 +397,11 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
 .port-owner-row { margin: 10px 0 4px; flex-wrap: wrap; align-items: center; gap: 8px; }
 .port-owner-row .muted { flex: 1 1 100%; font-size: 12px; word-break: break-all; }
 /* End By leewheel */
+/* By leewheel 2026年11月11日 首页主框加高 + 服务行显示内存占用（老大要求）：
+   原来服务行只有三个灯挤在按钮上方，加内存数字后需要多给一点高度，不然标题和按钮之间太局促。 */
+.classic-hero.server-hero { min-height: 340px; padding-top: 30px; padding-bottom: 32px; }
+.classic-hero.server-hero .mini-services { gap: 10px 22px; margin: 14px 0 4px; }
+.mini-service .mem { color: var(--faint, #786652); font-size: 12px; font-variant-numeric: tabular-nums; letter-spacing: .2px; }
+.mini-service .light.on + .mem, .mini-service .mem { opacity: .95; }
+@media (max-height: 760px) { .classic-hero.server-hero { min-height: 300px; padding-top: 24px; padding-bottom: 26px; } }
+/* End By leewheel */

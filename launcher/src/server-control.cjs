@@ -283,6 +283,10 @@ class ServerControl {
 
   //By leewheel 2026-11-02 三个服务并行查询：原来的串行写法在慢机器上要 5 秒，首页会一直空着
   async status() {
+    //By leewheel 2026年11月11日 首页要显示每个服务占多少内存：进程表一次查回来（缓存 4 秒），
+    // 不要在 map 里为每个服务各打一次 PowerShell。
+    const rows = await runningInside().catch(() => []);
+    const others = realmPids(this.root);
     const results = await Promise.all(this.services.map(async service => {
       const open = await portOpen(service.port);
       const transient = this.states.get(service.id);
@@ -313,7 +317,15 @@ class ServerControl {
         if (owner && !this.ownsExe(service, owner.file)) { state = 'foreign'; other = owner.file || `PID ${owner.pid}（读不到程序路径）`; }
         //End By leewheel
       }
-      return { id: service.id, name: service.name, port: service.port, state, other, variant: this.variant(service), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) };
+      //By leewheel 2026年11月11日 内存：按“本服务自己的 exe + 不是国度那份”找出进程，取它的工作集。
+      // 端口还没开但进程在（加载中）也算上，首页那一行从点亮就在显示占用。
+      let pid = 0;
+      let memory = 0;
+      if (state === 'running' || state === 'starting') {
+        const own = rows.find(row => this.ownsExe(service, row.file) && !others.has(row.pid));
+        if (own) { pid = own.pid; memory = Number(own.memory) || 0; }
+      }
+      return { id: service.id, name: service.name, port: service.port, state, other, pid, memory, variant: this.variant(service), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) };
     }));
     return results;
   }
@@ -713,14 +725,20 @@ let insideCache = { at: 0, job: null };
 function runningInside() {
   if (process.platform !== 'win32') return Promise.resolve([]);
   if (insideCache.job && Date.now() - insideCache.at < 4000) return insideCache.job;
-  const script = "Get-CimInstance Win32_Process -Filter \"Name='worldserver.exe' OR Name='authserver.exe' OR Name='mysqld.exe'\" | ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ExecutablePath }";
+  //By leewheel 2026年11月11日 顺带把内存占用（WorkingSetSize）一起查回来：首页要显示每个服务占多少内存，
+  // 每 5 秒一次状态刷新不能为这个多打三条 PowerShell，就合并进这一次查询里。
+  const script = "Get-CimInstance Win32_Process -Filter \"Name='worldserver.exe' OR Name='authserver.exe' OR Name='mysqld.exe'\" | ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.ExecutablePath, $_.WorkingSetSize }";
   insideCache = {
     at: Date.now(),
     job: exec('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true, timeout: 15000 })
       .then(result => String(result.stdout).split(/\r?\n/).map(line => {
-        const at = line.indexOf('|');
-        return at > 0 ? { pid: Number(line.slice(0, at)), file: line.slice(at + 1).trim() } : null;
-      }).filter(row => row && row.pid && row.file))
+        const parts = String(line).split('|');
+        if (parts.length < 2) return null;
+        const pid = Number(parts[0]);
+        const file = parts.slice(1, -1).join('|').trim();
+        const memory = Number(parts[parts.length - 1]) || 0;
+        return pid && file ? { pid, file, memory } : null;
+      }).filter(Boolean))
       .catch(() => []),
   };
   return insideCache.job;

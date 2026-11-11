@@ -14,6 +14,7 @@ const { ClientUpdater } = require('./client-updater.cjs');
 const { AddonManager } = require('./addons.cjs');
 const { requireGameClosed, configureRealmlist, realmlistStatus, launch } = require('./game.cjs');
 const { ServerControl, portOpen, normalizeServerRoot, serverDirIn } = require('./server-control.cjs');
+const dirIntegrity = require('./dir-integrity.cjs');
 //By leewheel 2026-11-05 启动时的目录布局体检（中文路径 / Client、Server 缺失或空目录）
 const { checkLayout } = require('./layout-check.cjs');
 //End By leewheel
@@ -699,6 +700,25 @@ function updateServerControl(serverRoot) {
   control.key = `update|${path.resolve(root)}`;
   return control;
 }
+
+//By leewheel 2026年11月11日 安装目录完整性（老大要求）：玩家没按规定放文件时，启动器必须当场说清楚缺什么，
+// 而不是等他点「启动服务器」以后收到一句找不到 msyqld.exe 的谜语。
+// 判定规则在 dir-integrity.cjs：Server\ 必须有 authserver.exe、worldserver.exe 和完整的 mysql、configs；
+// Client\ 必须是完整客户端（主程序 + 基础 MPQ + 补丁 MPQ + 语言目录）。
+function integrityReport() {
+  const root = launcherRootFolder();
+  //By leewheel 2026年11月11日 必须查「启动服务器」真正会用的那个目录（设置里的 Server），
+  // 玩家把服务端放到别的盘时，查启动器旁边的 Server\ 会白报警。
+  const server = serverPath() || serverDirIn(root);
+  const client = areaFolder('game') || path.join(root, 'Client');
+  return dirIntegrity.checkIntegrity({ server, client, executable: config?.game?.clientExecutable || '' });
+}
+function assertServerIntegrity(root) {
+  const target = root || serverPath() || serverDirIn(launcherRootFolder());
+  dirIntegrity.assertServerReady(target);
+  return target;
+}
+//End By leewheel
 
 //By leewheel 2026年11月8日 动文件之前先把数据库弄活：连不上就当场中止，一个文件都不换。
 // 旧实现把“启动 MySQL 失败”用 .catch(() => {}) 吞掉，玩家只看到“连不上数据库”，
@@ -1707,6 +1727,10 @@ function registerIpc() {
     const known = addonPath();
     const client = known && addonSync.isClient(known) ? known : await pickClient();
     if (!client) return { started: false };
+    //By leewheel 2026年11月11日 开游戏前确认这是一份完整客户端：只有 Ascension.exe 而缺 Data\*.MPQ 的目录
+    // 以前会闪一下就退，玩家以为是自己机器的问题。
+    const clientCheck = dirIntegrity.checkClient(client, { executable: config.game?.clientExecutable || '' });
+    if (!clientCheck.ok) throw new Error(dirIntegrity.describe(null, clientCheck));
     //By leewheel 2026年11月6日 启动游戏前把 Config.wtf 的 gxResolution 对齐系统分辨率（全屏/窗口都按这个走）
     try { syncDisplayResolution(client); } catch { /* 没有 Config.wtf 就跳过 */ }
     const exe = ['Ascension.exe', 'Wow.exe', 'WoW.exe'].map(name => path.join(client, name)).find(file => fs_exists(file));
@@ -2041,6 +2065,9 @@ function registerIpc() {
   });
   handle('repack:start', async id => {
     assertServerFree();
+    //By leewheel 2026年11月11日 启动之前先查目录完整性：缺 authserver.exe / worldserver.exe / mysql 就直接报中文清单，
+    // 不再等到 mysqld 拉不起来才给一句“找不到文件”（玩家根本不知道该补什么）。
+    assertServerIntegrity();
     //By leewheel 2026年11月8日 数据库和游戏数据没关系：缺 mmaps / dbc 也允许先把库起来，
     // 否则玩家点"启动数据库"只会收到一句"先准备游戏数据"，看起来就是按钮没用。
     if (text(id, 30) !== 'mysql' && assembler.state(serverPath()).needed) throw new Error('Prepare the game data from your client first (home page).');
@@ -3140,6 +3167,8 @@ function registerIpc() {
     const serverRoot = serverDirIn(root);
     const clientRoot = path.join(root, 'Client');
     if (!fs_exists(serverRoot) || !fs_exists(clientRoot)) throw new Error('先把目录整理成 Server 与 Client 两个目录（启动器会自动整理）。');
+    //By leewheel 2026年11月11日 更新前先验目录完整性：缺件的目录更新到一半只会更乱，先中止说清楚缺什么。
+    dirIntegrity.assertServerReady(serverRoot);
     releaseBusy = true;
     releaseAbort = new AbortController();
     Object.assign(releaseState, { busy: true, version, phase: 'download', message: '准备中', pct: 0, done: false, failed: false, error: '', errorLog: '', result: null, at: new Date().toISOString() });
@@ -3484,6 +3513,8 @@ function registerIpc() {
       //By leewheel 2026年11月11日 同上：与「启动服务器」走同一个目录判定，别再各拼一套。
       const serverRoot = serverDirIn(root);
       const clientRoot = path.join(root, 'Client');
+      //By leewheel 2026年11月11日 装包前先验目录完整性（缺件的中途失败会留下半新半旧的目录）
+      dirIntegrity.assertServerReady(serverRoot);
       //By leewheel 2026年11月8日 本地包更新原来缺了两件事（老大 2026-11-08 12:54 实弹）：
       // ① 没停服——世界服还占着 exe，覆盖会 EBUSY；② 没启动 MySQL，conns 写死 null，
       // 直接拿 admin-client.ini 去连 3396，15 秒后报“连不上数据库”。
@@ -3728,11 +3759,12 @@ function registerIpc() {
     const needsForce = releaseUpdate.compareVersions(current, minVersion) < 0;
     return { needsForce, current, minVersion, reason, blockStart: policy?.blockStart !== false };
   });
+  //By leewheel 2026年11月11日 目录完整性自检：给「检查」页和首页提示共用一个结果
+  handle('integrity:check', () => integrityReport());
   //By leewheel 2026年11月5日 界面/自检也能主动关一次数据库自动更新（三个参数），并回报改了哪些
   handle('repack:dbUpdatesOff', async () => enforceDbUpdatesOff(serverPath() || launcherRootFolder(), { notify: false }));
   //By leewheel 2026年11月5日 游戏内时间：读写 configs\modules\coa.conf 里的 CoA.Clock.Mode/Hour/Minute
-  handle('clock:get', async () => readClock(serverPath()));
-  handle('clock:set', async options => writeClock(serverPath(), options || {}));
+  handle('clock:get', async () => readClock(serverPath()));  handle('clock:set', async options => writeClock(serverPath(), options || {}));
 
   //By leewheel 2026年11月6日 BUG 反馈（对齐参考启动器 PlusLauncherGeneralVersion）：
   // 产品名必须写 COA，否则上传点不认；zip 里放 BUG信息.txt / 环境信息.json / 截图 / 日志尾部。
@@ -4475,6 +4507,20 @@ async function main() {
   // The server watched every 20 seconds, window shown or not: ready, crash (and restart).
   //By leewheel 2026年11月7日 自动每日备份已移除，这里只剩状态跟踪与崩溃重启。
   if (!smokeDir) setInterval(() => serverWatch?.().catch(() => {}), 20000).unref();
+  //By leewheel 2026年11月11日 启动器打开 4 秒后做一次安装目录体检：不完整就弹中文提示（缺什么、该放哪），
+  // 不等到玩家点「启动服务器」才撞墙。只在缺失时提示，完整时不打扰。
+  if (!smokeDir) setTimeout(() => {
+    try {
+      const report = integrityReport();
+      if (report.ok) return;
+      const lacks = [report.server, report.client]
+        .filter(Boolean)
+        .flatMap(side => side.problems.filter(item => item.severity === 'bad').map(item => item.rel));
+      const head = lacks.slice(0, 4).join('、');
+      const more = lacks.length > 4 ? ` 等 ${lacks.length} 项` : '';
+      send('repack:notice', { key: 'integrity.bad', text: `安装目录不完整：缺 ${head}${more}。Server\\ 与 Client\\ 要和启动器并排放在同一个目录里（详见「检查」页）。` });
+    } catch { /* 体检失败绝不能挡住启动器 */ }
+  }, 4000).unref();
   // Scripts/manage.py fixed at once: a realm task can start MySQL before any server start.
   if (!smokeDir) fixManage(serverPath()).catch(() => {});
   //By leewheel 2026年11月9日 启动器一打开就把没在跑的世界从省电值还原：上次断电/强杀留下的 eco 值不能带进下一次开服

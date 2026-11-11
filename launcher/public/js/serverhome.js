@@ -11,6 +11,15 @@ function newsCards(list) {
 
 // ---------------------------------------------------------------- the checks, in words
 const CHECK_TEXT = {
+  //By leewheel 2026年11月11日 目录完整性两条（老大要求）：缺件时直接把缺的文件名摆出来
+  'layout.server': {
+    ok: ['Server 目录完整', 'authserver.exe、worldserver.exe、mysql、configs 都在。'],
+    bad: ['Server 目录不完整', '缺少：{list}。请把完整的 Server\\ 目录（含 authserver.exe、worldserver.exe 和整个 mysql、configs）放回启动器旁边。'],
+  },
+  'layout.client': {
+    ok: ['Client 目录完整', '主程序、基础 MPQ、补丁 MPQ 与语言目录都在。'],
+    bad: ['Client 目录不完整', '缺少：{list}。客户端必须是完整的一份游戏目录，和 Server\\ 一起放在启动器旁边。'],
+  },
   'core.installed': {
     ok: ['Core installed', 'Release {version}.'],
     bad: ['This folder is not a complete repack', 'Missing: {missing}. Install the server or choose its folder.'],
@@ -370,7 +379,9 @@ function homeView() {
   const verifyText = s.verifying ? t('verify.running', 'Checking…') : !v ? t('verify.never', 'Not checked yet') : v.summary.bad ? t('verify.bad', '{n} problem(s) to fix', { n: v.summary.bad }) : v.summary.warn ? t('verify.warn', '{n} point(s) to look at', { n: v.summary.warn }) : t('verify.ok', 'All good');
   const verifyState = !v ? '' : v.summary.bad ? 'bad' : v.summary.warn ? 'warn' : 'ok';
   const dash = s.dashboard;
-  const lights = services.map(service => `<span class="mini-service"><span class="light ${service.state === 'running' ? 'on' : service.state === 'starting' || service.state === 'stopping' ? 'busy' : 'off'}"></span>${esc(/world/i.test(service.id) && App.state.realms?.available ? realmShort('coa') : service.name)}</span>`).join('')
+  //By leewheel 2026年11月11日 每个服务后面显示它现在占多少内存（老大要求）：
+  // 数据来自 status() 里的 WorkingSetSize，没在跑就不显示，免得一排 0 MB 反而看不懂。
+  const lights = services.map(service => `<span class="mini-service"><span class="light ${service.state === 'running' ? 'on' : service.state === 'starting' || service.state === 'stopping' ? 'busy' : 'off'}"></span>${esc(/world/i.test(service.id) && App.state.realms?.available ? realmShort('coa') : service.name)}${service.memory > 0 ? `<small class="mem" title="${esc(t('home.memHint', '这个服务当前占用的内存'))}">${formatBytes(service.memory)}</small>` : ''}</span>`).join('')
     // A light for each realm whose world runs or starts.
     + (info.realmsOn || []).map(realm => `<span class="mini-service"><span class="light ${realm.state === 'running' && !App.state.stoppingAll ? 'on' : 'busy'}"></span>${esc(realmShort(realm.key))}</span>`).join('');
   // Something runs without the world (MySQL alone...): it can be stopped from here.

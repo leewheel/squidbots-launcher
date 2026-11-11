@@ -114,6 +114,15 @@ async function runChecks({ root, inspect, control, backup, repack, botsPackage, 
   const add = (group, id, state, data = {}, action = '') => checks.push({ group, id, state, data, action });
   const info = inspect(root);
 
+  //By leewheel 2026年11月11日 目录完整性（老大要求）：先看 Server\ 的大件齐不齐，再看旁边的 Client\ 是不是完整客户端。
+  // 放在最前面且不随 core.installed 一起 bail：目录摆错时玩家最需要看到的就是这两条。
+  try {
+    const report = require('./dir-integrity.cjs').checkIntegrity({ server: root, client: path.join(path.dirname(path.resolve(root)), 'Client'), executable: info?.clientExecutable || '' });
+    const listOf = side => (side?.problems || []).filter(item => item.severity === 'bad').map(item => item.rel).join('、');
+    add('setup', 'layout.server', report.server.ok ? 'ok' : 'bad', { list: listOf(report.server) || '—' });
+    add('setup', 'layout.client', report.client.ok ? 'ok' : 'bad', { list: listOf(report.client) || '—' });
+  } catch { /* 目录体检失败不影响其它自检项 */ }
+
   // ---- core
   if (!info.repack) {
     add('core', 'core.installed', 'bad', { missing: info.missing.slice(0, 4).join(', ') }, 'install');

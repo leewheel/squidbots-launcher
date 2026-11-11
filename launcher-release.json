@@ -1,9 +1,9 @@
 {
-  "version": "1.0.202611112107",
-  "title": "COA-LAUNCHER-1.0.202611112107",
-  "asset": "CoA-Launcher-1.0.202611112107.exe",
-  "size": 393026784,
-  "sha256": "81fe322c97a6b35a40db5079da8fbd48a39bb88df98714ec9e8440ff6d733065",
-  "notes": "修复：自动更新时「找不到 mysql\\bin\\mysqld.exe」，而首页「启动服务器」却能正常起 MySQL。原因是更新这条路自己拼服务端目录（拿整合包根目录当服务端目录），于是去找 <整合包>\\mysql\\bin\\mysqld.exe（那里本来就没有）；现在更新与「启动服务器」共用同一套目录判定（<整合包>\\Server，或启动器旁边就是服务端目录），不会再拼出 Server\\Server 这种路径。缺文件时报错也改成显示完整的绝对路径，并说明实际按哪个目录在找，不再只印 mysql\\bin\\mysqld.exe 这种相对写法。同时保留上一版修复：数据库按 Server\\my.ini 的端口、Server\\configs\\worldserver.conf 的账号连接，失败会显示真实原因；首页常驻「强制关闭占用程序」按钮；主动关闭服务器不再误报「服务启动失败」。",
-  "at": "2026-11-11T13:07:56.543Z"
+  "version": "1.0.202611112146",
+  "title": "COA-LAUNCHER-1.0.202611112146",
+  "asset": "CoA-Launcher-1.0.202611112146.exe",
+  "size": 393043987,
+  "sha256": "f42ec7d56d0b621a66438428a59e527b1d25afb3a6e6c60784308cb9b218dc6d",
+  "notes": "新增：安装目录完整性检查。启动器打开时会体检一遍目录，并在「检查」页给出结果：Server\\ 里必须有 authserver.exe、worldserver.exe、configs\\worldserver.conf、configs\\authserver.conf、my.ini，以及完整的 mysql 目录（bin\\mysqld.exe、bin\\mysql.exe、bin\\mysqladmin.exe、Data、share\\english）；Client\\ 必须是完整客户端（主程序 + Data\\ 里的 common/common-2/expansion/lichking.MPQ + 至少一个 patch-*.MPQ + 语言目录）。缺件时：打开就弹中文提示（点名缺哪个文件），点「启动服务器」或「开始游戏」会直接拦下并说清该把什么放回哪里，自动更新也会在动手换文件之前中止，不再等到半路报一句看不懂的英文。\r\n\r\n修复：自动更新时「找不到 mysql\\bin\\mysqld.exe」，而首页「启动服务器」却能正常起 MySQL。原因是更新这条路自己算服务端目录（把整合包根目录当成了服务端目录），现在更新与「启动服务器」共用同一套目录判定，也不会再拼出 Server\\Server 这种路径；缺文件时的报错改成显示完整绝对路径并说明按哪个目录在找。\r\n\r\n改进：首页主框加高，三个服务（MySQL 数据库 / CoA / 登录服务器）后面直接显示各自当前占用的内存，不用再开任务管理器。\r\n\r\n保留上一版修复：数据库按 Server\\my.ini 的端口、Server\\configs\\worldserver.conf 的账号连接，起库失败会显示真实原因；首页常驻「强制关闭占用程序」按钮；主动关闭服务器不再误报「服务启动失败」。",
+  "at": "2026-11-11T13:47:27.909Z"
 }
