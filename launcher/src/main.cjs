@@ -703,26 +703,55 @@ function updateServerControl(serverRoot) {
 async function ensureUpdateDatabase(serverRoot, note = () => {}) {
   const conns = releaseUpdate.readDbConfig(serverRoot);
   const probe = conns.world || conns.auth || conns.characters || null;
-  const where = probe ? `${probe.host}:${probe.port}（用户 ${probe.user}）` : 'mysql\\admin-client.ini 里的地址';
+  //By leewheel 2026年11月11日 报错文案必须说清「读的是哪个文件、连的是哪个端口」。
+  // 原来兜底写的是 mysql 目录下那个客户端配置里的地址，玩家看到只会一脸懵，
+  // 还会以为启动器把那个客户端配置当成了数据库地址。真实来源是 Server\my.ini（端口）+ worldserver.conf（用户与库名）。
+  const mine = releaseUpdate.readMysqlIni(serverRoot);
+  const where = probe
+    ? `${probe.host}:${probe.port}（用户 ${probe.user}）`
+    : `Server\\my.ini 里的端口（${mine ? mine.port : '没读到'}）`;
   // 已经能连：不用动
   if (await releaseUpdate.waitForMysql(serverRoot, { conn: probe, timeoutMs: 2000 })) return conns;
   const control = updateServerControl(serverRoot);
   if (!control) throw new Error('启动器没有读到服务定义，无法自动启动数据库：请手动运行 Server\\1.MySQL.bat 后重试。更新中止（文件未提交）');
-  note(`正在启动数据库（MySQL ${inspectRepack(serverRoot).ports.mysql || '?'}）`);
+  const port = inspectRepack(serverRoot).ports.mysql || mine?.port || 3396;
+  note(`正在启动数据库（Server\\mysql\\bin\\mysqld.exe --defaults-file=Server\\my.ini，端口 ${port}）`);
+  let startError = '';
   try {
     await control.start('mysql');
     note('数据库已启动');
   } catch (error) {
     // 不吞：把真实原因写进更新日志，下一句的失败提示才有依据
-    note(`数据库启动失败：${String(error?.message || error).slice(0, 180)}`);
+    startError = String(error?.message || error).replace(/\s+/g, ' ').trim();
+    note(`数据库启动失败：${startError.slice(0, 180)}`);
   }
-  const ready = await releaseUpdate.waitForMysql(serverRoot, {
+  let ready = await releaseUpdate.waitForMysql(serverRoot, {
     conn: probe,
     timeoutMs: 150000,
     onLine: line => note(String(line).slice(0, 180)),
   });
+  //By leewheel 2026年11月11日 世界服连接串里的账号在玩家的库里不一定存在
+  // （老包写 acore、整合包 mysql\admin-client.ini 里是 trinity）。
+  // 连不上就借那个账号再试一轮，端口仍以 Server\my.ini 为准，别让玩家卡在这一步无从下手。
   if (!ready) {
-    throw new Error(`连不上数据库 ${where}。请确认 Server\\mysql 已正常启动（手动可运行 Server\\1.MySQL.bat），然后重新更新。更新中止（文件未提交、数据库未改动）`);
+    const client = releaseUpdate.readAdminClient(serverRoot);
+    const altPort = mine?.port || port;
+    if (client.user && probe && client.user !== probe.user) {
+      note(`换用 Server\\my.ini 的端口 ${altPort} + mysql\\admin-client.ini 的账号（${client.user}）重试`);
+      const alt = { host: client.host || '127.0.0.1', port: altPort, user: client.user, pass: client.pass || '', db: probe.db };
+      ready = await releaseUpdate.waitForMysql(serverRoot, { conn: alt, timeoutMs: 30000, onLine: line => note(String(line).slice(0, 180)) });
+      if (ready) {
+        const fixed = {};
+        for (const key of Object.keys(conns)) fixed[key] = { ...conns[key], user: alt.user, pass: alt.pass, port: altPort };
+        return fixed;
+      }
+    }
+  }
+  if (!ready) {
+    //By leewheel 2026年11月11日 起库这一步自己报错时，把它原样抛给玩家 —— 那才是能动手解决的线索。
+    // 只报一句“连不上数据库”等于把真实原因藏起来（玩家反馈的就是这一句，谁也看不出要改什么）。
+    const hint = startError ? `数据库没能启动：${startError}` : `连不上数据库 ${where}`;
+    throw new Error(`${hint}。手动可运行 Server\\1.MySQL.bat 起库，再重新更新。更新中止（文件未提交、数据库未改动）`);
   }
   return conns;
 }

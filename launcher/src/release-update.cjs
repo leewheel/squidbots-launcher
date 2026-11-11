@@ -829,9 +829,10 @@ async function applyDbcTree({ clientRoot, serverRoot, dbcRoot, map = null, onLin
 function mysqlPaths(serverRoot) {
   const exe = path.join(serverRoot, 'mysql', 'bin', 'mysql.exe');
   const ini = path.join(serverRoot, 'mysql', 'admin-client.ini');
-  if (!fs.existsSync(exe)) throw new Error('服务器目录里没有 mysql.exe');
-  if (!fs.existsSync(ini)) throw new Error('缺少 mysql/admin-client.ini');
-  return { exe, ini };
+  //By leewheel 2026年11月11日 admin-client.ini 不再是必需项：数据库地址走 Server\my.ini（端口）
+  // 与 configs\worldserver.conf（用户、库名），这个 ini 只在没有连接串时借一下账号。
+  if (!fs.existsSync(exe)) throw new Error('服务器目录里没有 mysql\\bin\\mysql.exe，整合包不完整');
+  return { exe, ini: fs.existsSync(ini) ? ini : '' };
 }
 
 //By leewheel 2026年11月9日 有连接串就不需要 admin-client.ini。
@@ -840,13 +841,46 @@ function mysqlPaths(serverRoot) {
 // 那三条连接串本来就够用。现在按“有 conn 走 -h/-P/-u/-p，没 conn 才回落到 ini”。
 function mysqlClient(serverRoot, conn = null) {
   const exe = path.join(serverRoot, 'mysql', 'bin', 'mysql.exe');
-  if (!fs.existsSync(exe)) throw new Error('服务器目录里没有 mysql.exe');
+  if (!fs.existsSync(exe)) throw new Error('服务器目录里没有 mysql\\bin\\mysql.exe，整合包不完整');
   if (conn) return { exe, args: mysqlArgsFor(conn) };
+  //By leewheel 2026年11月11日 没有连接串时按 Server\my.ini 的端口 + 借来的账号连，
+  // 不再一上来就报“缺少 admin-client.ini”：启动参数本来就在 Server\my.ini。
+  const mine = readMysqlIni(serverRoot);
+  const client = readAdminClient(serverRoot);
+  if (mine && client.user) {
+    return { exe, args: mysqlArgsFor({ host: client.host || '127.0.0.1', port: mine.port, user: client.user, pass: client.pass || '', db: '' }) };
+  }
   const ini = path.join(serverRoot, 'mysql', 'admin-client.ini');
-  if (!fs.existsSync(ini)) throw new Error('缺少 mysql/admin-client.ini，且 worldserver.conf 里没有可用的数据库连接串');
-  return { exe, args: [`--defaults-file=${ini}`, '--default-character-set=utf8mb4'] };
+  if (fs.existsSync(ini)) return { exe, args: [`--defaults-file=${ini}`, '--default-character-set=utf8mb4'] };
+  throw new Error('读不到数据库地址：Server\\configs\\worldserver.conf 里没有连接串，Server\\my.ini 也没有端口');
 }
 //End By leewheel
+
+//By leewheel 2026年11月11日 端口以 Server\my.ini 为准。
+// 老大明确：MySQL 就在 Server\mysql\bin，启动参数就在 Server\my.ini。
+// 原来的兜底是拿 mysql\admin-client.ini 当数据库地址，报错文案也只提它，
+// 让人以为启动器连库靠的是那个客户端配置 —— 实际它只是 worldserver.conf 读不到时借账号用的。
+function readMysqlIni(serverRoot) {
+  const ini = path.join(serverRoot, 'my.ini');
+  let text = '';
+  try { text = fs.readFileSync(ini, 'utf8'); } catch { return null; }
+  const port = Number((text.match(/^\s*port\s*=\s*(\d+)/m) || [])[1]) || 0;
+  if (!port) return null;
+  return { port };
+}
+
+//By leewheel 2026年11月11日 只借账号，不借地址：admin-client.ini 是给 mysqladmin 用的客户端配置，
+// 里面的 host/port 不是数据库权威地址（权威是 my.ini 的 port + worldserver.conf 的连接串）。
+function readAdminClient(serverRoot) {
+  const ini = path.join(serverRoot, 'mysql', 'admin-client.ini');
+  let text = '';
+  try { text = fs.readFileSync(ini, 'utf8'); } catch { return {}; }
+  const read = key => {
+    const match = text.match(new RegExp(`^\\s*${key}\\s*=\\s*(.+?)\\s*$`, 'mi'));
+    return match ? match[1] : '';
+  };
+  return { host: read('host'), port: Number(read('port')) || 0, user: read('user'), pass: read('password') };
+}
 
 //By leewheel 2026年11月5日 连库不猜端口：直接读 worldserver.conf 里那三条连接串
 // （LoginDatabaseInfo / WorldDatabaseInfo / CharacterDatabaseInfo）。
@@ -856,10 +890,12 @@ function readDbConfig(serverRoot) {
   const conf = path.join(serverRoot, 'configs', 'worldserver.conf');
   let text = '';
   try { text = fs.readFileSync(conf, 'utf8'); } catch { return {}; }
+  //By leewheel 2026年11月11日 玩家手里的 worldserver.conf 有带引号和不带引号两种写法，
+  // 原来只认 `"..."`，不带引号的一律解析失败、直接掉到 admin-client.ini 那条老路上去。
   const parse = (key, fallback) => {
-    const match = text.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]+)"`, 'm'));
+    const match = text.match(new RegExp(`^[ \\t]*${key}[ \\t]*=[ \\t]*"?([^"\\r\\n]+)"?[ \\t]*$`, 'm'));
     if (!match) return null;
-    const [host, port, user, pass, db] = match[1].split(';');
+    const [host, port, user, pass, db] = match[1].trim().split(';');
     return { host: host || '127.0.0.1', port: Number(port) || 3306, user: user || '', pass: pass || '', db: db || fallback };
   };
   const out = {
@@ -867,7 +903,24 @@ function readDbConfig(serverRoot) {
     world: parse('WorldDatabaseInfo', 'acore_world'),
     characters: parse('CharacterDatabaseInfo', 'acore_characters'),
   };
-  return Object.fromEntries(Object.entries(out).filter(([, value]) => value));
+  const resolved = Object.fromEntries(Object.entries(out).filter(([, value]) => value));
+  const mine = readMysqlIni(serverRoot);
+  if (Object.keys(resolved).length) {
+    //By leewheel 2026年11月11日 端口一律以 Server\my.ini 为准（老大：启动参数就在 Server\my.ini）。
+    // worldserver.conf 里的端口和 my.ini 不一致时，只有 my.ini 那个才是启动器真正拉起来的实例，
+    // 按 conf 上的旧端口去连只会连到别的库、或者干脆连不上。
+    if (mine) for (const key of Object.keys(resolved)) resolved[key] = { ...resolved[key], port: mine.port };
+    return resolved;
+  }
+  if (!mine) return resolved;
+  const client = readAdminClient(serverRoot);
+  const base = { host: client.host || '127.0.0.1', port: mine.port, user: client.user || 'acore', pass: client.pass || 'acore' };
+  const guess = {
+    auth: { ...base, db: 'acore_auth' },
+    world: { ...base, db: 'acore_world' },
+    characters: { ...base, db: 'acore_characters' },
+  };
+  return guess;
 }
 
 // 按连接串拼 mysql.exe 参数（用 -h/-P/-u/-p 直连，不依赖 admin-client.ini）
@@ -956,7 +1009,12 @@ async function importSqlTree(serverRoot, sqlRoot, { onLine = () => {}, warnings 
   if (!ready) {
     let last = '';
     try { await mysqlQuery(serverRoot, 'SELECT 1', probeConn); } catch (error) { last = String(error.message).split(/\r?\n/).filter(Boolean).pop(); }
-    const where = probeConn ? `${probeConn.host}:${probeConn.port}（用户 ${probeConn.user}）` : 'admin-client.ini 里的地址';
+    const mine = readMysqlIni(serverRoot);
+    //By leewheel 2026年11月11日 这里原来兜底写的是那个客户端配置里的地址，玩家看到不知道去改哪里。
+    // 数据库地址的权威来源是 Server\my.ini（端口）与 configs\worldserver.conf（用户、库名），文案就说这两个。
+    const where = probeConn
+      ? `${probeConn.host}:${probeConn.port}（用户 ${probeConn.user}）`
+      : `Server\\my.ini 里的端口（${mine ? mine.port : '没读到'}）`;
     //By leewheel 2026年11月9日 这句话以前写“文件未提交”——是错的：走到 SQL 这一步，Server / Client 的文件
     // **已经替换完了**。留着错的提示，会让人以为服务器没被动过，反而更危险。
     throw new Error(`连不上数据库 ${where}：${last}。更新中止：数据脚本一个都没导（Server / Client 的文件已经替换，重新更新会接着导）`);
@@ -1447,5 +1505,5 @@ module.exports = {
   verifyInstalled, fileMd5,
   //By leewheel 2026年11月6日 镜像测速：给“下载优先走最快的源”用
   probeMirror, rankMirrors, mirrorsFromRanking, parseReleaseUrl, describeProbeFailure,
-  applyDbcTree, mysqlPaths, readDbConfig, mysqlQuery, waitForMysql, importSqlFile, importSqlTree, importSql, applyUpdate, findDir, walkFiles,
+  applyDbcTree, mysqlPaths, readDbConfig, readMysqlIni, readAdminClient, mysqlQuery, waitForMysql, importSqlFile, importSqlTree, importSql, applyUpdate, findDir, walkFiles,
 };
