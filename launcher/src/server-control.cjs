@@ -303,12 +303,17 @@ class ServerControl {
     const out = [];
     for (const service of this.services) {
       if (!(await portOpen(service.port))) {
-        out.push({ id: service.id, name: service.name, port: service.port, busy: false, mine: false, pid: 0, file: '' });
+        out.push({ id: service.id, name: service.name, port: service.port, busy: false, mine: false, managed: false, pid: 0, file: '' });
         continue;
       }
       const owner = await this.portOwner(service.port);
       const mine = !!(owner && this.ownsExe(service, owner.file));
-      out.push({ id: service.id, name: service.name, port: service.port, busy: true, mine, pid: owner?.pid || 0, file: owner?.file || '' });
+      //By leewheel 2026年11月11日 区分「本包的 exe」与「本启动器拉起的进程」：
+      // 上次崩溃或手动启动留下的残留 worldserver 也占着 8085，但不在 children 里，玩家同样
+      // 需要「强制关闭占用程序」把它结束掉；原来只按 mine 过滤，这类残留被当成自己人跳过了。
+      const managed = this.children.has(service.id);
+      out.push({ id: service.id, name: service.name, port: service.port, busy: true, mine, managed, pid: owner?.pid || 0, file: owner?.file || '' });
+      //End By leewheel
     }
     return out;
   }
@@ -321,10 +326,14 @@ class ServerControl {
     const owner = await this.portOwner(target);
     if (!owner?.pid) throw new Error(`端口 ${target} 上没有找到监听进程（可能已经自己退出了）`);
     const service = this.services.find(item => item.port === target);
-    if (service && this.ownsExe(service, owner.file)) {
+    //By leewheel 2026年11月11日 只有启动器自己拉起的服务才走优雅停止（世界服要存档）；
+    // 残留实例（本包 exe 但不在 children 里）stop() 等不到子进程退出，会白等一轮超时，
+    // 玩家点了「强制关闭」却像没反应。这类残留按 PID 精确结束，绝不按进程名通配。
+    if (service && this.ownsExe(service, owner.file) && this.children.has(service.id)) {
       await this.stop(service.id);
       return { pid: owner.pid, graceful: true };
     }
+    //End By leewheel
     await exec('taskkill.exe', ['/PID', String(owner.pid), '/T', '/F'], { windowsHide: true })
       .catch(error => { throw new Error(`结束 PID ${owner.pid} 失败：${error.message}`); });
     return { pid: owner.pid, graceful: false };

@@ -384,6 +384,7 @@ function homeView() {
         <h1>${esc(t('home.heroTitle', 'My server'))}</h1>
         ${launcherVersionLine()}
         <p class="status-line ${foreign ? 'bad' : ''}">${esc(status)}</p>
+        ${foreign ? `<div class="button-row port-owner-row"><button class="button danger small" data-action="port-kill" data-port="${esc(foreign.port)}">${icon('warning')}<span>${esc(t('home.forceKillPort', '强制关闭占用程序'))}</span></button><button class="button ghost small" data-action="port-rescan">${icon('refresh')}<span>${esc(t('home.recheckPorts', '重新检查端口'))}</span></button><small class="muted">${esc(foreign.other || '')}</small></div>` : ''}
         ${startupFailView()}
         <div class="mini-services">${lights}</div>
         <div class="play-row"><div class="split-button ${button[3]}">
@@ -792,6 +793,29 @@ App.actions['account-register'] = () => guard(async () => {
   showAccountRegister();
 });
 App.actions['account-register-start'] = () => { dialog.close(); App.actions['service-start-all']?.(); };
+
+//By leewheel 2026年11月11日 首页「强制关闭占用程序」：
+// 报错文案一直让玩家「用首页的强制关闭占用程序」，但首页只有一行红字、没有按钮，
+// 那个按钮只挂在开机那一刻的一次性弹窗上。这里做成常驻入口，杀完立即复查并刷新服务状态。
+App.actions['port-kill'] = button => guard(async () => {
+  const port = Number(button.dataset.port);
+  if (!Number.isInteger(port) || port <= 0) throw new Error('端口号不正确，无法强制关闭');
+  await App.api.portsKill(port);
+  const list = await checkPorts({ announce: false });
+  if (blockedPorts(list).some(item => item.port === port)) throw new Error(`端口 ${port} 仍被占用，请再试一次或手动结束该程序`);
+  toast(`已结束占用端口 ${port} 的程序`, 'success');
+  try { App.state.server = await App.api.serverInfo(); } catch {}
+  App.render();
+}, button);
+
+App.actions['port-rescan'] = button => guard(async () => {
+  const list = await checkPorts({ announce: false });
+  const left = blockedPorts(list);
+  toast(left.length ? `仍有 ${left.length} 个端口被占用：${left.map(item => item.port).join('、')}` : '端口检查完成：没有被占用的端口', left.length ? 'error' : 'success');
+  try { App.state.server = await App.api.serverInfo(); } catch {}
+  App.render();
+}, button);
+//End By leewheel
 
 // News written by the realm owner in the feed (feed.json on the download server).
 //By leewheel 2026年11月5日 “机器人帮助”已挪到“检查”页的“机器人”标题旁（内容内嵌），这里不再放入口。
