@@ -14,6 +14,8 @@ const defaults = Object.freeze({
   //By leewheel 2026年11月7日 dailyBackup 默认改为 false：启动器不再自动备份（老大要求），
   // 保留这个键只为兼容老配置文件，不再有任何自动备份逻辑读它。
   autoCheckAddons: true, betaUpdates: false, hideCloseNotice: false, trayOnClose: false, notifications: true, startWithWindows: false, startServerOnOpen: false, restartWorldOnCrash: false, dailyBackup: false, lastSeenVersion: '', installPaths: {}, components: {}, instances: [], modules: { squidbots: true },
+  //By leewheel 2026年11月9日 启动器自更新：玩家点过「忽略这个版本」的版本号（空 = 不忽略任何版本）
+  launcherSkipVersion: '',
 });
 
 //By leewheel 2026年11月4日 目录可以是相对的（相对启动器所在目录，如 Client、Server），这样整个整合包
@@ -45,6 +47,8 @@ function sanitize(value) {
     }
   }
   if (typeof value.lastSeenVersion === 'string' && /^\d+\.\d+\.\d+$/.test(value.lastSeenVersion)) out.lastSeenVersion = value.lastSeenVersion;
+  //By leewheel 2026年11月9日 被忽略的启动器版本号（只认 1.0.yyyymmddHHMM 形态）
+  if (typeof value.launcherSkipVersion === 'string' && /^\d+\.\d+\.\d+$/.test(value.launcherSkipVersion)) out.launcherSkipVersion = value.launcherSkipVersion;
   if (value.modules && typeof value.modules.squidbots === 'boolean') out.modules.squidbots = value.modules.squidbots;
   if (Array.isArray(value.instances)) out.instances = [...new Set(value.instances.filter(folder => typeof folder === 'string' && path.isAbsolute(folder)).map(folder => path.normalize(folder)))].slice(0, 12);
   if (value.components && typeof value.components === 'object') {

@@ -33,6 +33,8 @@ const App = {
     server: null, serverCheck: null, botsCheck: null, srvTab: 'settings',
     conf: null, pending: {}, backups: null, upgrade: null, upgradeLog: [], upgradeStep: '', upgradeLastStep: '', upgradeRunning: false,
     oldRepack: null, oldCheck: null, upgradeFolder: '', task: null, launcherUpdate: null,
+    //By leewheel 2026年11月9日 服务启动失败记录（{id, message, at}）：首页据此显示「为什么起不来」按钮
+    serverFail: null,
     updates: { core: null, bots: null },
   },
   actions: {},

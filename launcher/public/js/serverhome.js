@@ -384,6 +384,7 @@ function homeView() {
         <h1>${esc(t('home.heroTitle', 'My server'))}</h1>
         ${launcherVersionLine()}
         <p class="status-line ${foreign ? 'bad' : ''}">${esc(status)}</p>
+        ${startupFailView()}
         <div class="mini-services">${lights}</div>
         <div class="play-row"><div class="split-button ${button[3]}">
           <button class="split-main" data-action="${button[2]}" ${button[2] ? '' : 'disabled'} title="${esc(info.bots?.installed || info.botsBuiltIn ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}">${icon(button[0])}<span><strong>${esc(button[1])}</strong><small>${esc(info.bots?.installed || info.botsBuiltIn ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}</small></span></button>
@@ -391,6 +392,7 @@ function homeView() {
           <div class="split-menu" id="play-menu" hidden>${menu.map(([action, id, label]) => `<button data-action="${action}" ${id ? `data-id="${id}"` : ''}>${esc(label)}</button>`).join('')}</div>
         </div>
         ${playButton()}
+        ${registerButton()}
       </div>${App.state.addon?.clientTooNew ? `<p class="client-old">${icon('warning')}<span>${esc(t('home.clientTooNew', 'Your Ascension client is newer than this server handles ({file}): {note}', { file: App.state.addon.clientTooNew.file, note: App.state.addon.clientTooNew.note?.[App.state.settings.language] || App.state.addon.clientTooNew.note?.en || '' }))}</span></p>` : ''}${App.state.addon?.clientOutdated ? `<p class="client-old">${icon('warning')}<span>${esc(t('home.clientOld', 'Your Ascension client is not up to date ({file} is missing or old): open the official Ascension launcher once to update it (Manastorm needs it).', { file: App.state.addon.clientOutdated }))}</span></p>` : ''}
         <span class="chip classic-folder" title="${esc(info.path)}">${icon('folder')}<span>${esc(info.path)}</span></span>
       </div>
@@ -418,7 +420,8 @@ function homeView() {
 // 说明：图片当然能被人看见，但改它需要重新打包 asar，而 asar 有完整性校验——改过的启动器起不来。
 //By leewheel 2026年11月7日 老大改了免费声明文案，并且要求**字体放大、杂波干扰的大小也随机**。
 // 文案不进源码明文：仍是 base64，运行时解码后用 canvas 画字（不再用固定 PNG，字号才能放大、才能按宽度自适应）。
-const FREE_NOTICE_B64 = '5p2l6Ieq6Jma56m66aOO5pq055qE5L+h5oGv77ya5pys5qih5ouf5Zmo5a6M5YWo5YWN6LS577yM6Iqx6ZKx6LSt5Lmw55qE6YO95piv5YK76YC877yB';
+//By leewheel 2026年11月10日 老大再改文案：去掉原来的“来自虚空风暴的信息：”抬头，并追加“倒卖狗天天踩狗屎！”。
+const FREE_NOTICE_B64 = '5pys5qih5ouf5Zmo5a6M5YWo5YWN6LS577yM6Iqx6ZKx6LSt5Lmw55qE6YO95piv5YK76YC8IeWAkuWNlueLl+WkqeWkqei4qeeLl+Wxju+8gQ==';
 let freeNoticeTextCache = '';
 function freeNoticeText() {
   if (freeNoticeTextCache) return freeNoticeTextCache;
@@ -449,6 +452,73 @@ function drawFreeNotice() {
   if (!ctx) return;
   paintFreeNotice(ctx, ratio, width, height, performance.now());
   startFreeNoticeGlitch();
+}
+
+//By leewheel 2026年11月10日 右侧“设备铭牌”原来是一张写死的 PNG（assets/notice-meta.png：
+// “OFFLINE 无授权校验 禁止倒卖”），老大要求换成「只有用爱发电的可以这样说，阴阳怪气把用爱发电理所当然的人没资格」，
+// 并且允许排成两行。改法跟左侧一致：文案 base64 解码后用 canvas 画字（源码里不留明文），
+// 换行由文案里的 \n 决定，字号按容器实际宽度自动收缩，绝不越过左边那条竖线。
+// 注意：文案里必须自带 \n，canvas 的 fillText 不认换行符，这里按行拆开逐行画。
+//By leewheel 2026年11月10日 文案改成「只有用爱发电的可以这样说／阴阳怪气把用爱发电／理所当然的人没资格」三行：
+// 这一句比原来长得多，铭牌只有 200px 宽（扣掉左边竖线的 padding 剩 184），
+// 所以除了按宽度缩字号，还得按**高度**缩 —— 40px 高的版面放三行，13px 会顶出上下边界。
+// 断句按语义切（“只有用爱发电的可以这样说”／“阴阳怪气把用爱发电”／“理所当然的人没资格”），不是硬按字数折。
+const FREE_META_B64 = '5Y+q5pyJ55So54ix5Y+R55S155qE5Y+v5Lul6L+Z5qC36K+0CumYtOmYs+aAquawlOaKiueUqOeIseWPkeeUtQrnkIbmiYDlvZPnhLbnmoTkurrmsqHotYTmoLw=';
+let freeMetaTextCache = '';
+function freeMetaText() {
+  if (freeMetaTextCache) return freeMetaTextCache;
+  try {
+    const bytes = Uint8Array.from(atob(FREE_META_B64), char => char.charCodeAt(0));
+    freeMetaTextCache = new TextDecoder('utf-8').decode(bytes);
+  } catch { freeMetaTextCache = ''; }
+  return freeMetaTextCache;
+}
+function drawFreeMeta() {
+  const canvas = document.getElementById('free-notice-meta-canvas');
+  if (!canvas?.parentElement) return;
+  const ratio = window.devicePixelRatio || 1;
+  const height = 40;
+  // 宽度取画布在版面上的真实宽度（CSS 给了 100%），拿不到就退回默认铭牌宽 184
+  const width = Math.max(120, Math.round(canvas.getBoundingClientRect().width) || 184);
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const text = freeMetaText();
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  if (!text) return;
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
+  if (!lines.length) return;
+  const fontOf = size => `600 ${size}px "Microsoft YaHei", "Noto Sans SC", "Segoe UI", sans-serif`;
+  const widest = size => {
+    ctx.font = fontOf(size);
+    return Math.max(...lines.map(line => ctx.measureText(line).width));
+  };
+  // 字号 13 起试，最宽那行放不下就按比例缩（最小 9px，再小在 100% 缩放下会糊）
+  let fontSize = 13;
+  const limit = width - 2;
+  const measured = widest(fontSize);
+  if (measured > limit) fontSize = Math.max(9, Math.floor(fontSize * (limit / measured)));
+  //By leewheel 2026年11月10日 竖向也得放得下：行数 × 行高不能超过 40px 的版面，
+  // 否则第一行/最后一行会被裁掉一半（3 行 13px 就是 51px）。按可用高度一档一档回缩，最低 9px。
+  const fitsHeight = size => Math.floor(height / (size * 1.28)) >= lines.length;
+  while (fontSize > 9 && !fitsHeight(fontSize)) fontSize -= 1;
+  ctx.font = fontOf(fontSize);
+  const lineHeight = Math.round(fontSize * 1.28);
+  const start = (height - lineHeight * lines.length) / 2 + lineHeight / 2;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = 'rgba(0, 229, 255, .55)';
+  ctx.shadowBlur = 6;
+  lines.forEach((line, index) => {
+    // 第一行稍亮、第二行略淡：两行文字不至于糊成一坨
+    ctx.fillStyle = index === 0 ? 'rgba(126, 243, 255, .88)' : 'rgba(126, 243, 255, .74)';
+    ctx.fillText(line, width / 2, start + index * lineHeight);
+  });
+  ctx.shadowBlur = 0;
 }
 
 //By leewheel 2026年11月6日 老大要求保留“杂波干扰”特效：canvas 里按帧重画——随机色散重影、
@@ -553,7 +623,7 @@ function freeBannerView() {
     <span class="fb-corner br" aria-hidden="true"></span>
     <span class="fb-badge" aria-hidden="true"><b>FREE</b><small>¥0.00</small></span>
     <span class="fb-text"><canvas id="free-notice-canvas" class="fb-canvas" aria-hidden="true"></canvas></span>
-    <span class="fb-meta" id="free-notice-meta" aria-hidden="true"><img class="fb-meta-img" src="assets/notice-meta.png" alt=""></span>
+    <span class="fb-meta" id="free-notice-meta" aria-hidden="true"><canvas id="free-notice-meta-canvas" class="fb-meta-canvas"></canvas></span>
   </section>`;
 }
 
@@ -669,6 +739,59 @@ App.actions['game-play'] = button => guard(async () => {
   toast(t('home.playStarted', 'The game is starting.'), 'success');
   if (typeof refreshAddon === 'function') refreshAddon(true);
 }, button);
+
+//By leewheel 2026年11月10日 老大要求：主页加「注册账号」按钮，一点就跳到注册页。
+// 本机服务器的「注册」就是创建进游戏用的账号（世界控制台的 account create），
+// 所以做成弹窗：不用离开主页，也不用翻进「本机服务器 → 设置」里找那个表单。
+function registerButton() {
+  return `<button class="button ghost register-account" data-action="account-register" title="${esc(t('home.registerHint', 'Create the account you log in with'))}">${icon('user')}<span>${esc(t('home.register', 'Register'))}</span></button>`;
+}
+
+// 注册页：账号名 + 密码 + 可选 GM。建号要写数据库，world 必须先在跑。
+function registerFormHtml(running) {
+  if (!running) {
+    return `<p class="status-line">${icon('warning')}<span>${esc(t('register.needServer', 'The server has to run to create an account: the account is written into its database.'))}</span></p>
+      <p class="muted small">${esc(t('register.needServerHint', 'Use the "Start the server" button below, then open this page again once it runs (a first start takes a few minutes).'))}</p>`;
+  }
+  return `<form id="register-form" class="form-grid register-form" autocomplete="off">
+    <input id="rg-name" maxlength="17" autocomplete="off" spellcheck="false" placeholder="${esc(t('register.namePh', 'Account name, 3 to 17 characters'))}">
+    <input id="rg-password" type="password" maxlength="16" autocomplete="new-password" placeholder="${esc(t('register.passwordPh', 'Password'))}">
+    <label class="check"><input type="checkbox" id="rg-gm" class="ga-gm"><span>${esc(t('server.gm', 'Game master'))}</span></label>
+    <button class="button primary" type="submit">${icon('check')}${esc(t('server.create', 'Create'))}</button>
+  </form>`;
+}
+
+function showAccountRegister() {
+  const running = !!App.state.live?.running;
+  dialog.open(`${dialog.header(t('register.title', 'Create an account'), t('register.subtitle', 'This is the account you log in with, in the game.'))}
+    <div class="dialog-content register-dialog">${registerFormHtml(running)}</div>
+    <footer class="dialog-foot"><button class="button ghost" data-action="dialog-close">${esc(t('common.close', 'Close'))}</button>${running ? '' : `<button class="button primary" data-action="account-register-start">${icon('play')}${esc(t('register.startServer', 'Start the server'))}</button>`}</footer>`, 'form');
+  const form = $('#register-form');
+  if (form) form.addEventListener('submit', event => { event.preventDefault(); createGameAccountFromForm(form); });
+  setTimeout(() => $('#rg-name')?.focus(), 30);
+}
+
+async function createGameAccountFromForm(form) {
+  const button = form.querySelector('[type=submit]');
+  const name = String($('#rg-name')?.value || '').trim();
+  const password = String($('#rg-password')?.value || '');
+  if (!/^\S{3,17}$/.test(name)) { toast(t('register.badName', 'The account name is 3 to 17 characters, without spaces.'), 'warning'); $('#rg-name')?.focus(); return; }
+  if (!password) { toast(t('register.badPassword', 'Type a password.'), 'warning'); $('#rg-password')?.focus(); return; }
+  await guard(async () => {
+    // 世界控制台满载（几百个机器人）时要十几秒才回话：先说一声，别让人以为点了没反应。
+    toast(t('register.creating', 'Creating the account…'));
+    const output = await App.api.createGameAccount(name, password, !!$('#rg-gm')?.checked);
+    dialog.close();
+    toast(output || t('server.accountCreated', 'Account {name} created.', { name: name.toUpperCase() }), 'success');
+  }, button);
+}
+
+App.actions['account-register'] = () => guard(async () => {
+  // 主页的读数每 10 秒刷一次：可能还没读到，点开前先取一次，免得明明在跑却说没运行。
+  if (!App.state.live) { try { App.state.live = await App.api.liveStats(); } catch { App.state.live = null; } }
+  showAccountRegister();
+});
+App.actions['account-register-start'] = () => { dialog.close(); App.actions['service-start-all']?.(); };
 
 // News written by the realm owner in the feed (feed.json on the download server).
 //By leewheel 2026年11月5日 “机器人帮助”已挪到“检查”页的“机器人”标题旁（内容内嵌），这里不再放入口。
@@ -937,14 +1060,127 @@ function mmapsBanner(mm) {
   return `<div class="update-banner"><i class="dot"></i><span>${esc(mm.running ? t('assemble.mmapsRunning2', 'Navigation maps of the bots: {pct}% of the work done ({done} of {total} maps, the large continents come last), built in the background.', { done: mm.done, total: mm.total || '…', pct }) : t('assemble.mmapsPaused', 'Navigation maps of the bots: {done} of {total} maps. Until they are all built, bots may walk in straight lines.', { done: mm.done, total: mm.total || '…' }))}</span>${mm.running ? `<button class="button ghost small" data-action="assemble-mmaps-pause">${esc(t('assemble.mmapsPause', 'Pause'))}</button>` : `<button class="button ghost small" data-action="assemble-mmaps">${esc(mm.paused ? t('assemble.mmapsContinue', 'Resume') : t('assemble.mmapsResume', 'Build them now'))}</button>`}</div>`;
 }
 
+//By leewheel 2026年11月9日 服务起不来时的醒目提示（老大要求：主页出现一个按钮，点开弹窗说清具体错误）。
+// 事件来源有两处：① 玩家点「启动」失败即时推；② 运行中服务自己挂了（serverWatch 侦测）也推。
+// 只要有失败记录就常驻显示，直到玩家点开看明白（或服务重新起来）。
+function startupFailView() {
+  const fail = App.state.serverFail;
+  if (!fail) return '';
+  const name = (App.state.server?.services || []).find(item => item.id === fail.id)?.name || '';
+  const when = fail.at ? new Date(fail.at).toLocaleTimeString('zh-CN') : '';
+  return `<div class="startup-fail" role="alert">
+    <span class="startup-fail-icon">${icon('warning')}</span>
+    <div class="startup-fail-text"><strong>服务没能启动${name ? `：${esc(name)}` : ''}</strong><small>${esc(fail.message || '点右边看具体原因与解决办法')}${when ? ` · ${esc(when)}` : ''}</small></div>
+    <button class="button danger small" data-action="server-diagnose">为什么起不来？查看原因</button>
+  </div>`;
+}
+
+// 诊断结果弹窗：一条一条说清「现象 → 原因 → 怎么办」，附日志最后几行与退出码。
+function diagnoseView(d) {
+  if (!d) return '';
+  const severityText = { critical: '关键', warning: '注意', info: '正常', ok: '正常' };
+  const pillClass = { critical: 'bad', warning: 'warn', info: 'ok', ok: 'ok' };
+  const items = (d.services || []).map(item => {
+    const lines = item.log?.lines || [];
+    const logBlock = lines.length ? `<details class="diag-log"><summary>日志最后 ${lines.length} 行${item.log.file ? `（${esc(item.log.file.split(/[\\/]/).pop())}）` : ''}</summary><pre>${esc(lines.join('\n'))}</pre></details>` : '';
+    const exitBlock = item.exit?.text ? `<p class="diag-exit">${esc(item.exit.text)}</p>` : '';
+    return `<section class="diag-item ${esc(item.severity)}">
+      <header><strong>${esc(item.name)}</strong><span class="pill ${pillClass[item.severity] || 'ok'}">${esc(severityText[item.severity] || '')}</span>${item.port ? `<span class="muted small">端口 ${item.port}</span>` : ''}</header>
+      <p class="diag-headline">${esc(item.headline || '')}</p>
+      ${item.reason ? `<p class="diag-reason"><b>原因：</b>${esc(item.reason)}</p>` : ''}
+      ${item.hint ? `<p class="diag-hint"><b>怎么办：</b>${esc(item.hint)}</p>` : ''}
+      ${item.quote ? `<pre class="diag-quote">${esc(item.quote)}</pre>` : ''}
+      ${exitBlock}${logBlock}
+    </section>`;
+  }).join('');
+  const head = d.failed
+    ? `<p class="diag-summary bad">${esc(d.headline || `${d.failed} 个服务起不来`)}</p><p class="muted small">检查时间 ${esc(new Date(d.at).toLocaleString('zh-CN'))} · 只读检查，不会改动任何文件</p>`
+    : `<p class="diag-summary ok">所有服务都没发现问题。</p><p class="muted small">检查时间 ${esc(new Date(d.at).toLocaleString('zh-CN'))}</p>`;
+  const tips = (d.tips || []).length ? `<ul class="diag-tips">${d.tips.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : '';
+  return `${head}${tips}<div class="diag-list">${items}</div>`;
+}
+
+async function showDiagnose() {
+  dialog.open(`${dialog.header('为什么起不来', '启动器只读检查：程序文件、端口归属、日志尾部、退出码')}<div class="dialog-content"><div class="task-line">${icon('refresh')}<span>正在检查…</span></div></div>`, 'wide');
+  let d = null;
+  try { d = await App.api.serverDiagnose(); }
+  catch (error) {
+    dialog.open(`${dialog.header('为什么起不来')}<div class="dialog-content"><p>${esc(translateError(error.message))}</p></div><footer class="dialog-foot"><button class="button ghost" data-action="dialog-close">关闭</button></footer>`, 'wide');
+    return;
+  }
+  // 一切正常就把首页那条红条撤掉
+  if (!d?.failed) App.state.serverFail = null;
+  else App.state.serverFail = { ...(App.state.serverFail || {}), message: d.services.find(item => item.severity === 'critical')?.reason || App.state.serverFail?.message || '' };
+  const text = (d?.services || []).filter(item => item.severity === 'critical').map(item => [`【${item.name}】`, item.headline, item.reason && `原因：${item.reason}`, item.hint && `怎么办：${item.hint}`, item.exit?.text && `退出：${item.exit.text}`, ...(item.log?.lines || []).slice(-8)].filter(Boolean).join('\n')).join('\n\n');
+  dialog.open(`${dialog.header('为什么起不来', d?.failed ? d.headline : '所有服务都没发现问题')}<div class="dialog-content">${diagnoseView(d)}</div>
+    <footer class="dialog-foot">
+      <button class="button ghost" data-action="diag-copy" data-payload="${esc(encodeURIComponent(text))}">${icon('book')}复制诊断</button>
+      <button class="button ghost" data-action="srv-tab" data-id="services">服务管理</button>
+      <button class="button primary" data-action="dialog-close">知道了</button>
+    </footer>`, 'wide');
+  App.render();
+}
+
+//By leewheel 2026年11月9日 启动器自身更新的横幅（全中文，五个状态）：
+//   downloading 下载中（带百分比、速度、已下载/总大小、可取消）
+//   installing  校验落位中 / 正在重启
+//   ready       **强制重启**：下载完自动倒计时重启，不给“稍后再说”
+//   error       失败（带原因 + 重试）
+//   skipped     玩家忽略了这个版本（仍保留「还是更新」入口：不更新就装不了更新包）
+// 老大要求「有新版就自动下载」「更新完毕必须强制重启」，所以这里没有“要不要下”、也没有“忽略”，
+// 只有进度和倒计时。唯一会推迟重启的情况是“正在装更新包/准备数据”，那时如实显示在等待。
 function launcherBanner() {
   const update = App.state.launcherUpdate;
-  // Not while the server is prepared: restarting would cut it.
-  if (update?.phase === 'downloaded' && App.state.assembleProgress) return `<div class="update-banner"><i class="dot"></i><span>${esc(t('home.launcherReadyLater', 'A new version of the launcher ({version}) is ready: restart into it once the server is prepared.', { version: update.version || '' }))}</span></div>`;
-  if (update?.phase === 'downloaded') return `<div class="update-banner"><i class="dot"></i><span>${esc(t('home.launcherReady', 'A new version of the launcher ({version}) is ready.', { version: update.version || '' }))}</span><button class="button primary small" data-action="launcher-install">${esc(t('home.launcherRestart', 'Restart and update'))}</button></div>`;
-  if (update?.phase === 'downloading') return `<div class="update-banner"><i class="dot"></i><span>${esc(t('home.launcherDownloading', 'Downloading the new launcher… {percent}%', { percent: update.percent || 0 }))}</span></div>`;
-  // A failed launcher update says so (it used to leave the bar empty) and can be tried again.
-  if (update?.phase === 'error') return `<div class="update-banner bad">${icon('warning')}<span>${esc(t('home.launcherFailed', 'The new launcher could not be prepared: {message}', { message: update.message || '' }))}</span><button class="button ghost small" data-action="launcher-check">${esc(t('common.retry', 'Try again'))}</button></div>`;
+  if (!update || !update.phase) return '';
+  const version = String(update.version || update.latest || '最新版');
+  const pct = Math.round(Number(update.percent) || 0);
+  if (update.phase === 'downloading' || update.phase === 'installing') {
+    const speed = update.speed > 0 ? ` · ${formatBytes(update.speed)}/s` : '';
+    const done = update.total > 0 ? ` · ${formatBytes(update.done || 0)} / ${formatBytes(update.total)}` : '';
+    const restarting = update.phase === 'installing' && pct >= 100;
+    const label = restarting ? '正在重启并安装新版启动器' : update.phase === 'installing' ? '正在校验并安装新版启动器' : '正在下载新版启动器';
+    const tail = restarting ? ' · 启动器会自己关掉再打开，服务端进程不受影响' : ` · ${pct}%${esc(speed)}${esc(done)}`;
+    return `<div class="update-banner launcher-banner" role="status">
+      <i class="dot"></i>
+      <span><strong>${label} ${esc(version)}</strong>${esc(tail)}</span>
+      ${update.phase === 'downloading' ? `<button class="button ghost small" data-action="launcher-cancel">取消</button>` : ''}
+    </div>`;
+  }
+  if (update.phase === 'ready') {
+    //By leewheel 2026年11月9日 强制重启的三种画面，一种比一种“更不许玩家动手”：
+    //  ① waiting   —— 主进程试过重启但被拦下（世界服在跑 / 正在装包 / 准备数据），横幅如实说在等什么
+    //  ② secondsLeft —— 正常倒计时，读主进程每秒推下来的秒数，不在前端自己算（关了再开也不会跳）
+    //  ③ 其他      —— 刚落位、倒计时还没开始的那一瞬
+    // ⚠️ 别在文案里承诺“服务端不会被停掉”：世界服的控制台管道是启动器开的，启动器一退它就掉线，
+    // 所以世界服在跑时根本不重启（见 waiting 分支），等它停了才补。
+    const busy = !!App.state.assembleProgress;
+    if (update.waiting) {
+      const why = String(update.message || '').replace(/^新版启动器[^：]*：/, '');
+      // 等世界服停下来时**不给按钮**：那条路拦的就是“现在重启会让世界服掉线”，
+      // 摆一个按了也没用的按钮只会让人以为坏了。等它停，横幅自己会把升级补完。
+      const action = update.waitingOnServer
+        ? '<span class="muted small">世界服停了会自动完成升级</span>'
+        : `<button class="button primary small" data-action="launcher-install" ${busy ? 'disabled' : ''}>${busy ? '任务结束后自动重启' : '立即重启'}</button>`;
+      return `<div class="update-banner launcher-banner ready" role="status">
+        <i class="dot"></i>
+        <span><strong>新版启动器 ${esc(version)} 已下载完成</strong> · ${esc(why || '当前有任务在跑，等它结束后自动重启')}</span>
+        ${action}
+      </div>`;
+    }
+    const left = Number(update.secondsLeft) || 0;
+    const hint = left > 0 ? ` · <strong>${left} 秒后自动重启安装</strong>` : ' · 正在自动重启安装';
+    return `<div class="update-banner launcher-banner ready" role="status">
+      <i class="dot"></i>
+      <span><strong>新版启动器 ${esc(version)} 已下载完成</strong>${hint}（只重启启动器窗口）</span>
+      <button class="button ghost small" data-action="launcher-install" ${busy ? 'disabled' : ''}>立即重启</button>
+    </div>`;
+  }
+  if (update.phase === 'error') {
+    return `<div class="update-banner bad launcher-banner">${icon('warning')}<span>新版启动器下载失败：${esc(String(update.message || '').replace(/^启动器更新失败：/, '') || '未知原因')}</span><button class="button ghost small" data-action="launcher-check" data-force="1">重试</button></div>`;
+  }
+  if (update.phase === 'skipped') {
+    return `<div class="update-banner bad launcher-banner">${icon('warning')}<span>已跳过启动器版本 ${esc(version)}：<strong>不升级启动器就无法安装更新包</strong>，仍然建议现在就更新。</span><button class="button primary small" data-action="launcher-check" data-force="1">还是更新</button></div>`;
+  }
   return '';
 }
 
@@ -1203,7 +1439,8 @@ function releaseSpeedLine(run) {
   return `${t('release.speed', '下载速度')} ${speed}${left}`;
 }
 function releaseStatusLine(run) {
-  if (run.error) return `更新失败：${run.error}`;
+  //By leewheel 2026年11月9日 玩家自己取消的，不要写成“更新失败”（它确实没改任何文件）
+  if (run.error) return /取消/.test(run.error) ? run.error : `更新失败：${run.error}`;
   if (run.done) return '更新完成，可以重新启动服务器了。';
   const allDone = !!run.allDone || run.phase === 'next';
   if (allDone) return run.message || '当前补丁完成，继续下一个';
@@ -1391,10 +1628,12 @@ App.pages.home = {
     }
     if (!App.state.server) App.api.serverInfo().then(info => { App.state.server = info; App.refresh('home'); }).catch(() => {});
     //By leewheel 2026年11月6日 免费声明画在 canvas 上（源码里没有明文），每次进主页重画一遍，改窗口大小也跟着重画
+    //By leewheel 2026年11月10日 右侧铭牌同样改成 canvas（两行文案），与左侧一起重画
     drawFreeNotice();
+    drawFreeMeta();
     if (!App.state.freeNoticeResize) {
       App.state.freeNoticeResize = true;
-      window.addEventListener('resize', () => { if (App.state.tab === 'home') drawFreeNotice(); });
+      window.addEventListener('resize', () => { if (App.state.tab === 'home') { drawFreeNotice(); drawFreeMeta(); } });
     }
     if (!App.state.dashboard) refreshDashboard();
     if (!App.state.network && App.state.server?.path) App.api.networkInfo().then(data => { App.state.network = data.network; if (App.state.tab === 'home') App.render(); }).catch(() => {});
@@ -1609,11 +1848,32 @@ Object.assign(App.actions, {
     runVerify(false);
   }, button),
   'launcher-check': button => guard(async () => {
-    toast(t('settings.launcherChecking', 'Looking for a new launcher…'));
-    const status = await App.api.checkLauncher();
+    toast('正在检查启动器更新…');
+    //By leewheel 2026年11月9日 带 data-force="1" 的是「重试」：必须强查（否则 ready/skipped 状态会早退）
+    const status = await App.api.checkLauncher(button?.dataset?.force === '1');
     App.state.launcherUpdate = status;
     const kind = status?.phase === 'error' ? 'error' : 'success';
-    toast(status?.phase === 'downloading' || status?.phase === 'downloaded' ? t('settings.launcherFound', 'A new launcher is being downloaded: the home page tells when it is ready.') : status?.message || t('settings.launcherUpToDate', 'Your launcher is up to date.'), kind);
+    toast(status?.phase === 'downloading' || status?.phase === 'installing' ? '发现新版启动器，正在自动下载：首页会显示进度。' : status?.message || '启动器已是最新版本。', kind);
+    App.render();
+  }, button),
+  //By leewheel 2026年11月9日 自更新两个动作：取消下载 / 忽略这个版本
+  //By leewheel 2026年11月9日 打开「为什么起不来」诊断弹窗
+  'server-diagnose': button => guard(() => showDiagnose(), button),
+  'diag-copy': button => guard(async () => {
+    const text = decodeURIComponent(button.dataset.payload || '');
+    if (!text) { toast('没有可复制的诊断内容。'); return; }
+    try { await navigator.clipboard.writeText(text); toast('诊断内容已复制，可以直接发给老大。', 'success'); }
+    catch { toast('复制失败：请手动选中文本复制。', 'error'); }
+  }, button),
+  'launcher-cancel': button => guard(async () => {
+    App.state.launcherUpdate = await App.api.cancelLauncher();
+    toast('已取消下载新版启动器。');
+    App.render();
+  }, button),
+  'launcher-skip': button => guard(async () => {
+    App.state.launcherUpdate = await App.api.skipLauncher();
+    toast('已忽略这个启动器版本（下次发布的新版本仍会提示）。');
+    App.render();
   }, button),
   'feed-news': target => {
     const item = App.state.feed?.news?.[Number(target.dataset.index)];
@@ -1721,6 +1981,8 @@ Object.assign(App.actions, {
         const size = item.asset?.size ? `${(item.asset.size / 1048576).toFixed(1)} MB` : '';
         const tags = [
           item.installed ? '<em class="pick-tag ok">已装</em>' : '',
+          //By leewheel 2026年11月10日 累积包：这一版的内容已经被后面某个累积包包含，不会再单独下载。
+          item.coveredBy ? `<em class="pick-tag">已被 ${esc(item.coveredBy)} 包含</em>` : '',
           item.isFull ? '<em class="pick-tag">全量包</em>' : '<em class="pick-tag warn">增量包</em>',
           item.coveredByBaseline && !item.installed ? '<em class="pick-tag">整合包已含</em>' : '',
         ].join('');
@@ -1733,6 +1995,7 @@ Object.assign(App.actions, {
       dialog.open(`${dialog.header('强制更新：选择要装到哪一版')}
         <div class="dialog-content">
           <p class="muted small">补丁是叠加的：选中的那一版会连同它之前还没装的补丁一起，按发布顺序依次安装。整合包已含的补丁自动跳过。选“装到最新版”＝一次性补齐所有缺失补丁。</p>
+          <p class="muted small">标着「已被 X 包含」的旧版本不用单独装：X 那一个包里已经带着它的全部内容，选中 X 就是一次装完。</p>
           <ul class="notes release-picks">${rows}</ul>
         </div>
         <footer class="dialog-foot">

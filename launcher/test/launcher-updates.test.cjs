@@ -7,7 +7,10 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { tempDir } = require('./helpers.cjs');
 const { fetchSigned, publicKey } = require('../src/signing.cjs');
-const { sha512 } = require('../src/launcher-updates.cjs');
+
+//By leewheel 2026年11月9日 这里原来从 launcher-updates.cjs 借一个 sha512 工具；该模块整套换成
+// 自研的便携版更新（不再用 electron-updater / sha512 签名清单），工具跟着搬走，这里自己实现一份。
+const sha512 = file => crypto.createHash('sha512').update(require('node:fs').readFileSync(file)).digest('base64');
 
 const TOOL = path.join(__dirname, '..', '..', 'tools', 'publish-launcher.mjs');
 const fileFetch = root => async url => {

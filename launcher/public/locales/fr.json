@@ -1538,5 +1538,17 @@
   "check.conf.glued.bad.text": "{count} fichier(s) avec un réglage collé au commentaire du dessus, que le serveur ignore donc (« Missing property ») : {files}. Arrêtez le serveur, puis la correction remet chacun sur sa ligne, garde vos valeurs et une copie de chaque fichier.",
   "check.data.maps.warn.title": "Cartes de navigation des bots en cours",
   "check.data.maps.warn.text": "Data\\mmaps est en cours de construction depuis votre client (page d'accueil). Le serveur tourne déjà ; en attendant, les bots peuvent marcher en ligne droite.",
-  "install.serverTab": "Le launcher télécharge le serveur (environ 150 Mo, sans aucune donnée du jeu) dans un dossier vide de votre choix, puis prend les données du jeu dans votre propre client Conquest of Azeroth (environ 30 minutes) et installe les bots."
+  "install.serverTab": "Le launcher télécharge le serveur (environ 150 Mo, sans aucune donnée du jeu) dans un dossier vide de votre choix, puis prend les données du jeu dans votre propre client Conquest of Azeroth (environ 30 minutes) et installe les bots.",
+  "home.register": "Créer un compte",
+  "home.registerHint": "Créer le compte avec lequel vous vous connectez en jeu",
+  "register.title": "Créer un compte",
+  "register.subtitle": "C'est le compte avec lequel vous vous connectez dans le jeu.",
+  "register.needServer": "Le serveur doit tourner pour créer un compte : le compte est écrit dans sa base de données.",
+  "register.needServerHint": "Cliquez sur « Démarrer le serveur » ci-dessous, puis rouvrez cette page une fois qu'il tourne (un premier démarrage prend quelques minutes).",
+  "register.namePh": "Nom du compte, 3 à 17 caractères",
+  "register.passwordPh": "Mot de passe",
+  "register.badName": "Le nom du compte fait 3 à 17 caractères, sans espace.",
+  "register.badPassword": "Saisissez un mot de passe.",
+  "register.startServer": "Démarrer le serveur",
+  "register.creating": "Création du compte…"
 }

@@ -226,6 +226,19 @@ const dashboard = new Dashboard();
 const send = (channel, payload) => { if (window && !window.isDestroyed()) window.webContents.send(channel, payload); };
 const text = (value, max = 200) => String(value ?? '').slice(0, max);
 
+//By leewheel 2026年11月9日 老大要求：GitHub 上已经有新版启动器时，老启动器**不许再装更新包**，
+// 必须先把启动器升到最新。所有“会把文件写进 Server\ / Client\”的入口都先过这里。
+// 注意 gate() 在“查不到”（断网等）时是放行的：不能因为连不上 GitHub 就把玩家锁死装不了包。
+async function assertLauncherFresh() {
+  if (!launcherUpdates) return;
+  const gate = await launcherUpdates.gate().catch(() => ({ blocked: false }));
+  if (!gate.blocked) return;
+  const error = new Error(gate.message);
+  error.code = 'LAUNCHER_OUTDATED';
+  error.launcherVersion = gate.version || '';
+  throw error;
+}
+
 function persist(next) {
   const run = saveChain.then(async () => { settings = await writeSettings(settingsFile, next); return settings; });
   saveChain = run.catch(() => {});
@@ -378,6 +391,19 @@ function launcherRootFolder() {
   const candidates = launcherRootCandidates();
   const found = candidates.find(root => fs_exists(path.join(root, 'Client')) || fs_exists(path.join(root, 'Server')));
   return found || candidates[0];
+}
+
+//By leewheel 2026年11月9日 退出时替换新版启动器，全进程只许派一次。
+// 强制重启（launcher-updates 的 attemptInstall）已经派了一个带 --restart 的替换器并 app.exit(0)，
+// 若 will-quit / 强杀兜底再派一个，两个替换进程会抢着改同一个文件名（互相 EBUSY 重试），
+// 其中一个还可能把已就位的 .new.exe 删掉。所以这里统一走一道闸：已经在“安装中”就不再插手。
+function queueSwapOnQuit(where) {
+  if (launcherUpdates?.status?.phase === 'installing') return false;
+  try {
+    if (!launcherSwap.swapOnQuit(launcherRootFolder(), process.pid)) return false;
+    closingLog(`已安排替换新版启动器（${where}）`);
+    return true;
+  } catch { return false; }
 }
 
 //By leewheel 2026年11月8日 核心版本：优先显示「最近一次成功更新的版本」。
@@ -605,13 +631,50 @@ function upgradeNotify(update) {
   send('server:upgrade', { ...update, running: upgradeState.running });
 }
 
+//By leewheel 2026年11月9日 服务“自己挂了”的侦测：主页那个「为什么起不来」按钮靠它出现。
+// 只报真正异常的那种停止：从 running **直接**变 stopped。
+//   · 玩家主动停 → 状态先经过 stopping，跳过不报；
+//   · 正在加载中（starting）被叫停或启动失败 → starting 直落 stopped 也跳过：
+//     启动失败由 startOnce 的报错（带具体原因）上报，这里再报就是重复弹窗，
+//     主动叫停更不能报成「服务自己挂了」（2026-11-11 修复「点停止却弹启动失败」）；
+//   · 崩溃 → running 直落 stopped，2 秒后复查仍是 stopped 才确认（避免正常的重启瞬间误报）。
+const lastServiceStates = new Map();
+let serviceFailTimer = null;
+function noteServiceStates(list) {
+  if (!Array.isArray(list)) return;
+  let suspicious = null;
+  for (const item of list) {
+    const before = lastServiceStates.get(item.id);
+    lastServiceStates.set(item.id, item.state);
+    //By leewheel 2026年11月11日 starting 也跳过：启动失败已由 startOnce 的报错上报（带具体原因），
+    // 这里再报一次就是重复弹窗；而且「停止一个还在加载中的服务」时，状态从 starting 直落
+    // stopped 是玩家主动操作的结果，绝不能报成「服务自己挂了」。
+    if (!before || before === 'starting' || before === 'stopping' || before === 'stopped') continue;
+    if (item.state === 'stopped') suspicious = item.id;
+  }
+  if (!suspicious) return;
+  clearTimeout(serviceFailTimer);
+  serviceFailTimer = setTimeout(async () => {
+    try {
+      const control = serverControl();
+      if (!control) return;
+      const now = await control.status().catch(() => []);
+      if (now.find(item => item.id === suspicious)?.state !== 'stopped') return;
+      const diagnosis = await require('./diagnostics.cjs').diagnoseAll(control, { lastExits: control.lastExits || new Map() }).catch(() => null);
+      const line = diagnosis ? require('./diagnostics.cjs').quickLine(diagnosis) : '';
+      send('server:failed', { id: suspicious, message: line || '服务自己停止了', at: Date.now() });
+    } catch { /* 诊断失败不能影响状态刷新 */ }
+  }, 2500);
+  if (typeof serviceFailTimer.unref === 'function') serviceFailTimer.unref();
+}
+
 function serverControl() {
   if (!config.server || !serverPath()) return null;
   const ports = inspectRepack(serverPath()).ports;
   const services = config.server.services.map(service => ({ ...service, port: ports[service.id] || service.port }));
   const key = `${path.resolve(serverPath())}|${services.map(service => service.port).join(',')}`;
   if (!control || control.key !== key) {
-    control = new ServerControl({ root: serverPath(), services, commands: config.server.commands, notify: status => send('repack:services', status), onAuthStarted: () => realms.onlineRunning(serverPath()) });
+    control = new ServerControl({ root: serverPath(), services, commands: config.server.commands, notify: status => { send('repack:services', status); noteServiceStates(status); }, onAuthStarted: () => realms.onlineRunning(serverPath()) });
     control.key = key;
   }
   control.withBots = settings.modules?.squidbots !== false;
@@ -984,6 +1047,8 @@ function registerIpc() {
     return updater.check(gamePath(), { force: force === true, components: settings.components.game });
   });
   handle('client:update', async force => {
+    //By leewheel 2026年11月9日 客户端更新同样过闸门：新包的文件布局要靠新版启动器落地
+    await assertLauncherFresh();
     if (!updater) throw new Error('No game release is configured.');
     if (!gamePath()) throw new Error('Choose a folder for the game first.');
     if (busyFiles) throw new Error('Another file operation is running.');
@@ -1053,6 +1118,13 @@ function registerIpc() {
   // ---- local server ----
   const requireServer = () => { if (!config.server) throw new Error('No local server is configured.'); };
   const requireControl = () => { const found = serverControl(); if (!found) throw new Error('Choose the server folder first.'); return found; };
+  //By leewheel 2026年11月9日 服务起不来时的完整原因诊断（老大要求：主页出现醒目按钮 → 弹窗说清具体错误）。
+  // 只读：读日志尾部、查端口归属、看文件在不在，不动任何东西。界面上「为什么起不来」弹窗调这个。
+  handle('server:diagnose', async () => {
+    const control = serverControl();
+    if (!control) throw new Error('还没有选择服务器目录');
+    return require('./diagnostics.cjs').diagnoseAll(control, { lastExits: control.lastExits || new Map() });
+  });
   handle('repack:info', serverInfo);
   handle('news:list', async () => {
     const out = [];
@@ -1262,6 +1334,8 @@ function registerIpc() {
   };
   handle('repack:downloadInstall', async () => {
     requireServer();
+    //By leewheel 2026年11月9日 首次安装整包也算“装包”，有新版启动器就先用新版
+    await assertLauncherFresh();
     const entry = feed?.repack;
     if (!entry?.sha256 || !entry.bytes) throw new Error('The full server is not on the channel yet.');
     // This server comes without game data: it is prepared from the game, so the game folder comes first.
@@ -1457,8 +1531,9 @@ function registerIpc() {
   // Download, check, apply. Each step stops at the first error; the tool says whether anything was changed.
   handle('update:run', async () => {
     // The launcher first: a new launcher (found now if it was not looked for yet) is installed before any repack update.
-    if (!demoUpdate() && ['idle', 'checking'].includes(launcherUpdates.status.phase)) await launcherUpdates.check().catch(() => {});
-    if (!demoUpdate() && ['downloading', 'downloaded'].includes(launcherUpdates.status.phase)) throw new Error('A new launcher is on its way: install it first (it restarts the launcher), then update the server.');
+    //By leewheel 2026年11月9日 改成统一闸门：只要有新版启动器就拒绝装包（不再看“是不是刚好在下载”）：
+    // 原来只在 downloading/downloaded 时拦，忽略过版本或下载失败后又能装上，等于没拦。
+    if (!demoUpdate()) await assertLauncherFresh();
     if (demoUpdate()) {
       update.busy = true;
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -1930,6 +2005,18 @@ function registerIpc() {
     //By leewheel 2026年11月8日 数据库和游戏数据没关系：缺 mmaps / dbc 也允许先把库起来，
     // 否则玩家点"启动数据库"只会收到一句"先准备游戏数据"，看起来就是按钮没用。
     if (text(id, 30) !== 'mysql' && assembler.state(serverPath()).needed) throw new Error('Prepare the game data from your client first (home page).');
+    //By leewheel 2026年11月9日 启动失败要立刻让首页出现「为什么起不来」按钮：
+    // 失败时先推一条事件（带一句人话原因），界面不用等玩家自己去找日志。
+    try {
+      return await startServiceNow(id);
+    } catch (error) {
+      const serviceId = text(id, 30) === 'all' ? 'all' : text(id, 30);
+      send('server:failed', { id: serviceId, message: String(error?.message || error), at: Date.now() });
+      throw error;
+    }
+  });
+  //By leewheel 2026年11月9日 原来的启动主体原样搬进这个函数，只为外面能包一层 try/catch
+  async function startServiceNow(id) {
     //By leewheel 2026年11月5日 点“启动服务器 / 启动数据库”前先关掉数据库自动更新，否则服务端起不来
     await enforceDbUpdatesOff(serverPath(), { notify: true }).catch(() => {});
     //By leewheel 2026年11月5日 启动服务器时先把“待办的数据库脚本”补导（上次更新时库没起来过），
@@ -1947,7 +2034,7 @@ function registerIpc() {
       else { await prepareStart(); await requireControl().start(serviceId); if (serviceId === 'auth') await realmsOnline(); }
     }
     return serverInfo();
-  });
+  }
   // The repack's manager only stops everything (stop-all): one service alone is stopped by the launcher itself.
   const stopCoaWorld = async () => {
     const world = requireControl().services.find(service => /world/i.test(service.id));
@@ -2370,7 +2457,9 @@ function registerIpc() {
     if (!services) return;
     //By leewheel 2026年11月9日 省电模式每分钟看一眼（serverWatch 本身 20 秒一轮，这里自己节流）：
     // 更新、备份、国度任务进行中（quiet 为假）一律不动配置，免得和别的写配置撞车。
-    if (quiet && Date.now() - watch.ecoAt >= 60000) { watch.ecoAt = Date.now(); await eco.tick(root).catch(() => {}); }
+    // 补丁更新（releaseBusy / releaseQueueBusy）同样算“忙”：那时候正在写 playerbots.conf，
+    // 省电模式再去还原原值就会把刚写进去的参数盖掉。
+    if (quiet && !releaseBusy && !releaseQueueBusy && Date.now() - watch.ecoAt >= 60000) { watch.ecoAt = Date.now(); await eco.tick(root).catch(() => {}); }
     const world = services.find(service => /world/i.test(service.id))?.state || null;
     const count = (await verify.crashes(root, 2).catch(() => [])).length;
     const crashed = watch.crashes !== null && count > watch.crashes;
@@ -2763,7 +2852,10 @@ function registerIpc() {
   handle('link:discord', async () => { if (config.discordUrl) await shell.openExternal(config.discordUrl); });
   handle('link:baseClient', async () => { if (config.game.baseClient) await shell.openExternal(config.game.baseClient.url); });
 
-  handle('launcher:check', () => launcherUpdates.check());
+  handle('launcher:check', force => launcherUpdates.check({ force: force === true }));
+  //By leewheel 2026年11月9日 自更新的两个操作：忽略这个版本 / 取消下载
+  handle('launcher:skip', () => { launcherUpdates.skip(); return launcherUpdates.status; });
+  handle('launcher:cancel', () => { launcherUpdates.cancel(); return launcherUpdates.status; });
   handle('notify:test', () => { if (!Notification.isSupported()) throw new Error('Windows notifications are not available here.'); notifyUser('ready'); return true; });
   // Clean the logs: the old ones (world-console.log.1 …) always, the big current ones only with every world stopped
   // (a running world writes in them). Only files of the Logs folders, never a folder.
@@ -2903,7 +2995,9 @@ function registerIpc() {
     //End By leewheel
     //By leewheel 2026年11月8日 整合包已经自带的老补丁：这一次补记进 history（标记来源），之后不再反复计算。
     // 只写 history，不动 last-update.json，免得主页“核心版本”被旧版本顶回去。
-    if (releases.length && baseline.date) {
+    //By leewheel 2026年11月9日 更新正在进行时不做这件事：history 是“读—改—写”，
+    // 和 applyOnePatch 里的 recordVersion 撞在一起会丢掉刚记上的那一版，导致装过的补丁又排回队列。
+    if (releases.length && baseline.date && !releaseBusy && !releaseQueueBusy) {
       const covered = releaseUpdate.baselineCovered({ releases, history, baseline: baseline.version });
       if (covered.length) await releaseUpdate.recordBaselineVersions(root, covered).catch(() => {});
     }
@@ -2952,7 +3046,7 @@ function registerIpc() {
         const releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 });
         //By leewheel 2026年11月8日 同样改用基线（记录），不再看 exe 修改时间
         const baseline = currentBaseline(root);
-        if (baseline.date) {
+        if (baseline.date && !releaseBusy && !releaseQueueBusy) {
           const covered = releaseUpdate.baselineCovered({ releases, history, baseline: baseline.version });
           if (covered.length) { await releaseUpdate.recordBaselineVersions(root, covered).catch(() => {}); }
         }
@@ -3006,7 +3100,7 @@ function registerIpc() {
     if (!fs_exists(serverRoot) || !fs_exists(clientRoot)) throw new Error('先把目录整理成 Server 与 Client 两个目录（启动器会自动整理）。');
     releaseBusy = true;
     releaseAbort = new AbortController();
-    Object.assign(releaseState, { busy: true, version, phase: 'download', message: '准备中', pct: 0, done: false, error: '', result: null, at: new Date().toISOString() });
+    Object.assign(releaseState, { busy: true, version, phase: 'download', message: '准备中', pct: 0, done: false, failed: false, error: '', errorLog: '', result: null, at: new Date().toISOString() });
     const folder = path.join(root, 'Update', version);
     const zip = path.join(folder, options.asset.name || 'update.zip');
     const extract = path.join(folder, 'extracted');
@@ -3081,7 +3175,16 @@ function registerIpc() {
       // 世界服还在跑会锁住文件、还会往库里写数据。国度与主服世界服先停（各自存角色），
       // 然后把 MySQL 拉起来，保证按库名导入 SQL 用的是活的数据库连接。
       progress({ phase: 'apply', version, message: '正在停止服务器（世界服要存角色，可能要 1~2 分钟）', pct: null });
-      await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null }), serverRoot).catch(() => {});
+      const stopReport = await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null }), serverRoot).catch(() => ({}));
+      //By leewheel 2026年11月9日 停不下来就别动文件：世界服还占着 worldserver.exe，覆盖只会失败，
+      // 更糟的是它可能还在存角色。这里当场中止，把“该怎么做”说清楚，而不是丢一句 EBUSY。
+      if (stopReport?.worldStillRunning) {
+        throw new Error('世界服还在运行，已中止这次更新（文件正被占用，强行覆盖会把服务端弄坏）。请先在游戏里退出、把服务器正常关掉，再点更新');
+      }
+      //By leewheel 2026年11月9日 国度还在存角色时数据库必须继续跑，这时候导库会把角色数据写坏。
+      if (stopReport?.realmsStillSaving) {
+        throw new Error('国度还在保存角色，暂时不能更新（此时数据库不能停）。请等一两分钟、确认国度都停下来，再点更新');
+      }
       //By leewheel 2026年11月8日 换文件之前先把数据库弄活：起不来就当场中止，绝不再“文件换完、库没导”。
       // 以前这里是 serverControl()?.start('mysql') + .catch(() => {})：设置里没有服务器目录时
       // serverControl() 直接是 null，整句被 ?. 短路，数据库一步都没启动，最后只报“连不上数据库”。
@@ -3167,25 +3270,32 @@ function registerIpc() {
       }
       return { ...entry, folder: options.deleteAfter !== false ? '' : folder };
     } catch (error) {
-      const message = String(error?.message || error);
-      Object.assign(releaseState, { busy: false, done: false, error: message, message: '更新失败' });
+      //By leewheel 2026年11月9日 玩家主动取消：这不是“失败”，别写成“更新失败：下载已取消”，也别落错误日志
+      const cancelled = error?.code === 'CANCELLED';
+      const message = cancelled ? '更新已取消（还没有改动任何文件）' : String(error?.message || error);
+      Object.assign(releaseState, { busy: false, done: false, failed: !cancelled, cancelled, error: message, message: cancelled ? '已取消' : '更新失败' });
       //By leewheel 2026年11月5日 老大要能复制失败原因：除了界面可选中，再落一份日志文件，随时能打开/发人。
-      try {
-        const dir = path.join(app.getPath('userData'), 'logs');
-        await fs.mkdir(dir, { recursive: true });
-        const errorLog = path.join(dir, `release-error-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
-        const text = [
-          `时间：${new Date().toLocaleString('zh-CN')}`,
-          `版本：${releaseState.version || '(未知)'}`,
-          `阶段：${releaseState.phase || '(未知)'}`,
-          `信息：${message}`,
-          '',
-          String(error?.stack || ''),
-        ].join('\n');
-        await fs.writeFile(errorLog, text, 'utf8');
-        releaseState.errorLog = errorLog;
-        send('release:progress', { phase: releaseState.phase || 'apply', message: `更新失败：${message}`, error: message, errorLog, pct: releaseState.pct });
-      } catch { /* 日志写不了也不能盖住原始错误 */ }
+      //By leewheel 2026年11月9日 取消不写日志（那不是故障，写进去只会让 logs 目录越来越乱）。
+      if (cancelled) {
+        send('release:progress', { phase: releaseState.phase || 'apply', message, error: '', cancelled, pct: releaseState.pct });
+      } else {
+        try {
+          const dir = path.join(app.getPath('userData'), 'logs');
+          await fs.mkdir(dir, { recursive: true });
+          const errorLog = path.join(dir, `release-error-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
+          const text = [
+            `时间：${new Date().toLocaleString('zh-CN')}`,
+            `版本：${releaseState.version || '(未知)'}`,
+            `阶段：${releaseState.phase || '(未知)'}`,
+            `信息：${message}`,
+            '',
+            String(error?.stack || ''),
+          ].join('\n');
+          await fs.writeFile(errorLog, text, 'utf8');
+          releaseState.errorLog = errorLog;
+          send('release:progress', { phase: releaseState.phase || 'apply', message: `更新失败：${message}`, error: message, errorLog, pct: releaseState.pct });
+        } catch { /* 日志写不了也不能盖住原始错误 */ }
+      }
       throw error;
     } finally {
       releaseBusy = false;
@@ -3263,10 +3373,14 @@ function registerIpc() {
 
   handle('release:apply', async options => {
     if (releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    //By leewheel 2026年11月9日 有新版启动器就不许装包（老大要求）
+    await assertLauncherFresh();
     return applyOnePatch(options);
   });
   handle('release:applyAll', async options => {
     if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    //By leewheel 2026年11月9日 有新版启动器就不许装包（老大要求）
+    await assertLauncherFresh();
     const root = launcherRootFolder();
     // 优先用界面确认过的队列，避免检查之后又有新 release 插队；没传就现场重算一次
     let queue = Array.isArray(options?.queue) ? options.queue.filter(item => item?.asset?.url) : [];
@@ -3290,6 +3404,8 @@ function registerIpc() {
   // 这是今天这种“启动器/服务端坏掉、玩家又没法从 GitHub 下载”的兜底。跳过版本比较，按所选 zip 直接覆盖。
   handle('release:localZip', async options => {
     if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    //By leewheel 2026年11月9日 有新版启动器就不许装包（老大要求）
+    await assertLauncherFresh();
     const root = launcherRootFolder();
     let zip = String(options?.path || '');
     if (!zip) {
@@ -3311,9 +3427,15 @@ function registerIpc() {
       Object.assign(releaseState, { busy: true, version, ...localInfo, phase: withPkg.phase || releaseState.phase, message: withPkg.message || releaseState.message, pct: typeof withPkg.pct === 'number' ? withPkg.pct : releaseState.pct });
       send('release:progress', withPkg);
     };
+    //By leewheel 2026年11月9日 开跑前把上一轮的错误抹掉。
+    // 以前只在失败时写 error、成功时不清：界面重开读 release:state 看到 error 还在，
+    // 明明已经更新成功，横幅却一直挂着“更新失败：…”，点“开始更新”也点不出来。
+    Object.assign(releaseState, { busy: true, version, ...localInfo, phase: 'download', message: '准备中', pct: 0, done: false, failed: false, error: '', errorLog: '', result: null, at: new Date().toISOString() });
+    // 临时解压目录提到 try 外面：失败时也要把它删掉，否则 Update\local-* 越攒越多
+    let workDir = '';
     try {
       progress({ phase: 'download', version, message: `使用本地更新包：${localName}`, pct: 2 });
-      const workDir = path.join(root, 'Update', `local-${Date.now()}`);
+      workDir = path.join(root, 'Update', `local-${Date.now()}`);
       await fs.mkdir(workDir, { recursive: true });
       progress({ phase: 'extract', version, message: `正在解压 ${localName}`, pct: 8 });
       await releaseUpdate.extractZip(zip, workDir, line => progress({ phase: 'extract', version, message: String(line).slice(0, 200), pct: 10 }));
@@ -3324,7 +3446,13 @@ function registerIpc() {
       // 直接拿 admin-client.ini 去连 3396，15 秒后报“连不上数据库”。
       // 现在和远程补丁走同一套：先停服 → 拉起数据库 → 连不上就中止（一个文件都不换）。
       progress({ phase: 'apply', version, message: '正在停止服务器（世界服要存角色，可能要 1~2 分钟）', pct: 20 });
-      await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null }), serverRoot).catch(() => {});
+      const localStop = await stopAllServices(line => progress({ phase: 'apply', version, message: String(line).slice(0, 200), pct: null }), serverRoot).catch(() => ({}));
+      if (localStop?.worldStillRunning) {
+        throw new Error('世界服还在运行，已中止这次更新（文件正被占用，强行覆盖会把服务端弄坏）。请先在游戏里退出、把服务器正常关掉，再点更新');
+      }
+      if (localStop?.realmsStillSaving) {
+        throw new Error('国度还在保存角色，暂时不能更新（此时数据库不能停）。请等一两分钟、确认国度都停下来，再点更新');
+      }
       progress({ phase: 'sql', version, message: '正在准备数据库（必要时自动启动 MySQL）', pct: 24 });
       const localConns = await ensureUpdateDatabase(serverRoot, line => progress({ phase: 'sql', version, message: String(line).slice(0, 200), pct: null }));
       progress({ phase: 'apply', version, message: '数据库已就绪，正在替换文件…', pct: 30 });
@@ -3383,15 +3511,19 @@ function registerIpc() {
       await releaseBaseline.writeBaseline(root, { version: version || '' }).catch(() => null);
       await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
       progress({ phase: 'done', version: entry.version, message: '强制更新完成', pct: 100, result: entry });
-      Object.assign(releaseState, { busy: false, done: true, failed: false, message: '强制更新完成', version: entry.version });
+      Object.assign(releaseState, { busy: false, done: true, failed: false, message: '强制更新完成', version: entry.version, error: '', errorLog: '' });
       return { ...entry };
     } catch (error) {
       const message = String(error?.message || error);
       Object.assign(releaseState, { busy: false, done: false, failed: true, message: '强制更新失败', error: message });
-      progress({ phase: 'failed', version, message: `强制更新失败：${message}`, pct: 100 });
+      //By leewheel 2026年11月9日 失败事件必须带 error：界面靠它把步骤灯标红、显示“更新失败”，
+      // 只塞一句 message 的话界面会当成“还在某个阶段”，看起来像卡住了。
+      progress({ phase: 'failed', version, message: `强制更新失败：${message}`, error: message, pct: 100 });
       throw new Error(message);
     } finally {
       releaseBusy = false;
+      // 失败也要清掉这次的解压目录（成功那条路径前面已经删过一次，这里再删不报错）
+      if (workDir) await fs.rm(workDir, { recursive: true, force: true }).catch(() => {});
     }
   });
   //By leewheel 2026年11月6日 打开“数据库导入日志”（逐条 OK/FAIL，多次更新都在这个文件里）
@@ -3445,7 +3577,10 @@ function registerIpc() {
     const baseline = currentBaseline(root);
     const list = releases
       .filter(release => releaseUpdate.pickAsset(release))
-      .map(release => {
+      //By leewheel 2026年11月10日 被后来的累积包包含的旧版本：标出来，界面显示“已被 X 包含”，
+      // 免得老大看见一堆“未安装”的旧包以为漏装了。
+      .map((release, index, all) => ({ release, covered: releaseUpdate.coverageMap({ releases: all })[String(release.version || '')] || '' }))
+      .map(({ release, covered }) => {
         const version = String(release.version || '');
         const asset = releaseUpdate.pickAsset(release);
         // 日期优先取发布时间，取不到退版本号里的 20YYMMDD；界面按它排序/显示
@@ -3459,6 +3594,8 @@ function registerIpc() {
           asset: { name: asset.name, size: asset.size, url: asset.url },
           installed: done.has(version),
           coveredByBaseline: Boolean(baseline.date && date && date < baseline.date),
+          // 被哪个累积包包含（空 = 没被包含）。界面据此显示“已被 2026.11.10 包含”，不再装它。
+          coveredBy: String(covered || ''),
         };
       })
       // 界面按【旧 → 新】展示，与安装顺序一致，避免玩家以为最上面的是最早发布的
@@ -3471,6 +3608,8 @@ function registerIpc() {
   // 不传 version：取最新一版；若最新那版不是全量包，同样按“装到它为止”补齐前面所有补丁。
   handle('release:forceRemote', async options => {
     if (releaseBusy || releaseQueueBusy) throw new Error('更新正在进行中，请等它完成。');
+    //By leewheel 2026年11月9日 有新版启动器就不许装包（老大要求）
+    await assertLauncherFresh();
     const root = launcherRootFolder();
     let releases = [];
     try { releases = await releaseUpdate.listReleases({ fetchImpl: netFetch, token: '', api: config.githubApi, perPage: 30 }); }
@@ -4014,12 +4153,31 @@ function closingLog(line) {
 // 这样即使“服务器目录”设置为空，也能按包自己的位置停服（以前会静默跳过，世界服占着 exe 导致覆盖失败）。
 async function stopAllServices(log = () => {}, serverRoot = null) {
   const root = serverRoot || serverPath();
-  const control = serverRoot ? updateServerControl(serverRoot) : serverControl();
+  //By leewheel 2026年11月9日 停服必须复用**当前正在用的那个** serverControl。
+  // 世界服的优雅停机是往它自己的控制台管道里写 `server shutdown …`，那个管道只存在于“启动它的那个实例”里。
+  // 以前这里无条件 updateServerControl() 新建一个：children 是空的 → 优雅停机发不出去 →
+  // 只剩 taskkill（控制台程序不理会 WM_CLOSE）→ 白等 300 秒 → 最后 taskkill /F 硬杀。
+  // 结果就是：更新前那 5 分钟“卡住”，以及角色/机器人还没存完就被打断的风险。
+  const singleton = serverControl();
+  const reuse = !!(singleton && serverRoot && path.resolve(singleton.root) === path.resolve(serverRoot));
+  const control = serverRoot ? (reuse ? singleton : updateServerControl(serverRoot)) : singleton;
   const worldStop = control
     ? control.stop('world').then(() => log('主服世界服已停'), error => log('主服世界服停机失败: ' + error.message))
     : Promise.resolve();
   let realmsFailed = false;
   if (root) await realms.stopAll(root).then(() => log('国度已停'), error => { realmsFailed = true; log('国度停机失败: ' + error.message); });
+  //By leewheel 2026年11月9日 更新路径下，国度还在存角色就多等一会儿再试：
+  // 只重试一次就放弃，等于让一个“下次就好”的情况变成“更新失败”；
+  // 但也不能无限等 —— 三次（约 30 秒）还停不下来，就交给上层中止，绝不带着活着的国度去导库。
+  let realmsStillSaving = realmsFailed;
+  if (realmsFailed && serverRoot) {
+    for (let attempt = 1; attempt <= 3 && realmsStillSaving; attempt += 1) {
+      log(`国度还在保存角色，10 秒后重试停服（${attempt}/3）`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      realmsStillSaving = await realms.stopAll(root).then(() => { log('国度已停'); return false; }, () => true);
+    }
+    if (!realmsStillSaving) realmsFailed = false;
+  }
   await worldStop;
   if (control) {
     await control.stop('auth').catch(error => log('登录服停机失败: ' + error.message));
@@ -4027,7 +4185,24 @@ async function stopAllServices(log = () => {}, serverRoot = null) {
     if (realmsFailed) log('国度仍在存角色：数据库保持运行');
     else await control.stop('mysql').catch(error => log('数据库停机失败: ' + error.message));
   }
-  return { realmsFailed };
+  //By leewheel 2026年11月9日 停完要确认世界服**真的退出**再让上层替换文件：
+  // 端口关了 ≠ 进程退了（worldserver 关机后还要几十秒把角色/机器人写完），
+  // 这时覆盖 worldserver.exe 只会得到 EBUSY，或者更糟——把还没存完的进程打断。
+  let worldStillRunning = false;
+  // 只在“更新前停服”（带了 serverRoot）时做这道确认：关闭启动器那条路径不需要多等。
+  if (control && serverRoot) {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const states = await control.status().catch(() => []);
+      const world = states.find(item => item.id === 'world');
+      // foreign = 端口被别的程序占着（不是我们这份服务），不属于“还占着要替换的文件”
+      if (!world || world.state === 'stopped' || world.state === 'foreign') { worldStillRunning = false; break; }
+      worldStillRunning = true;
+      if (attempt === 0) log('世界服还在收尾（保存角色），等它退出再替换文件…');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    if (worldStillRunning) log('世界服仍在运行：现在替换文件会失败，更新将中止');
+  }
+  return { realmsFailed, realmsStillSaving, worldStillRunning };
 }
 async function stopEverything() {
   const root = serverPath();
@@ -4061,6 +4236,9 @@ async function closeWithNotice() {
       //By leewheel 2026-11-03 强杀后还要按 exe 路径兜底扫一遍：上一个实例拉起的 MySQL 不在
       // children 里，漏掉它就是“关了启动器 mysqld 还占着端口”的根因。
       try { const killed = await serverControl()?.killAllInside(); if (killed?.length) closingLog('兜底强杀: ' + killed.join(', ')); } catch {}
+      //By leewheel 2026年11月9日 强杀退出这条路径不会走 will-quit：新版启动器必须在 app.exit 之前派出去，
+      // 否则“下载好了却一直没换”会一直留着（下次打开还是老版本）。
+      try { queueSwapOnQuit('强杀兜底'); } catch {}
       await new Promise(resolve => setTimeout(resolve, 1500));
       app.exit(0);
       return;
@@ -4137,10 +4315,41 @@ async function main() {
   //By leewheel 2026年11月4日 设置文件也随包生成：首次启动没有 launcher-settings.json 时写出默认配置（目录为相对写法）
   if (!fs_exists(settingsFile)) await writeSettings(settingsFile, settings).catch(() => {});
   createUpdaters();
-  launcherUpdates = createLauncherUpdates(app, { feedUrl: config.launcherUpdateUrl, key: config.launcherUpdateKey, fetchImpl: netFetch }, status => send('launcher:update', status), async () => {
-    if (busyFiles || updater?.busy) throw new Error('Wait for the current operation to finish.');
-    // Restarting would cut the preparation of the server in the middle (its database would start over).
-    if (assembler.busy.size) throw new Error('The server is being prepared: restart the launcher when it is done.');
+  //By leewheel 2026年11月9日 启动器自身更新改成「GitHub Releases + 国内镜像 + 真自替换」：
+  // 发布地址 github.com/leewheel/squidbots-launcher/releases，Release title = COA-LAUNCHER-版本号。
+  // 原来的 electron-updater 通道（launcherUpdateUrl / launcherUpdateKey）是给 NSIS 包的，portable 用不了，
+  // 那两个配置项仅保留在 config.cjs 里兼容老配置文件，不再参与更新。
+  launcherUpdates = createLauncherUpdates(app, {
+    currentVersion: appVersion(),
+    root: launcherRootFolder(),
+    repo: config.launcherUpdateRepo,
+    branch: config.launcherUpdateBranch,
+    mirrors: config.downloadMirrors,
+    fetchImpl: netFetch,
+    // 玩家点过「忽略这个版本」就不再提示（下次检查其余版本照常）
+    skipVersion: () => settings.launcherSkipVersion || '',
+    onSkip: version => { persist({ ...settings, launcherSkipVersion: version }).catch(() => {}); },
+  }, status => send('launcher:update', status), async () => {
+    //By leewheel 2026年11月9日 这几个理由会直接显示在首页横幅上，必须是中文
+    // （自动重启被拦下时横幅写「…；停服后会自动完成升级」，玩家得看得懂在等什么）。
+    if (busyFiles || updater?.busy) throw new Error('当前正在装更新包');
+    // 服务器正在从客户端准备数据时重启，会把准备到一半的进程砍断（数据库要重头来）。
+    if (assembler.busy.size) throw new Error('服务器正在准备数据');
+    //By leewheel 2026年11月9日 世界服在跑时**绝不能**重启启动器：世界服的控制台是启动器开的管道，
+    // 启动器一退管道就 EOF，核心会自己走一遍停机流程（实测约 90 秒后打印 Halting process），
+    // 玩家正在打的副本就被踢下线了。这里抛 SERVER_RUNNING，launcher-updates 会把它当成“等玩家打完”
+    // 而不是失败：每 60 秒看一次，等服停了自动把启动器升级补完。
+    // 数据库与登录服没有这条管道（stdio 是 ignore），重启启动器不影响它们，所以不拦。
+    const control = serverControl();
+    if (control) {
+      const live = (await control.status().catch(() => []))
+        .filter(item => item.id === 'world' && ['running', 'starting', 'stopping'].includes(item.state));
+      if (live.length) {
+        const error = new Error('世界服正在运行，重启启动器会让它掉线');
+        error.code = 'SERVER_RUNNING';
+        throw error;
+      }
+    }
   });
   session.defaultSession.setPermissionRequestHandler((_c, _p, callback) => callback(false));
   session.defaultSession.setPermissionCheckHandler(() => false);
@@ -4216,7 +4425,9 @@ async function main() {
       app.exit(0);
     }).catch(() => app.exit(0));
   });
-  setTimeout(() => launcherUpdates.check(), 1500).unref();
+  //By leewheel 2026年11月9日 巡检/截图模式（--smoke）不查启动器自更新：那条链路查到新版会**真的下 375MB
+  // 并把自己强制重启**，巡检跑到一半窗口就没了（同 autoCheckRelease 的处理，见 3083 行）。
+  if (!smokeDir) setTimeout(() => launcherUpdates.check(), 1500).unref();
   if (config.edition === 'server' && !smokeDir) createTray().catch(() => {});
   // The server watched every 20 seconds, window shown or not: ready, crash (and restart).
   //By leewheel 2026年11月7日 自动每日备份已移除，这里只剩状态跟踪与崩溃重启。
@@ -4240,8 +4451,11 @@ async function main() {
 // 把自己复制成 CoA启动器.exe，然后直接退出——不开窗口、不抢单实例锁。更新时由主进程 spawn 自己。
 const takeoverArg = process.argv.find(arg => String(arg).startsWith('--takeover=')) || '';
 const takeoverPid = Number(takeoverArg.split('=')[1]) || 0;
+//By leewheel 2026年11月9日 --restart：玩家在「重启并安装」里点的，替换完把新 exe 拉起来。
+// 启动时自动替换那条路径不带这个参数（不然会在玩家关掉启动器时凭空弹窗）。
+const takeoverRestart = process.argv.includes('--restart');
 if (takeoverPid > 0) {
-  launcherSwap.performTakeover(launcherRootFolder(), takeoverPid)
+  launcherSwap.performTakeover(launcherRootFolder(), takeoverPid, { restart: takeoverRestart })
     .catch(() => false)
     .finally(() => app.exit(0));
 } else if (!smokeDir && !app.requestSingleInstanceLock()) {
@@ -4266,5 +4480,12 @@ if (takeoverPid > 0) {
 } else {
   app.on('second-instance', () => showWindow());
   app.whenReady().then(main).catch(error => { dialog.showErrorBox(boxText('launchFailed')[0], error.message); app.quit(); });
+  //By leewheel 2026年11月9日 启动器自更新的最后一步：退出前把已下载的新版换上去。
+  // 玩家没点「重启并安装」就关掉启动器的话，这条兜底保证他下次打开就是新版——
+  // 换名/覆盖只能等本进程真正退出，所以由新 exe 带 --takeover=<本PID> 去等，换完不拉新窗口。
+  app.on('will-quit', () => {
+    if (smokeDir) return;
+    queueSwapOnQuit('will-quit');
+  });
   app.on('window-all-closed', () => app.quit());
 }

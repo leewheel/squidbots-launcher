@@ -95,6 +95,10 @@ function validate(raw) {
     appName: String(raw.appName || 'CoA Launcher Lite').slice(0, 60),
     edition: raw.edition === 'server' && raw.server ? 'server' : 'full',
     launcherUpdateUrl: serviceUrl(raw.launcherUpdateUrl, 'launcherUpdateUrl', trusted, { optional: true }),
+    //By leewheel 2026年11月9日 启动器自更新：发布仓库与分支。
+    // 老玩家的 launcher.config.json 里没有这两项，所以默认值必须写死在这里（不能只靠配置文件）。
+    launcherUpdateRepo: /^[\w.-]+\/[\w.-]+$/.test(String(raw.launcherUpdateRepo || '')) ? String(raw.launcherUpdateRepo) : 'leewheel/squidbots-launcher',
+    launcherUpdateBranch: /^[\w.\-/]{1,60}$/.test(String(raw.launcherUpdateBranch || '')) ? String(raw.launcherUpdateBranch) : 'main',
     // The signed news feed: download links (repack, client), known repack releases, news. Read every 30 min.
     feedUrl: serviceUrl(raw.feedUrl, 'feedUrl', trusted, { optional: true }),
     launcherUpdateKey: raw.launcherUpdateKey ? (publicKey(raw.launcherUpdateKey), String(raw.launcherUpdateKey)) : '',

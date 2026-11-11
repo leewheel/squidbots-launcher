@@ -157,6 +157,11 @@ function subscribe() {
     if (!App.state.server) return;
     const changed = JSON.stringify(services) !== JSON.stringify(App.state.server.services);
     App.state.server.services = services;
+    //By leewheel 2026年11月9日 那个失败的服务重新跑起来了：首页的红色条自动撤掉（不用玩家手动关）
+    if (App.state.serverFail) {
+      const back = services.find(item => item.id === App.state.serverFail.id);
+      if (back && back.state === 'running') { App.state.serverFail = null; if (App.state.tab === 'home' && !$('#dialog').open) App.render(); }
+    }
     if (changed && App.state.srvTab === 'services') patchServer();
     if (changed && App.state.tab === 'home' && !$('#dialog').open) App.render();
   });
@@ -190,9 +195,23 @@ function subscribe() {
     // Only the bar is redrawn: the page underneath (a form being filled…) is left alone.
     const bar = $('#launcher-banner');
     if (bar) bar.innerHTML = launcherBanner();
-    if (['downloading', 'downloaded'].includes(status.phase) && App.state.tab === 'home' && !$('#dialog').open) App.render();
-    if (status.phase === 'downloaded') toast(t('launcher.ready', 'A new launcher is ready: it installs when you restart.'), 'success');
+    //By leewheel 2026年11月9日 阶段名改了：downloaded → ready（新实现里“已校验落位、可安装”叫 ready）。
+    // 另外“倒计时”每秒推一次，只重画横幅就够（横幅在主框架里，任何页都看得到），
+    // 不要再整页 App.render —— 那样下载期间每秒重画 5 次首页，按钮会闪、悬停会断。
+    if (status.phase === 'ready' && !App.state.launcherReadyNotified) {
+      App.state.launcherReadyNotified = true;
+      toast(`新版启动器 ${status.version || ''} 已下载完成：马上自动重启安装（服务端不会被停掉）。`, 'success');
+    }
+    if (status.phase !== 'ready') App.state.launcherReadyNotified = false;
   });
+  //By leewheel 2026年11月9日 服务起不来 / 半路自己挂了：首页立刻出现红色条与「为什么起不来」按钮
+  if (api.onServerFailed) {
+    api.onServerFailed(payload => {
+      App.state.serverFail = payload || null;
+      if (payload?.message) toast(`服务启动失败：${payload.message}`, 'error');
+      if (App.state.tab === 'home' && !$('#dialog').open) App.render();
+    });
+  }
   api.onGameExit(async () => { App.state.client = await api.clientInfo(); App.refresh('play'); });
 }
 
@@ -216,7 +235,14 @@ App.smoke = step => {
   if (step === 'wait') return;
   if (step === 'reload') { App.reloadAll(); return; }
   // Screenshot tours: show the launcher-update bar as if a new launcher were downloading / ready.
-  if (step.startsWith('launcher:')) { App.state.launcherUpdate = { phase: step.slice(9), version: '9.9.9', percent: 56 }; const bar = $('#launcher-banner'); if (bar) bar.innerHTML = launcherBanner(); return; }
+  if (step.startsWith('launcher:')) {
+    //By leewheel 2026年11月9日 巡检脚本里的旧名字映射到新状态（downloaded → ready），老脚本照旧可用
+    const alias = { downloaded: 'ready', downloadedlater: 'ready' };
+    const phase = alias[step.slice(9)] || step.slice(9);
+    App.state.launcherUpdate = { phase, version: '9.9.9', latest: '9.9.9', percent: 56, newer: true, total: 392000000, done: 219000000 };
+    const bar = $('#launcher-banner'); if (bar) bar.innerHTML = launcherBanner();
+    return;
+  }
   if (step.startsWith('click:')) { $(step.slice(6))?.click(); return; }
   //By leewheel 2026年11月9日 巡检专用：用假数据把“更新进度”那一块单独画出来拍图，
   // 免得为了确认“包名有没有显示”真去跑一次 80MB 的更新。只在 --smoke 巡检时才会走到这里。

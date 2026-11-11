@@ -25,6 +25,10 @@ const BASELINE = '.coa-launcher/baseline.json';
 //   点分：2026.11.08 / 2026-11-07 / 2026-11-08T06:08:53Z
 function dateOf(text) {
   const s = String(text || '');
+  //By leewheel 2026年11月10日 中文写法（2026年11月10日）也要认：发布时版本号/标题里可能带中文，
+  // 认不出来就等于“没有日期”，更新判定会退化成一串字符比大小 —— 11.10 那次就是这么被误判成“已是最新”的。
+  const cn = /(20\d{2})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})/.exec(s);
+  if (cn) return Number(`${cn[1]}${String(cn[2]).padStart(2, '0')}${String(cn[3]).padStart(2, '0')}`);
   const compact = /20(\d{2})(\d{2})(\d{2})/.exec(s);
   if (compact) return Number(`20${compact[1]}${compact[2]}${compact[3]}`);
   const split = /(20\d{2})[.\-_/](\d{1,2})[.\-_/](\d{1,2})/.exec(s);

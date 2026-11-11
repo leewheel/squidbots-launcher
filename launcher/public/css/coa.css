@@ -267,8 +267,12 @@ body::after {
 .free-banner .fb-canvas { display: block; width: 100%; height: 40px; }
 
 /* 右侧小字状态行：一条竖线隔开，字号小、字距大，像设备铭牌 */
+/*By leewheel 2026年11月10日 铭牌内容改成 canvas 画的两行文案（原来是写死的 notice-meta.png），
+  这里给固定宽度，画布在里面按宽度自适应字号；宽度够两行 13px 时正好，窄了自动缩小。 */
 .free-banner .fb-meta {
   flex: none;
+  width: 200px;
+  box-sizing: border-box;
   padding-left: 16px;
   border-left: 1px solid rgba(0, 229, 255, .28);
   white-space: nowrap;
@@ -277,6 +281,7 @@ body::after {
   color: rgba(126, 243, 255, .78);
   text-transform: uppercase;
 }
+.free-banner .fb-meta-canvas { display: block; width: 100%; height: 40px; }
 
 @keyframes fb-orbit { to { transform: rotate(360deg); } }
 @keyframes fb-breathe { 50% { box-shadow: 0 0 26px rgba(0, 229, 255, .6), inset 0 0 18px rgba(0, 229, 255, .3); } }
@@ -344,3 +349,47 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
 #force-update-mask .force-version { margin: 0 0 8px; color: #e8e6e0; }
 #force-update-mask .force-reason { margin: 0 0 12px; color: #cfd6e4; line-height: 1.6; }
 #force-update-mask .button.primary { margin-top: 10px; }
+/* ---------------------------------------------------------------------------
+   By leewheel 2026年11月9日 服务起不来时的醒目提示 + 「为什么起不来」诊断弹窗
+   老大要求：MySQL / worldserver / authserver 不能运行时，主页要一眼看见，
+   点按钮弹窗说清「原因 + 怎么办」。所以这里用红色 + 左侧发光条，跟普通黄条区分开。
+   --------------------------------------------------------------------------- */
+.startup-fail {
+  display: flex; align-items: center; gap: 12px; margin: 10px 0 4px;
+  padding: 10px 12px; border-radius: 10px;
+  border: 1px solid rgba(255, 96, 72, .55);
+  background: linear-gradient(90deg, rgba(120, 22, 12, .55), rgba(60, 12, 8, .28));
+  box-shadow: 0 0 0 1px rgba(255, 96, 72, .12) inset, 0 6px 22px rgba(140, 24, 12, .28);
+  animation: startup-fail-pulse 2.6s ease-in-out infinite;
+}
+@keyframes startup-fail-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(255, 96, 72, .12) inset, 0 6px 22px rgba(140, 24, 12, .22); }
+  50% { box-shadow: 0 0 0 1px rgba(255, 120, 96, .32) inset, 0 6px 26px rgba(190, 40, 20, .42); }
+}
+@media (prefers-reduced-motion: reduce) { .startup-fail { animation: none; } }
+.startup-fail-icon { display: flex; color: #ff7a5c; flex: 0 0 auto; }
+.startup-fail-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.startup-fail-text strong { color: #ffd9cf; font-size: 13px; }
+.startup-fail-text small { color: #f0b8a8; font-size: 11.5px; line-height: 1.45; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.startup-fail .button.danger { flex: 0 0 auto; }
+
+/* 诊断弹窗 */
+.diag-summary { margin: 0 0 2px; font-size: 14px; font-weight: 600; }
+.diag-summary.bad { color: #ff9a80; }
+.diag-summary.ok { color: var(--ok, #7bd88f); }
+.diag-tips { margin: 8px 0 0; padding-left: 18px; color: #f0c08a; font-size: 12px; line-height: 1.6; }
+.diag-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.diag-item { border: 1px solid var(--line, rgba(235, 160, 81, .13)); border-radius: 10px; padding: 10px 12px; background: var(--panel-2, rgba(49, 32, 18, .55)); }
+.diag-item.critical { border-color: rgba(255, 96, 72, .45); background: rgba(90, 20, 12, .28); }
+.diag-item.warning { border-color: rgba(240, 176, 80, .45); }
+.diag-item header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.diag-item header strong { font-size: 13.5px; }
+.diag-headline { margin: 6px 0 0; font-size: 12.5px; color: var(--text, #eddac1); }
+.diag-reason, .diag-hint { margin: 6px 0 0; font-size: 12.5px; line-height: 1.6; }
+.diag-reason { color: #ffcdbd; }
+.diag-hint { color: #ffd79a; }
+.diag-exit { margin: 6px 0 0; font-size: 12px; color: #ffb0a0; font-family: var(--font-mono, monospace); }
+.diag-quote { margin: 8px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--log-bg, rgba(15, 9, 5, .88)); color: var(--log-text, #e5c7a4); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.diag-log { margin-top: 8px; }
+.diag-log summary { cursor: pointer; font-size: 12px; color: var(--muted, #b49c80); }
+.diag-log pre { margin: 6px 0 0; max-height: 220px; overflow: auto; padding: 8px 10px; border-radius: 6px; background: var(--log-bg, rgba(15, 9, 5, .88)); color: var(--log-text, #e5c7a4); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }

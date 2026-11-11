@@ -254,6 +254,15 @@
 .play-row .gear-settings { flex: none; width: 52px; height: 52px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--panel); }
 .play-row .gear-settings .icon { width: 24px; height: 24px; }
 .play-row .gear-settings:hover { border-color: var(--accent); color: var(--accent); }
+/*By leewheel 2026年11月10日 主页「注册账号」按钮：与启动按钮齐平，但用低调的描边样式，不跟主按钮抢眼。*/
+.play-row .register-account { flex: none; height: 52px; padding: 0 16px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--panel); font-size: 14px; white-space: nowrap; }
+.play-row .register-account .icon { width: 18px; height: 18px; color: var(--accent); }
+.play-row .register-account:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+/* 注册弹窗：账号名/密码两列，GM 与「创建」各占一列。*/
+.register-dialog .register-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; }
+.register-dialog .register-form .check { grid-column: 1; }
+.register-dialog .register-form button[type=submit] { grid-column: 2; justify-self: stretch; justify-content: center; }
+/*End By leewheel*/
 
 /* Bring players over: under the server and bots cards of the Installation tab. */
 .grid-2.bring-players { margin-top: 18px; }

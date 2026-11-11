@@ -4184,6 +4184,19 @@
         "Updates.EnableDatabases"
       ],
       "reason": "The repack fills this in at every start."
+    },
+    {
+      "file": "worldserver.conf",
+      "when": "configs/worldserver.conf",
+      "keys": [
+        "DataDir",
+        "LogsDir",
+        "WorldServerPort",
+        "Ra.Port",
+        "BindIP",
+        "Updates.EnableDatabases"
+      ],
+      "reason": "影响服务器启动、数据库连接与启动器管理（数据目录/日志目录/端口/更新开关），由整合包统一设置；其余所有键玩家都能改。"
     }
   ],
   "sections": [

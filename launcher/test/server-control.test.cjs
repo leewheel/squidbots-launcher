@@ -94,3 +94,48 @@ test('配置里缺 Ra 键时补齐，不破坏已有内容', async t => {
   assert.match(conf, /Ra\.IP = "127\.0\.0\.1"/);
 });
 //End By leewheel
+
+//By leewheel 2026年11月11日 回归测试：修复「玩家点停止却弹『服务启动失败』」。
+// stop() 进行中（states='stopping'）时 status() 必须一律报 'stopping'——哪怕端口已关、进程已退。
+// 原状态机在那个窗口直落 'stopped'，崩溃侦测（noteServiceStates）只看「上一拍不是 stopping
+// → 这一拍 stopped」，就把玩家的主动停止误判成「服务自己挂了」。
+const net = require('node:net');
+const stopTestControl = (t, port) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'coa-stop-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  return new ServerControl({
+    root,
+    services: [{ id: 'world', name: '世界服务器', port, exe: 'worldserver.exe', args: [], cwd: '.', start: null, stop: null, alternatives: [] }],
+  });
+};
+
+test('停止进行中、端口已关、进程已退：必须仍报 stopping，不得直落 stopped', async t => {
+  const found = stopTestControl(t, 18085);
+  found.states.set('world', 'stopping');
+  const [row] = await found.status();
+  assert.equal(row.state, 'stopping', '玩家主动停止期间，崩溃侦测要靠这个状态跳过，否则误报「服务启动失败」');
+});
+
+test('停止进行中、端口还开着：报 stopping', async t => {
+  const server = net.createServer();
+  await new Promise(resolve => server.listen(18086, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const found = stopTestControl(t, 18086);
+  found.states.set('world', 'stopping');
+  const [row] = await found.status();
+  assert.equal(row.state, 'stopping');
+});
+
+test('崩溃场景（无 transient、端口已关）：仍报 stopped，才会被侦测为「服务自己挂了」', async t => {
+  const found = stopTestControl(t, 18087);
+  const [row] = await found.status();
+  assert.equal(row.state, 'stopped', '真崩溃必须照常上报，修复不能把侦测一起关掉');
+});
+
+test('启动进行中、端口未开：报 starting', async t => {
+  const found = stopTestControl(t, 18088);
+  found.states.set('world', 'starting');
+  const [row] = await found.status();
+  assert.equal(row.state, 'starting');
+});
+//End By leewheel

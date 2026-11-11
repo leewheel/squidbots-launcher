@@ -23,6 +23,8 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
+//By leewheel 2026年11月9日 写盘背压要等 'drain'，用 events.once 顺带把 'error' 一起接住
+const { once } = require('node:events');
 const mpq = require('./mpq-inject.cjs');
 const { serverLayout } = require('./layout.cjs');
 
@@ -68,7 +70,64 @@ function releaseIsNewer(latest, current) {
   if (!left && right) return compareVersions(latest, current) > 0;
   return compareVersions(latest, current) > 0;
 }
-const versionOf = release => String(release?.tag_name || release?.name || '').replace(/^v/i, '').trim();
+//By leewheel 2026年11月10日 版本号必须带得上日期 —— 这是**判定键**，不是展示文本。
+// 实弹（老大 2026-11-10 当场截图退回）：11.10 那次发布把 GitHub 的 tag 写成 "COA-UPDATE"（不带日期），
+// 真正的日期在 name（COA-UPDATE-20261110）里。旧实现“tag 优先”于是得到版本号 "COA-UPDATE"，
+// 正好与更新历史里 11.07 / 11.08 那两条同名记录撞车 → 被当成“这一版装过了” → 队列为空 →
+// 界面明明已经拉到 11.10 的更新包，却显示「已是最新」，连“开始更新”按钮都不给。
+// 规则：tag → name → zip 资产名，取**第一个能解析出日期**的，并把日期统一规范成 20YYMMDD；
+// 三者都没日期时用发布时间补一个；都没有才原样返回（此时只能靠人工看更新说明）。
+const VERSION_DATE_SPLIT = /(20\d{2})\s*(?:[.\-_/年]\s*)?(\d{1,2})\s*[.\-_/月]\s*(\d{1,2})\s*日?/;
+function normalizeVersion(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  const compact = /(20\d{2})(\d{2})(\d{2})/.exec(raw);
+  if (compact) {
+    const month = Number(compact[2]); const day = Number(compact[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      const ymd = `${compact[1]}${compact[2]}${compact[3]}`;
+      return `${raw.slice(0, compact.index)}${ymd}${raw.slice(compact.index + 8)}`;
+    }
+  }
+  const split = VERSION_DATE_SPLIT.exec(raw);
+  if (!split) return raw;
+  const ymd = `${split[1]}${String(split[2]).padStart(2, '0')}${String(split[3]).padStart(2, '0')}`;
+  return `${raw.slice(0, split.index)}${ymd}${raw.slice(split.index + split[0].length)}`;
+}
+function versionOf(release) {
+  const clean = text => String(text || '').replace(/\.zip$/i, '').replace(/^v/i, '').trim();
+  const candidates = [
+    release?.tag_name,
+    release?.name,
+    ...((release?.assets || []).map(asset => asset?.name)),
+  ].map(clean).filter(Boolean);
+  for (const text of candidates) if (dateOf(text)) return normalizeVersion(text);
+  const fallback = candidates[0] || '';
+  const stamp = dateOf(release?.published_at || release?.publishedAt);
+  return fallback && stamp ? `${fallback}-${stamp}` : fallback;
+}
+
+//By leewheel 2026年11月10日 SQL 脚本必须按文件名里的**数字大小**排，不能按字典序。
+// 实弹（2026-11-10 发布前核验发现）：11.10 包里有 78_…113_ 共 36 个脚本，字典序会把 100_…113_
+// 全部排在 78_…99_ 前面 —— 于是 113（把 82 写坏的 4 条 spell_proc 归零）先跑、82 后跑又写回坏值，
+// 玩家装完起服必刷 4 条 ERROR，而开发库是手工按编号灌的、根本看不出这个坑。
+// 规则：拆成「数字段 / 文字段」交替比较，数字段按数值比、文字段按字符比（78 < 100，0 < rev）。
+function naturalCompare(left, right) {
+  const a = String(left).match(/\d+|\D+/g) || [];
+  const b = String(right).match(/\d+|\D+/g) || [];
+  const size = Math.min(a.length, b.length);
+  for (let index = 0; index < size; index++) {
+    const x = a[index]; const y = b[index];
+    if (/^\d+$/.test(x) && /^\d+$/.test(y)) {
+      const dx = Number(x); const dy = Number(y);
+      if (dx !== dy) return dx < dy ? -1 : 1;
+      continue;
+    }
+    const diff = x.localeCompare(y, 'en');
+    if (diff) return diff < 0 ? -1 : 1;
+  }
+  return a.length - b.length;
+}
 
 // ---------------------------------------------------------------- GitHub
 async function fetchJson(url, { fetchImpl, token = '', timeout = 20000 } = {}) {
@@ -120,10 +179,26 @@ function pickAsset(release) {
 // 现在三条：① history 里记过的不装；② 没有 zip 的跳过；
 //  ③ 补丁日期 **严格早于** 整合包基线日期才跳过（同日不跳，宁可多装一个也不漏装）。
 // 基线（baseline）由调用方从 release-baseline.cjs 读出来传进来；取不到就传空 = 一个都不跳过。
-function pendingReleases({ releases = [], history = [], current = '', baseline = '', limit = 30 } = {}) {
+//By leewheel 2026年11月10日 累积包（老大 2026-11-10 定：以后只发累积包，玩家只下最后一个）。
+// 包里带着“从哪一版开始的内容我都有”，那它前面的补丁就不用再下、再装 —— 下载量与装机时间都省掉一大截，
+// 而且少一层“链条中途断掉就永远半残”的风险。
+// 声明方式（写进 GitHub Release 的说明里，一行就够，启动器读 body）：
+//   累计基线: 20261107        也认 累计基线：2026.11.07 / cumulative: 20261107
+// 老式全量包（资产名带 -full，如 CoA-Update-2026.11.08.11-full.zip）按“从最初就涵盖”处理，
+// 这是它们在 2026-11-08 发布时就有的语义，不必再补标记。
+const CUMULATIVE_RE = /(?:累计基线|cumulative)\s*[:：=]\s*(20\d{2})[.\-_/]?(\d{1,2})[.\-_/]?(\d{1,2})/i;
+function coverageOf(release) {
+  const matched = CUMULATIVE_RE.exec(String(release?.notes || ''));
+  if (matched) return Number(`${matched[1]}${String(matched[2]).padStart(2, '0')}${String(matched[3]).padStart(2, '0')}`);
+  const asset = pickAsset(release);
+  if (asset && /(^|[-_.])full([-_.]|$)/i.test(String(asset.name || ''))) return 1; // 1 = 涵盖全部历史
+  return 0;
+}
+
+function pendingReleases({ releases = [], history = [], current = '', baseline = '', limit = 30, respectCoverage = true } = {}) {
   const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
   const baseDate = dateOf(baseline);
-  return releases
+  const ordered = releases
     .map((release, index) => ({ ...release, index }))
     .filter(release => {
       const version = String(release?.version || '');
@@ -145,13 +220,63 @@ function pendingReleases({ releases = [], history = [], current = '', baseline =
       const left = Date.parse(a.publishedAt || '') || 0;
       const right = Date.parse(b.publishedAt || '') || 0;
       return left !== right ? left - right : b.index - a.index;
-    })
+    });
+  //By leewheel 2026年11月10日 攒完顺序再砍覆盖率（在 slice 之前砍：砍完可能一个都不剩，不该被 limit 提前截断）。
+  // 取**最靠后**那个带覆盖声明的包：它包含前面所有内容，前面的就不必再下。
+  // 只砍“日期 ≤ 声明基线”的，比它新的（比如它之后又发的小补丁）照装，不越权。
+  let list = ordered;
+  if (respectCoverage) {
+    let coverAt = -1;
+    for (let index = ordered.length - 1; index >= 0; index--) {
+      if (coverageOf(ordered[index])) { coverAt = index; break; }
+    }
+    if (coverAt > 0) {
+      const cover = coverageOf(ordered[coverAt]);
+      // 只砍“被这一包涵盖”的：日期 ≥ 声明基线（且排在它前面，自然都 ≤ 它自己的日期）。
+      // 比声明基线还老的（比如玩家没打过的那批老补丁，累积包里根本没带）一律保留，不能吞。
+      const covered = ordered.filter((release, index) => {
+        if (index >= coverAt) return false;
+        if (cover === 1) return true;
+        const patchDate = dateOf(release.publishedAt) || dateOf(release.version);
+        return Boolean(patchDate && patchDate >= cover);
+      });
+      const drop = new Set(covered.map(item => String(item.version || '')));
+      list = ordered.filter(release => !drop.has(String(release.version || '')));
+    }
+  }
+  return list
     .slice(0, Math.max(1, limit))
     .map(({ index, ...release }) => ({
       version: String(release.version || ''), tag: String(release.tag || ''), name: String(release.name || ''),
       notes: String(release.notes || ''), publishedAt: String(release.publishedAt || ''), url: String(release.url || ''),
       asset: pickAsset(release),
     }));
+}
+
+//By leewheel 2026年11月10日 界面上要能看出“这一版已经被后来的累积包包含”。
+// 输入一整串版本，输出 { 被覆盖的版本: 覆盖它的那个累积包版本 }。
+// 纯计算、不读历史也不发请求：只回答“如果我现在装最新的累积包，这些老包还会不会被单独下”。
+// 判定与 pendingReleases 完全同一套（coverageOf + 日期 ≤ 声明基线），保证界面与队列不会各说一套。
+function coverageMap({ releases = [] } = {}) {
+  const pool = (Array.isArray(releases) ? releases : [])
+    .filter(release => release && String(release.version || '') && pickAsset(release))
+    .map(release => ({
+      version: String(release.version || ''),
+      date: dateOf(release.publishedAt) || dateOf(release.version),
+      cover: coverageOf(release),
+    }))
+    .sort((a, b) => a.date - b.date);
+  const out = {};
+  let coverAt = -1;
+  for (let index = 0; index < pool.length; index++) if (pool[index].cover) coverAt = index;
+  if (coverAt < 0) return out;
+  const cover = pool[coverAt];
+  for (const item of pool) {
+    if (item.version === cover.version) continue;
+    if (item.date > cover.date) continue; // 比累积包新的不算被它包含
+    if (cover.cover === 1 ? true : Boolean(item.date && item.date >= cover.cover)) out[item.version] = cover.version;
+  }
+  return out;
 }
 //By leewheel 2026年11月8日 被基线覆盖、但 history 里还没记的补丁：一次性补记成 origin=baseline。
 // 为什么要记：基线的来源（RELEASE.json）会随下一个整合包变，历史记录才是稳定档；
@@ -180,7 +305,9 @@ function baselineCovered({ releases = [], history = [], baseline = '' } = {}) {
 // targetVersion 为空 = 取最新一版。
 function queueUpTo({ releases = [], history = [], targetVersion = '', limit = 30 } = {}) {
   const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
-  const all = pendingReleases({ releases, history: [], current: '', baseline: '', limit })
+  //By leewheel 2026年11月10日 「装最新」时要认累积包（只装最后一个）；只有玩家**明确点名**某个旧版本时
+  // 才退回老语义（把它的前置也补上）—— 强制装旧版是修坏文件用的，不能被覆盖率吞掉。
+  const all = pendingReleases({ releases, history: [], current: '', baseline: '', limit, respectCoverage: !targetVersion })
     .map(item => ({ ...item, date: dateOf(item.publishedAt) || dateOf(item.version) }));
   if (!all.length) return { queue: [], target: null, isFull: false, reason: '没有带 zip 更新包的版本' };
   const target = targetVersion ? all.find(item => item.version === targetVersion) : all[all.length - 1];
@@ -307,13 +434,66 @@ function mirrorCandidates(url, mirrors = DEFAULT_MIRRORS) {
   return list;
 }
 
-async function downloadOnce(url, target, { fetchImpl, onProgress, signal, timeout = 30000 }) {
-  // 单次尝试的超时只用来“拿到响应”；已经开始的下载由外层 signal 控制，避免镜像慢一点就被误判
-  const response = await fetchImpl(url, { redirect: 'follow', headers: { 'User-Agent': 'CoA-Launcher' }, signal: signal || AbortSignal.timeout(timeout) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+//By leewheel 2026年11月9日 只读文件头两个字节判断是不是 zip（PK）：
+// 用下载器自己的 fsp.open，不把整个包读进内存。
+async function looksLikeZip(file) {
+  let handle = null;
+  try {
+    handle = await fsp.open(file, 'r');
+    const head = Buffer.alloc(4);
+    const { bytesRead } = await handle.read(head, 0, 4, 0);
+    return bytesRead >= 2 && head[0] === 0x50 && head[1] === 0x4B;
+  } catch { return false; } finally { if (handle) await handle.close().catch(() => {}); }
+}
+// 出错信息里只要主机名；地址本身解析不了时也不能再抛一次（那会把真正的失败原因盖掉）
+function hostOfUrl(value) { try { return new URL(String(value)).host; } catch { return String(value).slice(0, 80); } }
+
+//By leewheel 2026年11月9日 onProgress 给默认空函数：以前不传就直接 TypeError（下载器被单独调用时）
+async function downloadOnce(url, target, { fetchImpl, onProgress = () => {}, signal, timeout = 30000 }) {
+  //By leewheel 2026年11月9日 卡住的镜像必须能自己放弃。
+  // 以前只要有外层 signal（更新流程一直会传），`signal || AbortSignal.timeout(30s)` 就永远走外层：
+  // 外层没有超时 → 某个镜像接上 TCP 之后一个字节都不发，下载会**无限期**卡在 0%，
+  // 玩家只能自己点取消，自动更新看起来就是“死了”。现在加一个“没动静”看门狗：
+  //   · 还没开始收数据：timeout（默认 30 秒）内没响应就放弃这个源；
+  //   · 已经开始收数据：60 秒没有任何新字节就放弃（正常镜像不会这样，会一直有数据）。
+  let lastActivity = Date.now();
+  let gotBytes = false;
+  const controller = new AbortController();
+  const cancel = () => { try { controller.abort(); } catch { /* 已经取消过 */ } };
+  if (signal) {
+    if (signal.aborted) cancel();
+    else signal.addEventListener('abort', cancel, { once: true });
+  }
+  const watchdog = setInterval(() => {
+    const limit = gotBytes ? 60000 : timeout;
+    if (Date.now() - lastActivity > limit) cancel();
+  }, 2000);
+  let response;
+  try {
+    response = await fetchImpl(url, { redirect: 'follow', headers: { 'User-Agent': 'CoA-Launcher' }, signal: controller.signal });
+  } catch (error) {
+    clearInterval(watchdog);
+    signal?.removeEventListener?.('abort', cancel);
+    throw error;
+  }
+  if (!response.ok) {
+    clearInterval(watchdog);
+    signal?.removeEventListener?.('abort', cancel);
+    throw new Error(`HTTP ${response.status}`);
+  }
   const total = Number(response.headers.get('content-length')) || 0;
   const file = fs.createWriteStream(target);
   let done = 0;
+  //By leewheel 2026年11月9日 写盘失败（磁盘满、目录只读、被杀毒软件占着）以前**没有挂 error 监听**：
+  // EventEmitter 的 'error' 没人接就是主进程未捕获异常 —— 下载到一半直接把启动器打崩。
+  // 现在收成一次普通的下载失败，交给外层换源重试。
+  let streamError = null;
+  file.on('error', error => { streamError = error; });
+  // 背压：缓冲区满了就等排空再读下一块，别把整个包堆在内存里
+  const write = async chunk => {
+    if (streamError) throw streamError;
+    if (!file.write(chunk)) await once(file, 'drain');
+  };
   //By leewheel 2026年11月8日 进度回调节流到 100ms：每个 chunk 都往界面推一次会让渲染进程
   // 每秒重建几十次进度条（老大反馈“下载过程中 UI 一直在闪烁”）。最后一块照常报，保证 100% 到位。
   let lastReport = 0;
@@ -327,20 +507,31 @@ async function downloadOnce(url, target, { fetchImpl, onProgress, signal, timeou
       for (;;) {
         const { done: finished, value } = await reader.read();
         if (finished) break;
-        done += value.length;
-        file.write(Buffer.from(value));
+        const chunk = Buffer.from(value);
+        done += chunk.length;
+        gotBytes = true;
+        lastActivity = Date.now();
+        await write(chunk);
         report(done, total);
       }
     } else {
       const buffer = Buffer.from(await response.arrayBuffer());
       done = buffer.length;
-      file.write(buffer);
+      await write(buffer);
       onProgress(done, total || done);
     }
   } finally {
-    await new Promise(resolve => file.end(resolve));
+    clearInterval(watchdog);
+    signal?.removeEventListener?.('abort', cancel);
+    // 成功失败都要关句柄；关不掉也不能盖住真正的失败原因（记在 streamError 里）
+    try { await new Promise(resolve => file.end(() => resolve())); } catch { /* 见下面的 streamError */ }
   }
+  if (streamError) throw new Error(`写入文件失败：${streamError.message}`);
   if (total && done !== total) throw new Error(`下载不完整：${done}/${total} 字节`);
+  //By leewheel 2026年11月9日 落地后再验一次“到底是不是 zip”：镜像挂掉时常回 200 + HTML 错误页，
+  // 以前只看状态码会把它当成功，一直到解压才报 “tar exit 2”，而且**再也不会换源**。
+  // 现在这里判失败 → 外层直接试下一个镜像，玩家不用自己看懂 tar 的报错。
+  if (/\.zip$/i.test(target) && !(await looksLikeZip(target))) throw new Error('下载到的不是 zip 文件（多半是镜像返回的错误页）');
   return { file: target, size: done, url };
 }
 
@@ -413,19 +604,26 @@ function mirrorsFromRanking(ranking, fallback = DEFAULT_MIRRORS) {
   }).filter(Boolean);
 }
 
-async function download(url, target, { fetchImpl, onProgress = () => {}, signal, mirrors = DEFAULT_MIRRORS } = {}) {  await fsp.mkdir(path.dirname(target), { recursive: true });
+async function download(url, target, { fetchImpl, onProgress = () => {}, signal, mirrors = DEFAULT_MIRRORS, timeout = 30000 } = {}) {  await fsp.mkdir(path.dirname(target), { recursive: true });
   const candidates = mirrorCandidates(url, mirrors);
   const failures = [];
   for (const candidate of candidates) {
     try {
-      const result = await downloadOnce(candidate, target, { fetchImpl, onProgress, signal });
+      const result = await downloadOnce(candidate, target, { fetchImpl, onProgress, signal, timeout });
       result.mirror = candidate === url ? '' : candidate.slice(0, candidate.length - url.length);
       return result;
     } catch (error) {
-      failures.push(`${new URL(candidate).host}：${String(error.message || error).split(/\r?\n/)[0]}`);
+      failures.push(`${hostOfUrl(candidate)}：${String(error.message || error).split(/\r?\n/)[0]}`);
       await fsp.rm(target, { force: true }).catch(() => {});
       if (signal?.aborted) break;
     }
+  }
+  //By leewheel 2026年11月9日 玩家自己点“取消”和“所有源都挂了”要分得清：
+  // 以前取消也报“下载失败，所有源都不可用（…aborted…）”，看着像网络故障。
+  if (signal?.aborted) {
+    const cancelled = new Error('下载已取消（还没有改动任何文件）');
+    cancelled.code = 'CANCELLED';
+    throw cancelled;
   }
   throw new Error(`下载失败，所有源都不可用（${failures.join('；')}）`);
 }
@@ -484,9 +682,18 @@ async function copyTree(from, to, { onFile = () => {}, beforeOverwrite = null, s
       if (skip && skip(path.relative(from, src).split(path.sep).join('/'))) continue;
       if (entry.isDirectory()) { await walk(src, dst); continue; }
       await fsp.mkdir(path.dirname(dst), { recursive: true });
-      //By leewheel 2026年11月4日 覆盖前留一份（单一目录，见 snapshotWriter）
+      //By leewheel 2026年11月9日 覆盖前留一份（单一目录，见 snapshotWriter）
       if (beforeOverwrite) await beforeOverwrite(dst);
-      await fsp.copyFile(src, dst);
+      //By leewheel 2026年11月9日 文件被占用（世界服还没退干净、杀毒软件锁着）时必须说清是哪个文件：
+      // 以前直接把 EBUSY 甩给界面，玩家只看到一句英文 errno，根本不知道该怎么办。
+      try {
+        await fsp.copyFile(src, dst);
+      } catch (error) {
+        if (error && ['EBUSY', 'EPERM', 'EACCES', 'ETXTBSY'].includes(error.code)) {
+          throw new Error(`文件被占用，无法覆盖：${path.relative(from, src).split(path.sep).join('/')}（服务器可能还没完全退出，或者被其它程序锁着）。更新中止`);
+        }
+        throw error;
+      }
       count++;
       onFile(dst, src);
     }
@@ -750,7 +957,9 @@ async function importSqlTree(serverRoot, sqlRoot, { onLine = () => {}, warnings 
     let last = '';
     try { await mysqlQuery(serverRoot, 'SELECT 1', probeConn); } catch (error) { last = String(error.message).split(/\r?\n/).filter(Boolean).pop(); }
     const where = probeConn ? `${probeConn.host}:${probeConn.port}（用户 ${probeConn.user}）` : 'admin-client.ini 里的地址';
-    throw new Error(`连不上数据库 ${where}：${last}。更新已中止（文件未提交、数据库未改动）`);
+    //By leewheel 2026年11月9日 这句话以前写“文件未提交”——是错的：走到 SQL 这一步，Server / Client 的文件
+    // **已经替换完了**。留着错的提示，会让人以为服务器没被动过，反而更危险。
+    throw new Error(`连不上数据库 ${where}：${last}。更新中止：数据脚本一个都没导（Server / Client 的文件已经替换，重新更新会接着导）`);
   }
   const entries = await fsp.readdir(sqlRoot, { withFileTypes: true }).catch(() => []);
   const databases = entries.filter(entry => entry.isDirectory());
@@ -778,7 +987,9 @@ async function importSqlTree(serverRoot, sqlRoot, { onLine = () => {}, warnings 
     for (const target of targets) {
       const exists = await mysqlQuery(serverRoot, `SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME='${target}'`, conn).catch(() => '');
       if (!exists) throw new Error(`数据库 ${target} 不存在：${database} 目录下的脚本无处可导（不自动建库，避免导错地方）。更新中止`);
-      const files = (await walkFiles(path.join(sqlRoot, database))).filter(item => /\.sql$/i.test(item.rel)).sort((a, b) => a.rel.localeCompare(b.rel, 'en'));
+      //By leewheel 2026年11月10日 排序从字典序改成“数字优先”（见 naturalCompare 的说明）：
+      // 78_…99_ 必须排在 100_…113_ 之前，否则后面的修正脚本会被前面的原始脚本覆盖回去。
+      const files = (await walkFiles(path.join(sqlRoot, database))).filter(item => /\.sql$/i.test(item.rel)).sort((a, b) => naturalCompare(a.rel, b.rel));
       for (const item of files) plan.push({ database: target, file: item.rel, full: item.file, conn });
     }
   }
@@ -891,9 +1102,14 @@ async function verifyInstalled({ folder, root, serverRoot, clientRoot }) {
   const hashes = {};
   // 每个归位目标照着 applyUpdate 的实际规则来写，规则不一致的核对等于没核对
   const areas = [];
-  const serverFrom = await findDir(content, ['Server']);
-  if (serverFrom) areas.push({ label: 'Server', from: serverFrom, to: serverRoot, skip: rel => /^sql(\/|$)/i.test(rel) });
   const configsFrom = await findDir(content, ['Configs']);
+  const serverFrom = await findDir(content, ['Server']);
+  if (serverFrom) areas.push({
+    label: 'Server', from: serverFrom, to: serverRoot,
+    //By leewheel 2026年11月9日 顶层 configs\ 是“后写、优先”的那一份：包里的 server\configs\* 会被它整个盖掉，
+    // 所以核对时不能拿 server\configs 里的旧内容去比最终落地的文件 —— 那样只会得到“大小不一致”的假失败。
+    skip: rel => /^sql(\/|$)/i.test(rel) || (!!configsFrom && /^configs(\/|$)/i.test(rel)),
+  });
   if (configsFrom) areas.push({ label: 'Configs', from: configsFrom, to: path.join(serverRoot, 'configs') });
   const clientFrom = await findDir(content, ['Client']);
   if (clientFrom) areas.push({
@@ -940,6 +1156,20 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
   const folder = await contentRoot(world);
   const result = { server: 0, client: 0, dbc: [], mpq: 0, mpqEntries: 0, sql: [], warnings: [], backup: '' };
 
+  //By leewheel 2026年11月9日 包结构硬校验（自动更新执行面最容易骗人的地方）：
+  // 以前一个“什么都没认出来”的压缩包（镜像错误页被存成 zip、别人家的 zip、目录名写错）会一路空跑，
+  // 每一步都是 0 个文件，最后照样返回成功 → 记版本号、推进基线、界面写“更新完成”。
+  // 玩家以为已经是最新，实际上一个字节都没换。现在顶层认不出任何内容目录，当场判失败。
+  {
+    const CONTENT_DIRS = ['server', 'configs', 'client', 'runtime', 'coa-bots', 'mpq', 'dbc', 'chsspell', 'sql', 'launcher'];
+    const entries = await fsp.readdir(folder, { withFileTypes: true }).catch(() => []);
+    const found = entries.filter(entry => entry.isDirectory() && CONTENT_DIRS.includes(entry.name.toLowerCase()));
+    if (!found.length) {
+      const listed = entries.slice(0, 8).map(entry => entry.name).join('、') || '（空目录）';
+      throw new Error(`更新包结构不对：顶层没有 server\\ / client\\ / configs\\ / server\\SQL\\ 等任何内容目录（实际顶层：${listed}）。请确认下载的是 CoA-Update-*.zip，本次更新中止`);
+    }
+  }
+
   // 快照：先清空单一目录，再在每次覆盖前写一份
   const snapshotDir = await clearSnapshot(root);
   const snapshot = snapshotWriter(root, snapshotDir);
@@ -949,6 +1179,8 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
   if (serverFrom) {
     onPhase('server');
     //By leewheel 2026年11月4日 server\SQL\ 只用来导库，不能当成普通文件拷进 Server\
+    // 注意：这里的 skip 只是“不把这个目录当普通文件拷贝到 Server\”，**SQL 一条都不会少导**，
+    // 导库走的是后面单独一步 importSqlTree（step 4），把它当成普通文件拷过去反而会多出一份没人管的副本。
     result.server = await copyTree(serverFrom, serverRoot, { beforeOverwrite: snapshot.beforeOverwrite, skip: rel => /^sql(\/|$)/i.test(rel) });
     onLine(`服务端：${result.server} 个文件已放入 Server\\`);
   }
@@ -1103,7 +1335,9 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
   //By leewheel 2026年11月9日 数据表核对（老大要求）：SQL 导完立刻按包里的 dbcheck 清单核一遍。
   // 清单是打包时从 3395 导出的“每个库有哪些表、每张表有哪些字段”，这里只读、只比、不改库。
   // 缺表/缺字段分两种处理：本包 SQL 声明要建的 → 抛错中止（脚本没生效）；本来不归本包管的 → 记警告 + 写明细。
-  {
+  // 注意：调用方明确说了“不要导 SQL”时（importSqlFiles=false）也跳过核对 ——
+  // 没导库却按清单核对，只会把“我们故意没导”判成“脚本没生效”，把更新拦下来。
+  if (importSqlFiles) {
     const manifest = await require('./db-schema.cjs').readManifest(folder).catch(() => null);
     if (manifest) {
       onPhase('dbcheck');
@@ -1202,9 +1436,13 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
 }
 
 module.exports = {
-  API, HISTORY, LAST, SNAPSHOT, DEFAULT_MIRRORS, mirrorCandidates, parseVersion, compareVersions, releaseIsNewer, versionOf,
+  API, HISTORY, LAST, SNAPSHOT, DEFAULT_MIRRORS, mirrorCandidates, parseVersion, compareVersions, releaseIsNewer, versionOf, normalizeVersion,
   listReleases, pickAsset, pendingReleases, baselineCovered, queueUpTo, installedVersion, readHistory, recordVersion, recordBaselineVersions, dateOf,
+  //By leewheel 2026年11月10日 累积包（只下最后一个）与 SQL 数字排序，单测直接打这两个
+  naturalCompare, coverageOf, coverageMap,
   download, downloadOnce, extractZip, contentRoot, copyTree, clientMpqs, readDbcMap, injectDbc, injectIntoArchive,
+  //By leewheel 2026年11月9日 落地后验 zip 签名（单测用）
+  looksLikeZip,
   //By leewheel 2026年11月8日 装完自检（队列收尾的主进程侧也要用 fileMd5 核世界服 exe）
   verifyInstalled, fileMd5,
   //By leewheel 2026年11月6日 镜像测速：给“下载优先走最快的源”用

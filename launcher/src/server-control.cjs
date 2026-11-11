@@ -113,6 +113,23 @@ class ServerControl {
     this.notify = notify;
     this.children = new Map();
     this.states = new Map();
+    //By leewheel 2026年11月9日 记住每个服务「上一次是怎么退出的」（退出码 + 时间）。
+    // 服务起不来时这比日志更早能说明问题：0xC0000135 = 缺运行库、0xC0000005 = 崩溃，
+    // 玩家看到“程序闪一下就没了、日志是空的”时，只有退出码能解释。
+    this.lastExits = new Map();
+  }
+
+  //By leewheel 2026年11月9日 把一个服务失败的原因翻成一句玩家能懂、能照着做的中文。
+  // 直接复用 diagnostics 的那套规则（端口占用 / 连不上库 / 缺表 / 缺运行库 / 崩溃 …），
+  // 这样「点启动弹出的提示」和「主页那个按钮里弹窗的内容」永远是同一套判据，不会两处说法打架。
+  async explainFailure(id) {
+    try {
+      const diagnosis = await require('./diagnostics.cjs').diagnoseAll(this, { lastExits: this.lastExits });
+      const entry = diagnosis.services.find(item => item.id === id);
+      if (!entry) return '';
+      const head = entry.reason || entry.headline || '';
+      return entry.hint ? `${head}（${entry.hint}）` : head;
+    } catch { return ''; }
   }
 
   // Runs a repack command to completion, logging its output; stdin lines are sent then closed.
@@ -239,11 +256,19 @@ class ServerControl {
     const results = await Promise.all(this.services.map(async service => {
       const open = await portOpen(service.port);
       const transient = this.states.get(service.id);
-      let state = transient && (transient === 'starting' ? !open : open) ? transient : open ? 'running' : 'stopped';
+      //By leewheel 2026年11月11日 修复「玩家点停止却弹『服务启动失败』」：
+      // stop() 从设置 'stopping' 到 finally 清除之间，status() 必须一律报 'stopping'。
+      // 原来端口已关且进程已退时直接落 'stopped'，崩溃侦测（noteServiceStates）只看
+      // 「上一拍不是 stopping → 这一拍 stopped」，就把玩家的主动停止误判成「服务自己挂了」。
+      // 正在加载中点停止时同理：transient 被 stop 覆盖后，状态机必须在 stop 收尾前保持 'stopping'。
+      let state;
+      if (transient === 'stopping') state = 'stopping';
+      else if (transient === 'starting' && !open) state = 'starting';
+      else state = open ? 'running' : 'stopped';
       // The repack records the process it started (.state/<service>.json): alive with its port still closed,
       // the service is loading (a first world start with bots takes minutes), not stopped.
       // While it stops, the world closes its port first and saves for a few seconds more: still « stopping ».
-      if (state === 'stopped' && await this.processAlive(service.id)) state = transient === 'stopping' ? 'stopping' : 'starting';
+      if (state === 'stopped' && await this.processAlive(service.id)) state = 'starting';
       //By leewheel 2026年11月4日 不是启动器拉起的实例（脚本、手动、上一个启动器实例）没有 .state 记录：
       // 加载期端口还没开时会被判成“已停止”，指示灯一直灰——老大实弹（手动起世界服，绿灯前灰了 2 分钟）。
       // 这里按“整合包目录内同名 exe 仍在跑”补判为加载中；端口一开自然变“运行中”。
@@ -268,7 +293,7 @@ class ServerControl {
     const owner = await this.portOwner(service.port);
     //By leewheel 2026年11月4日 占用端口的只要不是本服务自己的 exe 就报“被其他程序占用”，
     // 不再拿别人的 MySQL 当自己的数据库继续往下跑。
-    if (owner && !this.ownsExe(service, owner.file)) throw new Error(`${service.name}: port ${service.port} is used by another program (${owner.file || `PID ${owner.pid}（读不到程序路径）`}). Stop it first.`);
+    if (owner && !this.ownsExe(service, owner.file)) throw new Error(`${service.name} 起不来：端口 ${service.port} 被别的程序占着（${owner.file || `PID ${owner.pid}（读不到程序路径）`}）。先关掉它，或者用首页的「强制关闭占用程序」。`);
     return true;
   }
 
@@ -387,7 +412,9 @@ class ServerControl {
     //By leewheel 2026-11-03 子进程的管道要挂 error：进程自己退出后再往里写会抛 EPIPE，
     // 没接住就是主进程未捕获异常（关闭启动器时弹"JavaScript error occurred in the main process"）。
     for (const stream of [child.stdin, child.stdout, child.stderr]) if (stream) stream.on('error', () => {});
-    child.once('exit', () => {
+    child.once('exit', (code, signal) => {
+      //By leewheel 2026年11月9日 记下退出码：诊断模块靠它区分“缺运行库”“崩溃”“配置错”
+      this.lastExits.set(id, { code, signal: signal || '', at: Date.now() });
       this.children.delete(id);
       this.states.delete(id);
       try { fs.rmSync(path.join(this.root, '.state', `${id}.json`), { force: true }); } catch {}
@@ -397,13 +424,29 @@ class ServerControl {
     await this.emit();
     const deadline = Date.now() + service.startTimeout * 1000;
     while (Date.now() < deadline) {
-      if (!this.children.has(id)) throw new Error(`${service.name} stopped while starting. Look at its log.`);
+      //By leewheel 2026年11月11日 玩家点了「停止」（stop() 把状态置为 stopping）：启动等待立刻让位，
+      // 直接返回、不报任何错——正在加载的世界服被叫停时，以前这里会一直等到子进程被 stop
+      // 强杀，然后抛「启动过程中退出了 / 没能就绪」，玩家明明在停服务器却收到「服务启动失败」。
+      // 注意绝不能在这里动 states（'stopping' 是 stop() 的，由它自己的 finally 清除）。
+      if (this.states.get(id) === 'stopping') return;
+      //By leewheel 2026年11月9日 起不来时不再只说 “stopped while starting. Look at its log.”：
+      // 现场跑一次诊断，把根因（端口被占 / 连不上库 / 缺运行库 / 崩溃）直接写进提示，
+      // 玩家点一下就知道该干什么，不用再问“为什么打不开”。
+      if (!this.children.has(id)) {
+        const why = await this.explainFailure(id);
+        throw new Error(why ? `${service.name} 启动失败：${why}` : `${service.name} 启动过程中退出了。日志在 logs\\launcher-${id}.log`);
+      }
       if (await portOpen(service.port)) { this.states.delete(id); await this.emit(); if (id === 'auth') await this.onAuthStarted?.().catch(() => {}); return; }
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
+    //By leewheel 2026年11月11日 超时收尾同样要让位给「玩家点了停止」：这不算启动失败。
+    if (this.states.get(id) === 'stopping') return;
     this.states.delete(id);
     await this.emit();
-    throw new Error(`${service.name} did not open port ${service.port} in time. Look at its log.`);
+    {
+      const why = await this.explainFailure(id);
+      throw new Error(why ? `${service.name} 没能就绪：${why}` : `${service.name} 在 ${service.startTimeout} 秒内没有打开端口 ${service.port}。日志在 logs\\launcher-${id}.log`);
+    }
   }
 
   startCommand(service) {

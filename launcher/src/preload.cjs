@@ -236,7 +236,12 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   supportReport: () => call('support:report'),
   openDiscord: () => call('link:discord'),
   openBaseClient: () => call('link:baseClient'),
-  checkLauncher: () => call('launcher:check'),
+  checkLauncher: force => call('launcher:check', force === true),
+  //By leewheel 2026年11月9日 自更新：忽略这个版本 / 取消下载
+  skipLauncher: () => call('launcher:skip'),
+  cancelLauncher: () => call('launcher:cancel'),
+  //By leewheel 2026年11月9日 服务起不来时弹窗用：读完整诊断（端口归属、日志尾部、退出码、建议）
+  serverDiagnose: () => call('server:diagnose'),
   achievementsSize: () => call('maintenance:achievementsSize'),
   achievementsClean: () => call('maintenance:achievements'),
   whatsNewSeen: () => call('whatsnew:seen'),
@@ -256,6 +261,8 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   onServerTask: on('server:task'),
   onAddonProgress: on('addons:progress'),
   onLauncherUpdate: on('launcher:update'),
+  //By leewheel 2026年11月9日 服务启动失败：主页据此立刻弹出「为什么起不来」按钮，不用等玩家去翻日志
+  onServerFailed: on('server:failed'),
   onGameExit: on('game:exit'),
   //By leewheel 2026-11-03 关闭流程：窗口留在前台显示"正在停止服务器"
   onClosing: on('closing'),

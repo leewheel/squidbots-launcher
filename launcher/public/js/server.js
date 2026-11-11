@@ -502,6 +502,10 @@ function settingsView() {
   //By leewheel 2026年11月6日 BUG 反馈入口已移到顶部“检查”左边（瓢虫图标），设置页不再重复放按钮
   const bar = `<div class="conf-bar${count ? ' dirty' : ''}" id="conf-bar"><span>${esc(count ? t('conf.pending', '{n} unsaved change(s)', { n: count }) : t('conf.savedShort', 'All saved.'))}</span><span class="spacer"></span>${count ? `<button class="button ghost small" data-action="conf-discard">${esc(t('conf.discard', 'Discard'))}</button><button class="button primary small" data-action="conf-save">${esc(t('common.save', 'Save'))}</button>${(realmKey ? realmOn : worldRunning(App.state.server)) ? `<button class="button primary small" data-action="conf-save-restart">${esc(t('conf.saveRestart', 'Save and restart'))}</button>` : ''}` : realmKey ? `<button class="button ghost small" data-action="realm-logs" data-key="${realmKey}">${icon('book')}${esc(t('conf.openLogs', 'Open the logs'))}</button>${purge}` : `${logs}${purge}<button class="button ghost small" data-action="conf-history" title="${esc(t('conf.saved', 'Saved. A copy of each file is kept before any change.'))}">${icon('refresh')}${esc(t('conf.history', 'History'))}</button>`}</div>`;
   const tabs = groups.map(group => ({ id: group.id, icon: group.icon, label: loc(group.label) }));
+  //By leewheel 2026年11月9日 「全部参数」页签：worldserver.conf 有上千个键，精选页签只露几十个，
+  // 玩家改不到的键等于没有参数表。这里把每个 .conf 的所有键（文档/默认值来自 .dist）整页列出、全部可改，
+  // 只有数据库账号与启动器必须管理的键（端口/路径/更新开关）保持只读。
+  tabs.push({ id: 'allkeys', icon: 'terminal', label: t('conf.tabAllKeys', '全部参数') });
   if (!tabs.some(tab => tab.id === App.state.confGroup)) App.state.confGroup = tabs[0]?.id;
   const changedIn = id => conf.settings.filter(setting => setting.group === id && App.state.pending[pendingKey(setting.file, setting.key)] !== undefined).length;
   const tabButton = tab => `<button class="conf-tab${App.state.confGroup === tab.id && !confSearching() ? ' active' : ''}" data-action="conf-group" data-id="${esc(tab.id)}">${icon(tab.icon)}<span>${esc(tab.label)}</span>${changedIn(tab.id) ? `<em>${changedIn(tab.id)}</em>` : ''}${tab.id === 'presets' && isNew('wizard') ? newDot() : ''}</button>`;
@@ -513,7 +517,8 @@ function settingsView() {
   const quick = conf.recipes.filter(recipe => ['coa-recommended', 'fresh-level-1', 'self-found-world', 'bots-around-my-level', 'rexxar-like'].includes(recipe.id))
     .filter(recipe => !recipe.soon || conf.recipes.some(item => item.id === 'self-found-world'));
   const recipes = quick.length ? `<div class="recipes">${quick.map(recipe => `<div class="recipe-cell"><button class="recipe${recipe.soon ? ' soon' : ''}" ${recipe.soon ? 'disabled aria-disabled="true"' : `data-action="conf-recipe" data-id="${esc(recipe.id)}"`}><strong>${esc(loc(recipe.title))}${recipe.soon ? `<span class="soon-tag">${esc(t('conf.soon', 'Coming soon'))}</span>` : ''}</strong><small>${esc(loc(recipe.summary))}</small></button></div>`).join('')}</div>` : '';
-  const body = `${botPrefixView(App.state.botPrefix)}` + groups.filter(group => group.id === App.state.confGroup).map(group => `<section class="conf-group"><h3>${icon(group.icon)}${esc(loc(group.label))}</h3>${group.id === 'presets' ? presetsView(recipes) : group.id === 'population' ? ramAdvice(conf) : ''}${group.id === 'levels' && selfFoundOn() ? `<p class="status-line self-found-note">${icon('info')}${esc(t('conf.selfFoundLevels', 'Solo self-found is on: the bots only level up by playing (up to 59 without generated gear, geared as usual at 60). The level settings below do not apply, except the bots online around your level.'))}</p>` : ''}${conf.settings.filter(setting => setting.group === group.id).map(settingRow).join('')}</section>`).join('');
+  const body = App.state.confGroup === 'allkeys' ? allKeysView()
+    : `${botPrefixView(App.state.botPrefix)}` + groups.filter(group => group.id === App.state.confGroup).map(group => `<section class="conf-group"><h3>${icon(group.icon)}${esc(loc(group.label))}</h3>${group.id === 'presets' ? presetsView(recipes) : group.id === 'population' ? ramAdvice(conf) : ''}${group.id === 'levels' && selfFoundOn() ? `<p class="status-line self-found-note">${icon('info')}${esc(t('conf.selfFoundLevels', 'Solo self-found is on: the bots only level up by playing (up to 59 without generated gear, geared as usual at 60). The level settings below do not apply, except the bots online around your level.'))}</p>` : ''}${conf.settings.filter(setting => setting.group === group.id).map(settingRow).join('')}</section>`).join('');
   const key = realmKey || 'coa';
   const others = createdRealms().length > 1;
   const banner = !others ? '' : realmBanner(key, realmKey
@@ -583,7 +588,7 @@ function searchView() {
 // A key of a .conf file without an explanation of ours: its description from the .dist, its default, and the value.
 function rawRow(entry) {
   const changed = App.state.pending[pendingKey(entry.file, entry.key)] !== undefined;
-  const locked = entry.locked ? `<small class="when">${icon('key')}${esc(entry.locked === 'secret' ? t('conf.lockedSecret', 'Database credentials: managed by the repack.') : t('conf.lockedRepack', 'Rewritten by the repack at every start.'))}</small>` : '';
+  const locked = entry.locked ? `<small class="when">${icon('key')}${esc(entry.locked === 'secret' ? t('conf.lockedSecret', 'Database credentials: managed by the repack.') : (entry.locked || t('conf.lockedRepack', 'Rewritten by the repack at every start.')))}</small>` : '';
   const def = entry.default !== null && entry.default !== undefined && String(entry.default) !== String(entry.value) ? `<small class="when">${esc(t('conf.searchDefault', 'Default: {value}', { value: entry.default }))}</small>` : '';
   const setting = { ...entry, value: entry.value };
   const input = entry.locked ? `<code>${esc(entry.locked === 'secret' ? '••••' : entry.value)}</code>` : control(setting);
@@ -594,7 +599,36 @@ let confIndexLoading = null;
 function loadConfIndex() {
   if (confIndexLoading) return;
   confIndexLoading = App.api.serverSettingsIndex().then(list => { App.state.confIndex = list; }).catch(() => { App.state.confIndex = []; })
-    .finally(() => { confIndexLoading = null; const pane = $('#conf-pane'); if (pane && confSearching()) pane.innerHTML = searchView(); });
+    .finally(() => { confIndexLoading = null; const pane = $('#conf-pane'); if (pane && (confSearching() || App.state.confGroup === 'allkeys')) pane.innerHTML = confSearching() ? searchView() : allKeysView(); });
+}
+
+//By leewheel 2026年11月9日 「全部参数」视图：按文件列出 .conf 的每一个键（说明/默认值来自 .conf.dist），
+// 分小节折叠展示。数据库账号与启动器管理的键照常只读；编辑走与其它页签完全相同的 pending/save 通路。
+function allKeysView() {
+  const conf = App.state.conf;
+  const files = conf.files || [];
+  if (!files.length) return `<p class="muted">${esc(t('conf.allNone', '没有可编辑的 .conf 文件。'))}</p>`;
+  if (!files.some(file => file.id === App.state.confFile)) App.state.confFile = files[0].id;
+  const picker = `<div class="conf-file-picker"><label>${esc(t('conf.allFile', '文件'))}</label><select id="conf-file">${files.map(file => `<option value="${esc(file.id)}"${file.id === App.state.confFile ? ' selected' : ''}>${esc(file.name)}</option>`).join('')}</select></div>`
+    + `<div class="conf-file-picker"><label>${esc(t('conf.allFilter', '过滤'))}</label><input id="allkeys-filter" type="search" spellcheck="false" autocomplete="off" value="${esc(App.state.allKeysFilter || '')}" placeholder="${esc(t('conf.allFilterHint', '输入键名或说明里的词'))}"></div>`;
+  if (!App.state.confIndex) { loadConfIndex(); return `${picker}<p class="muted">${esc(t('conf.allLoading', '正在读取全部参数…'))}</p>`; }
+  return `${picker}<p class="muted small">${esc(t('conf.allHint', '这一页列出该文件里的每一个键：说明与默认值来自 .conf.dist，保存方式与其它页签完全一样。带锁的项由整合包管理，数据库账号不在这里显示。'))}</p><div id="allkeys-results">${allKeysResults()}</div>`;
+}
+
+// 只重绘结果区（筛选框在结果区外面，重绘不丢焦点）
+function allKeysResults() {
+  const index = App.state.confIndex || [];
+  const rows = index.filter(entry => entry.file === App.state.confFile);
+  const words = fold(App.state.allKeysFilter || '').split(/\s+/).filter(Boolean);
+  const list = words.length ? rows.filter(entry => matches(words, entry.key, entry.description, entry.section)) : rows;
+  if (!list.length) return `<p class="muted">${esc(t('conf.searchNone', 'Nothing found.'))}</p>`;
+  const sections = new Map();
+  for (const entry of list) {
+    const name = entry.section || t('conf.allUngrouped', '其它');
+    if (!sections.has(name)) sections.set(name, []);
+    sections.get(name).push(entry);
+  }
+  return [...sections.entries()].map(([name, items]) => `<details class="allkeys-section"${words.length || sections.size <= 4 ? ' open' : ''}><summary>${esc(name)}<em>${items.length}</em></summary>${items.map(rawRow).join('')}</details>`).join('');
 }
 
 // Where a value of a realm comes from: Conquest of Azeroth, the realm itself (back to CoA in one click), or its mode.
@@ -624,6 +658,19 @@ document.addEventListener('input', event => {
     const pane = $('#conf-pane');
     if (pane) pane.innerHTML = confSearching() ? searchView() : App.state.confBody || '';
     $$('.conf-tab').forEach(tab => tab.classList.toggle('active', !confSearching() && tab.dataset.id === App.state.confGroup));
+    return;
+  }
+  if (target.id === 'conf-file') {
+    App.state.confFile = target.value;
+    const results = $('#allkeys-results');
+    if (results) results.innerHTML = allKeysResults();
+    return;
+  }
+  if (target.id === 'allkeys-filter') {
+    // 过滤只重绘结果区（200ms 防抖），输入框自身不重建、不丢焦点
+    App.state.allKeysFilter = target.value;
+    clearTimeout(App.state.allKeysDebounce);
+    App.state.allKeysDebounce = setTimeout(() => { const results = $('#allkeys-results'); if (results) results.innerHTML = allKeysResults(); }, 200);
     return;
   }
   if (target.id === 'upgrade-folder') App.state.upgradeFolder = target.value;
