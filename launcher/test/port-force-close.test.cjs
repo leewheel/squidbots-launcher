@@ -24,7 +24,9 @@ test('端口体检不再只在开机扫一次，也不再静默吞掉失败', ()
   assert.match(boot, /async function checkPorts\(/, '要有可复查的端口体检函数');
   assert.match(boot, /setInterval\([\s\S]{0,300}checkPorts\(/, '启动器开着时要定时复查');
   assert.match(boot, /api\.onServices\([\s\S]{0,800}checkPorts\(/, '服务状态变化后要复查');
-  assert.match(boot, /busy && \(!item\.mine \|\| !item\.managed\)/, '必须把本包残留实例也算作占用');
+  //By leewheel 2026年11月12日 断言跟着实现走：现在用 && 组合三个条件（外来、非托管、非运行中服务自己的端口）
+  assert.match(boot, /busy && !item\.mine && !item\.managed/, '必须把本包残留实例也算作占用');
+  assert.match(boot, /service\.state === 'running'[\s\S]{0,120}own\.has\(item\.port\)/, '启动过程中不能把自己正在跑的服务报成占用');
   assert.equal(
     /portsScan\(\)\.then\(list => showPortAlert\(list\)\)\.catch\(\(\) => \{\}\)/.test(boot),
     false,
@@ -35,7 +37,8 @@ test('端口体检不再只在开机扫一次，也不再静默吞掉失败', ()
 test('残留的本包进程也要能被强制关闭（不是启动器拉起的实例）', () => {
   const control = read('src/server-control.cjs');
   assert.match(control, /const managed = this\.children\.has\(service\.id\);/, 'scanPorts 必须区分「本包 exe」与「启动器拉起」');
-  assert.match(control, /this\.ownsExe\(service, owner\.file\) && this\.children\.has\(service\.id\)/, '只有托管进程才走优雅停止');
+  //By leewheel 2026年11月12日 优雅停止的判据换成 isOurs：读不到进程路径时靠 children/.state 仍能认定是自己拉起的
+  assert.match(control, /this\.isOurs\(service, owner\) && this\.children\.has\(service\.id\)/, '只有托管进程才走优雅停止');
 });
 
 test('中文文案键齐全', () => {

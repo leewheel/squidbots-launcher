@@ -1,7 +1,7 @@
 {
   "name": "coa-launcher-lite",
   "productName": "征服艾泽拉斯 单机启动器",
-  "version": "1.0.202611112146",
+  "version": "1.0.202611120422",
   "description": "征服艾泽拉斯（Conquest of Azeroth）单机整合包启动器：一键启动/停止本地 MySQL、登录服务器与世界服务器，管理设置、备份与国度。",
   "license": "MIT",
   "author": "leewheel",
@@ -45,7 +45,7 @@
       "icon": "editions/server/icon.png"
     },
     "portable": {
-      "unpackDirName": "CoALauncherLite-1.0.202611112146",
+      "unpackDirName": "CoALauncherLite-1.0.202611120422",
       "requestExecutionLevel": "user"
     },
     "publish": null

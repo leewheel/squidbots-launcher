@@ -213,28 +213,56 @@ class ServerControl {
     // 由管理脚本启动、没有直接 exe 的服务：仍要求在本包目录内。
     return target.startsWith(this.root.toLowerCase() + path.sep);
   }
+  //By leewheel 2026年11月12日 「这个端口后面是不是自己人」的唯一判据，三个证据按可靠度排序：
+  // 1) children 里记着这个 PID —— 就是本启动器这一秒拉起来的；
+  // 2) .state/<id>.json 记着这个 PID 且 exe 是本服务的 —— 本包上一次/管理脚本拉起来的；
+  // 3) 进程路径正好是这个服务的 exe。
+  // 以前只看第 3 条：启动瞬间 PowerShell 读不到刚起来的 mysqld 路径、netstat 缓存又还是旧的，
+  // 于是“自己启动的 MySQL 占了自己要用的端口”被报成占用，玩家点启动就吃一个红框（老大实锤）。
+  isOurs(service, owner) {
+    if (!owner) return false;
+    const child = this.children.get(service.id);
+    if (child && Number(child.pid) === Number(owner.pid)) return true;
+    if (this.ownsExe(service, owner.file)) return true;
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(this.root, '.state', `${service.id}.json`), 'utf8'));
+      return Number(record?.pid) === Number(owner.pid) && this.ownsExe(service, record.exe);
+    } catch { return false; }
+  }
+  //End By leewheel
   //End By leewheel
 
   logFile(id) { return path.join(this.root, 'logs', `launcher-${id}.log`); }
 
   // Who listens on a port: { pid, file, inside } (inside = a program of this repack). Several
   // repacks use the same ports, so an answering port is not proof that this server is running.
-  async portOwner(port) {
+  //By leewheel 2026年11月12日 端口后面的进程是谁：fresh=true 时绕过 3 秒 netstat 缓存。
+  // 启动瞬间缓存里还是“没人监听”的旧输出，owner 读成 null，自家刚起的 mysqld 就被当成了外来程序。
+  async portOwner(port, { fresh = false } = {}) {
     if (process.platform !== 'win32') return null;
-    const stdout = await listening();
+    const stdout = await listening(fresh);
     const line = stdout.split(/\r?\n/).find(row => new RegExp(`:${port}\\s+\\S+\\s+LISTENING\\s+\\d+`).test(row));
     const pid = Number(line?.trim().split(/\s+/).pop());
     if (!pid) return null;
     this.paths ||= new Map();
-    if (!this.paths.has(pid)) {
+    //By leewheel 2026年11月12日 进程路径缓存必须过期：Windows 会复用 PID，永久缓存会把别的程序
+    // 的旧路径当成当前监听者（自家 mysqld 被判成“别的程序”）。20 秒后重新问一次。
+    const cached = this.paths.get(pid);
+    let file = cached && Date.now() - cached.at < 20000 ? cached.file : '';
+    if (!file) {
       const { stdout: exePath } = await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).Path`], { windowsHide: true, timeout: 10000 }).catch(() => ({ stdout: '' }));
+      file = exePath.trim();
+      // 启动瞬间 PowerShell 偶尔读不到路径：先按子进程记录补上，不再把这半秒的空值缓存 20 秒
+      if (!file) {
+        for (const child of this.children.values()) if (Number(child.pid) === pid && child.spawnfile) { file = child.spawnfile; break; }
+      }
       if (this.paths.size > 64) this.paths.clear();
-      this.paths.set(pid, exePath.trim());
+      this.paths.set(pid, { file, at: file ? Date.now() : Date.now() - 17000 });
     }
-    const file = this.paths.get(pid);
     if (!file) return { pid, file: '', inside: null };
     return { pid, file, inside: path.resolve(file).toLowerCase().startsWith(this.root.toLowerCase() + path.sep) };
   }
+  //End By leewheel
 
   async processAlive(id) {
     try {
@@ -314,7 +342,7 @@ class ServerControl {
         //By leewheel 2026年11月4日 端口开着不等于本服务在跑：监听者必须是这个服务自己的 exe。
         // 系统装的、别的项目里的 mysqld.exe（不在 Server\mysql\bin）以及读不到路径的进程，一律标成
         // “端口被其他程序占用”，绝不再显示为运行中——老大实弹：别人的 MySQL 被当成自己的数据库。
-        if (owner && !this.ownsExe(service, owner.file)) { state = 'foreign'; other = owner.file || `PID ${owner.pid}（读不到程序路径）`; }
+        if (owner && !this.isOurs(service, owner)) { state = 'foreign'; other = owner.file || `PID ${owner.pid}（读不到程序路径）`; }
         //End By leewheel
       }
       //By leewheel 2026年11月11日 内存：按“本服务自己的 exe + 不是国度那份”找出进程，取它的工作集。
@@ -332,10 +360,12 @@ class ServerControl {
 
   async assertPortFree(service) {
     if (!(await portOpen(service.port))) return false;
-    const owner = await this.portOwner(service.port);
+    const owner = await this.portOwner(service.port, { fresh: true });
     //By leewheel 2026年11月4日 占用端口的只要不是本服务自己的 exe 就报“被其他程序占用”，
     // 不再拿别人的 MySQL 当自己的数据库继续往下跑。
-    if (owner && !this.ownsExe(service, owner.file)) throw new Error(`${service.name} 起不来：端口 ${service.port} 被别的程序占着（${owner.file || `PID ${owner.pid}（读不到程序路径）`}）。先关掉它，或者用首页的「强制关闭占用程序」。`);
+    //By leewheel 2026年11月12日 「自己的」包括本启动器刚拉起的进程与 .state 记录里的进程（isOurs）：
+    // 原来启动/重启时端口已经被自家 mysqld 占着，还要再抛出一次“端口被占”，纯属自己打自己。
+    if (owner && !this.isOurs(service, owner)) throw new Error(`${service.name} 起不来：端口 ${service.port} 被别的程序占着（${owner.file || `PID ${owner.pid}（读不到程序路径）`}）。先关掉它，或者用首页的「强制关闭占用程序」。`);
     return true;
   }
 
@@ -348,12 +378,18 @@ class ServerControl {
         out.push({ id: service.id, name: service.name, port: service.port, busy: false, mine: false, managed: false, pid: 0, file: '' });
         continue;
       }
-      const owner = await this.portOwner(service.port);
-      const mine = !!(owner && this.ownsExe(service, owner.file));
+      const owner = await this.portOwner(service.port, { fresh: true });
       //By leewheel 2026年11月11日 区分「本包的 exe」与「本启动器拉起的进程」：
       // 上次崩溃或手动启动留下的残留 worldserver 也占着 8085，但不在 children 里，玩家同样
       // 需要「强制关闭占用程序」把它结束掉；原来只按 mine 过滤，这类残留被当成自己人跳过了。
       const managed = this.children.has(service.id);
+      //By leewheel 2026年11月12日 managed 必须先算：端口是我们自己刚拉起的进程打开的，
+      // 哪怕这一刻 read 不到 PID/路径（netstat 缓存还是旧的），也绝不是“被别的程序占用”。
+      // 但如果监听者的 PID 明确存在、又不是我们记下的那个 child，就说明我们的进程已经退出、
+      // 端口被外来程序抢走了 —— 这时必须照报，不能拿 managed 把真冲突盖住。
+      const child = this.children.get(service.id);
+      const distinct = !!(owner?.pid && child && Number(child.pid) !== Number(owner.pid));
+      const mine = this.isOurs(service, owner) || (managed && !distinct);
       out.push({ id: service.id, name: service.name, port: service.port, busy: true, mine, managed, pid: owner?.pid || 0, file: owner?.file || '' });
       //End By leewheel
     }
@@ -371,7 +407,9 @@ class ServerControl {
     //By leewheel 2026年11月11日 只有启动器自己拉起的服务才走优雅停止（世界服要存档）；
     // 残留实例（本包 exe 但不在 children 里）stop() 等不到子进程退出，会白等一轮超时，
     // 玩家点了「强制关闭」却像没反应。这类残留按 PID 精确结束，绝不按进程名通配。
-    if (service && this.ownsExe(service, owner.file) && this.children.has(service.id)) {
+    //By leewheel 2026年11月12日 判定改用 isOurs：读不到进程路径时，靠 children/.state 也能认出
+    // 是本启动器拉起的服务，走优雅停止（数据库要刷盘、世界服要存档），而不是 taskkill 硬杀。
+    if (service && this.isOurs(service, owner) && this.children.has(service.id)) {
       await this.stop(service.id);
       return { pid: owner.pid, graceful: true };
     }
@@ -712,9 +750,9 @@ function realmPids(root) {
 
 // netstat once for every question of the same tick (status() asks it for each running service).
 let netstatCache = { at: 0, job: null };
-function listening() {
+function listening(fresh = false) {
   if (process.platform !== 'win32') return Promise.resolve('');
-  if (netstatCache.job && Date.now() - netstatCache.at < 3000) return netstatCache.job;
+  if (!fresh && netstatCache.job && Date.now() - netstatCache.at < 3000) return netstatCache.job;
   netstatCache = { at: Date.now(), job: exec('netstat.exe', ['-ano', '-p', 'TCP'], { windowsHide: true, timeout: 10000 }).then(result => result.stdout).catch(() => '') };
   return netstatCache.job;
 }

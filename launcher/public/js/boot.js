@@ -69,7 +69,14 @@ function showLayoutAlert(layout) {
 // 弹窗只在第一次发现占用时提示一次，不反复打扰。
 // 本包残留实例（mine=true 但不在 children 里）也算需要玩家手动清掉的占用。
 function blockedPorts(list) {
-  return (list || []).filter(item => item.busy && (!item.mine || !item.managed));
+  //By leewheel 2026年11月12日 启动过程中不报自家端口：
+  // 服务已经是「运行中」时，占着那个端口的就是它自己；以前只看 mine/managed 两个字，
+  // 端口刚打开、PID 还没读出来的那一秒就弹「端口被占用」，玩家点启动先吃一个红框。
+  // 只认 running 不认 starting：正在启动但端口被外来程序占着时必须照报，否则真正的冲突被藏起来。
+  const own = new Set(((App.state.server && App.state.server.services) || [])
+    .filter(service => service.state === 'running')
+    .map(service => service.port));
+  return (list || []).filter(item => item.busy && !item.mine && !item.managed && !own.has(item.port));
 }
 
 function showPortAlert(list, { announce = true } = {}) {
