@@ -1191,7 +1191,9 @@ function launcherBanner() {
     const done = update.total > 0 ? ` · ${formatBytes(update.done || 0)} / ${formatBytes(update.total)}` : '';
     const restarting = update.phase === 'installing' && pct >= 100;
     const label = restarting ? '正在重启并安装新版启动器' : update.phase === 'installing' ? '正在校验并安装新版启动器' : '正在下载新版启动器';
-    const tail = restarting ? ' · 启动器会自己关掉再打开，服务端进程不受影响' : ` · ${pct}%${esc(speed)}${esc(done)}`;
+    //By leewheel 2026年11月12日 还没收到任何字节时（下载前要先并发测速挑源），别只写 0% 让人以为卡死
+    const picking = update.phase === 'downloading' && pct === 0 && !update.done;
+    const tail = restarting ? ' · 启动器会自己关掉再打开，服务端进程不受影响' : picking ? ' · 正在挑选最快的下载源…' : ` · ${pct}%${esc(speed)}${esc(done)}`;
     return `<div class="update-banner launcher-banner" role="status">
       <i class="dot"></i>
       <span><strong>${label} ${esc(version)}</strong>${esc(tail)}</span>

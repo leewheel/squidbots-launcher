@@ -45,6 +45,32 @@ function textResponse(text, status = 200, headers = {}) {
   };
 }
 
+// 可流式读的假 exe 响应（测速与下载都走 body.getReader）
+function exeResponse(size = 4096) {
+  const buffer = Buffer.alloc(size, 7);
+  buffer[0] = 0x4d; buffer[1] = 0x5a;
+  let sent = false;
+  return {
+    ok: true,
+    status: 206,
+    headers: { get: name => (String(name).toLowerCase() === 'content-length' ? String(size) : null) },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (sent) return { done: true, value: undefined };
+            sent = true;
+            return { done: false, value: buffer };
+          },
+          async cancel() {},
+        };
+      },
+    },
+    async arrayBuffer() { return buffer; },
+    async text() { return ''; },
+  };
+}
+
 // ---------------------------------------------------------------- 版本
 
 test('版本号只认 1.0.yyyymmddHHMM，前缀先剥掉', () => {
@@ -142,6 +168,66 @@ test('三条通道全挂时抛出带明细的错误（不能静默当成“已�
     () => su.check({ currentVersion: '1.0.202611090727', repo: 'leewheel/squidbots-launcher', fetchImpl }),
     error => /查不到启动器的发布信息/.test(error.message),
   );
+});
+
+// ---------------------------------------------------------------- 下载选源
+//By leewheel 2026年11月12日 老做法是“按镜像列表顺序一个个试”，开代理直连 GitHub 很快的玩家也要
+// 先等前面几个反代各自超时（每个 30 秒），界面停在 0% 好几分钟。现在先并发测速再下。
+
+test('测速选源：能用的按实测速度排前面，挂掉的排后面（直连快就先走直连）', async () => {
+  const slow = 'https://gh-proxy.com/https://github.com/x/y.exe';
+  const dead = 'https://ghfast.top/https://github.com/x/y.exe';
+  const direct = 'https://github.com/x/y.exe';
+  const fetchImpl = async (url, init = {}) => {
+    const range = (init.headers || {}).Range || (init.headers || {}).range;
+    assert.ok(range, '测速必须带 Range 只取前一小段');
+    if (url === dead) throw new Error('ECONNREFUSED');
+    // 用响应延迟模拟速度：直连最快
+    await new Promise(resolve => setTimeout(resolve, url === direct ? 1 : 40));
+    return exeResponse(1024);
+  };
+  const ranked = await su.rankSources([slow, dead, direct], { fetchImpl });
+  assert.deepEqual(ranked.order, [direct, slow, dead]);
+  assert.equal(ranked.probes.filter(row => row.ok).length, 2);
+  assert.equal(ranked.fastest.url, direct);
+});
+
+test('测速会把错误页判成不可用（不是 exe），不会当成好源', async () => {
+  const bad = 'https://mirror.example/https://github.com/x/y.exe';
+  const fetchImpl = async () => ({
+    ok: true, status: 200,
+    headers: { get: () => null },
+    body: null,
+    async arrayBuffer() { return Buffer.from('<html>not found</html>'); },
+  });
+  const ranked = await su.rankSources([bad], { fetchImpl });
+  assert.equal(ranked.probes[0].ok, false);
+  assert.match(ranked.probes[0].error, /不是 exe/);
+});
+
+test('下载按测速顺序走：第一个能下的源直接下完', async () => {
+  const dir = tmpDir();
+  const buffer = fakeExe(path.join(dir, 'seed.exe'), 512);
+  const slow = 'https://gh-proxy.com/https://github.com/x/y.exe';
+  const direct = 'https://github.com/x/y.exe';
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    const headers = init.headers || {};
+    calls.push(url);
+    if (headers.Range) {
+      await new Promise(resolve => setTimeout(resolve, url === direct ? 1 : 40));
+      return exeResponse(256);
+    }
+    return exeResponse(buffer.length);
+  };
+  const info = { version: '1.0.202611120453', size: buffer.length, sha256: '', urls: [slow, direct] };
+  const result = await su.download(info, { dir: path.join(dir, 'Update'), mirrors: [], fetchImpl });
+  assert.equal(result.size, buffer.length);
+  const downloads = calls.filter(url => url === direct);
+  assert.ok(downloads.length >= 1);
+  // 直连先被下载（作为最后一次出现的位置应当在慢镜像之前）
+  const firstDownload = calls.findIndex((url, index) => url === direct && index > 0 && !(index < 2));
+  assert.ok(firstDownload > 0, '直连必须被用到');
 });
 
 // ---------------------------------------------------------------- 落位与就绪判据

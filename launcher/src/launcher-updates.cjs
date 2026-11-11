@@ -61,7 +61,9 @@ function createLauncherUpdates(app, options = {}, notify = () => {}, canRestart 
     if (!downloadDir) throw new Error('没有启动器目录，无法下载');
     controller = new AbortController();
     const started = Date.now();
-    if (!silent) set('downloading', `正在下载新版启动器 ${info.version}…`, { version: info.version, percent: 0 });
+    //By leewheel 2026年11月12日 下载前先并发测速选源，这一步要两三秒：
+    // 不写这一行的话横幅会一直停在“0%”，看起来像卡死（老大本轮实弹截图）。
+    if (!silent) set('downloading', `正在为新版启动器 ${info.version} 挑选最快的下载源…`, { version: info.version, percent: 0 });
     const file = await selfUpdate.download(info, {
       dir: downloadDir,
       mirrors,
@@ -168,10 +170,25 @@ function createLauncherUpdates(app, options = {}, notify = () => {}, canRestart 
       }
       set('downloading', `发现新版启动器 ${result.latest.version}，正在下载…`, { version: result.latest.version, percent: 0, notes: result.latest.notes, latest: result.latest.version, size: result.latest.size, source: result.source });
       busy = true;
-      const staged = await fetchAndStage(result.latest);
-      set('ready', `新版启动器 ${result.latest.version} 已下载完成，稍后自动重启安装。`, {
-        version: result.latest.version, latest: result.latest.version, percent: 100,
-        notes: result.latest.notes, source: result.source, canInstall: !!staged.staged,
+      //By leewheel 2026年11月12日 清单可能被 CDN 缓存成旧版本（实测能压好几小时），而旧版本的下载文件
+      // 已经不在线上了（发布只保留最新一份，旧资产被删）——这时所有源都 404。别把这当成“下载坏了”：
+      // 重新查一次，版本变了就用新版本重下，不能让玩家对着一个永远下不下来的旧版本号干等。
+      let attempt = result.latest;
+      let staged;
+      try {
+        staged = await fetchAndStage(attempt);
+      } catch (error) {
+        if (/已取消|cancelled|aborted/i.test(String(error?.message || ''))) throw error;
+        const fresh = await lookup().catch(() => null);
+        if (!fresh?.latest?.version || fresh.latest.version === attempt.version) throw error;
+        attempt = fresh.latest;
+        remembered = attempt;
+        set('downloading', `下载源上的 ${result.latest.version} 已经过期，改下 ${attempt.version}…`, { version: attempt.version, percent: 0, notes: attempt.notes, latest: attempt.version, size: attempt.size, source: fresh.source });
+        staged = await fetchAndStage(attempt);
+      }
+      set('ready', `新版启动器 ${attempt.version} 已下载完成，稍后自动重启安装。`, {
+        version: attempt.version, latest: attempt.version, percent: 100,
+        notes: attempt.notes, source: status.source, canInstall: !!staged.staged,
       });
       //By leewheel 2026年11月9日 强制重启：下载完立刻开始倒计时，不需要玩家点任何按钮。
       // 返回的是**倒计时之后**的 status：startCountdown 第一拍就会把 secondsLeft 推出去，

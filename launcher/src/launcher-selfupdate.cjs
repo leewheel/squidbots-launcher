@@ -314,7 +314,9 @@ function orTimeout(promise, ms) {
 //By leewheel 2026年11月9日 带断点续传的下载器。
 // 国内下 375MB 经常中途断：以前整段重来，玩家每次都从 0% 开始看着像死循环。
 // 现在保留 .part，换源也接着已有的字节续（GitHub 与主流镜像都支持 Range）。
-async function downloadOnce(url, target, { fetchImpl, onProgress = () => {}, signal, timeout = 30000 } = {}) {
+//By leewheel 2026年11月12日 首字节等 12 秒（原 30 秒）：一个源根本不通时没必要让界面干等半分多钟，
+// 排在前面的源是测过速的，真能下的不会这么久连第一块数据都拿不到。
+async function downloadOnce(url, target, { fetchImpl, onProgress = () => {}, signal, timeout = 12000 } = {}) {
   let have = 0;
   try { have = (await fsp.stat(target)).size; } catch { have = 0; }
   let lastActivity = Date.now();
@@ -413,6 +415,74 @@ async function looksLikeExe(file) {
 }
 
 /**
+ *By leewheel 2026年11月12日 给一个下载地址做“测速”：只取前 128KB，量首字节延迟与速度。
+ * 判据和下载一样严：前两个字节必须是 MZ（镜像挂了常回 200 + HTML 错误页，光看状态码会把错误页当成功）。
+ */
+async function probeSource(url, { fetchImpl = fetch, signal, bytes = 131072, timeout = 7000 } = {}) {
+  const started = Date.now();
+  const controller = new AbortController();
+  const stop = () => { try { controller.abort(); } catch { /* 已停 */ } };
+  if (signal) {
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+  }
+  const timer = setTimeout(stop, timeout);
+  timer.unref?.();
+  try {
+    const response = await fetchImpl(url, {
+      redirect: 'follow',
+      headers: { 'User-Agent': USER_AGENT, Range: `bytes=0-${bytes - 1}` },
+      signal: controller.signal,
+    });
+    if (!response.ok && response.status !== 206) throw new Error(`HTTP ${response.status}`);
+    const firstByteMs = Date.now() - started;
+    let got = 0;
+    let head = Buffer.alloc(0);
+    if (response.body && typeof response.body.getReader === 'function') {
+      const reader = response.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value || []);
+        if (head.length < 2) head = Buffer.concat([head, chunk.subarray(0, 2 - head.length)]);
+        got += chunk.length;
+        if (got >= bytes) break;
+      }
+      await reader.cancel().catch(() => {});
+    } else {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      got = buffer.length;
+      head = buffer.subarray(0, 2);
+    }
+    if (!(head.length >= 2 && head[0] === 0x4d && head[1] === 0x5a)) throw new Error('返回的不是 exe（镜像错误页）');
+    const spent = Math.max(1, Date.now() - started);
+    return { url, ok: true, kbps: Math.round((got / 1024) * 1000 / spent), firstByteMs };
+  } catch (error) {
+    return { url, ok: false, error: shortError(error) };
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', stop);
+  }
+}
+
+/**
+ * 并发测速后给出下载顺序：能用的按实测速度从快到慢，挂掉的排在后面（探测超时也可能是偶然，仍给一次机会），
+ * 超出探测名额的地址原样排在最后。这样“开代理直连 GitHub 很快”的场景不会再排在几个死镜像后面干等。
+ */
+async function rankSources(urls, { fetchImpl = fetch, signal, limit = 10 } = {}) {
+  const head = urls.slice(0, limit);
+  const tail = urls.slice(limit);
+  const probes = await Promise.all(head.map(url => probeSource(url, { fetchImpl, signal })));
+  const good = probes.filter(row => row.ok).sort((a, b) => b.kbps - a.kbps || a.firstByteMs - b.firstByteMs);
+  const dead = probes.filter(row => !row.ok);
+  return {
+    probes,
+    order: [...good.map(row => row.url), ...dead.map(row => row.url), ...tail],
+    fastest: good[0] || null,
+  };
+}
+
+/**
  * 下载并校验新版启动器。目标文件是 <dir>\CoA-Launcher-<版本>.exe，旁边留 .part 支持续传。
  * 返回 { file, size, sha256, resumedFrom }
  */
@@ -433,17 +503,21 @@ async function download(info, { dir, onProgress = () => {}, signal, mirrors = DE
   }
 
   //By leewheel 2026年11月9日 info 可能给一个地址（GitHub API 通道就是原始资产地址），
-  // 也可能给一组地址（清单通道不知道 tag 怎么写的，拼了几种写法）。每组地址都过一遍镜像反代，
-  // 按“种子”分组保序：第一个种子在第一个镜像上就成的概率最高，不用把镜像×种子全排开。
+  // 也可能给一组地址（清单通道不知道 tag 怎么写的，拼了几种写法）。每组地址都过一遍镜像反代。
   const seeds = Array.isArray(info.urls) && info.urls.length ? info.urls.filter(Boolean) : info.url ? [info.url] : [];
   const urls = [];
   for (const seed of seeds) {
     for (const candidate of mirrorCandidates(seed, mirrors)) if (!urls.includes(candidate)) urls.push(candidate);
   }
   if (!urls.length) throw new Error('这个版本没有下载地址');
+  //By leewheel 2026年11月12日 先花两三秒**并发测速**，再按实测速度下。
+  // 老做法是“按镜像列表顺序一个接一个试”，于是：开着代理、直连 GitHub 明明几百 KB/s 的人，
+  // 也要先等前面几个反代各自超时（每个 30 秒）才轮到他，界面就一直停在 0%（老大本轮实弹）。
+  // 现在所有候选同时探 128KB：能用的按速度排前面，挂掉的直接不试 —— 谁快用谁，跟顺序无关。
+  const order = await rankSources(urls, { fetchImpl, signal });
   const failures = [];
   let lastSize = 0;
-  for (const url of urls) {
+  for (const url of order.order) {
     if (signal?.aborted) throw new Error('已取消');
     try {
       const result = await downloadOnce(url, part, { fetchImpl, signal, onProgress });
@@ -465,8 +539,13 @@ async function download(info, { dir, onProgress = () => {}, signal, mirrors = DE
     }
   }
   const detail = failures.length > 4 ? [...failures.slice(0, 4), `等 ${failures.length} 个源`].join('；') : failures.join('；');
-  const error = new Error(`下载失败，所有源都不可用（${detail}）${lastSize ? `；已下载 ${Math.round(lastSize / 1048576)} MB，重试会接着下` : ''}`);
+  //By leewheel 2026年11月12日 失败时把测速结果一起说清楚：玩家/老大一眼能看出是“全挂了”还是“某几个慢”。
+  const probeLine = order.probes.length
+    ? `；测速 ${order.probes.length} 个源，可用 ${order.probes.filter(row => row.ok).length} 个${order.fastest ? `（最快 ${order.fastest.kbps} KB/s，${hostOf(order.fastest.url)}）` : ''}`
+    : '';
+  const error = new Error(`下载失败，所有源都不可用（${detail}）${probeLine}${lastSize ? `；已下载 ${Math.round(lastSize / 1048576)} MB，重试会接着下` : ''}`);
   error.failures = failures;
+  error.probes = order.probes;
   throw error;
 }
 
@@ -515,4 +594,5 @@ module.exports = {
   stage, readStaged, clearStaged, shortError,
   // 解析用的内部函数也导出：单测要逐条钉住“怎么认发布、怎么取版本、怎么找 sha256”
   pickRelease, versionFromRelease, sha256FromBody, assetOf, fromManifest, fromGithubApi,
+  probeSource, rankSources,
 };
