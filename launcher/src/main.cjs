@@ -13,7 +13,7 @@ const { readSettings, writeSettings } = require('./settings.cjs');
 const { ClientUpdater } = require('./client-updater.cjs');
 const { AddonManager } = require('./addons.cjs');
 const { requireGameClosed, configureRealmlist, realmlistStatus, launch } = require('./game.cjs');
-const { ServerControl, portOpen } = require('./server-control.cjs');
+const { ServerControl, portOpen, normalizeServerRoot, serverDirIn } = require('./server-control.cjs');
 //By leewheel 2026-11-05 启动时的目录布局体检（中文路径 / Client、Server 缺失或空目录）
 const { checkLayout } = require('./layout-check.cjs');
 //End By leewheel
@@ -116,7 +116,8 @@ async function clearPendingSql(root) {
 }
 async function retryPendingSql() {
   const root = launcherRootFolder();
-  const serverRoot = path.join(root, 'Server');
+  //By leewheel 2026年11月11日 补导 SQL 也要用同一个服务端目录判定，否则给错目录就整库导不进去
+  const serverRoot = serverDirIn(root);
   let pending = null;
   try { pending = JSON.parse(await fs.readFile(pendingSqlFile(root), 'utf8')); } catch { return null; }
   if (!pending?.sqlRoot || !fs_exists(pending.sqlRoot)) { await clearPendingSql(root); return null; }
@@ -687,12 +688,15 @@ function serverControl() {
 // 直接拿 mysql\admin-client.ini 去连 3396，15 秒后报“连不上数据库”。
 function updateServerControl(serverRoot) {
   if (!config.server?.services?.length) return null;
+  //By leewheel 2026年11月11日 只认真正的服务端目录（<整合包>\Server）：传进来整合包根时会话里所有
+  // mysql\bin\mysqld.exe 都解析到 <整合包>\mysql\bin（不存在），起库直接报“缺少文件”。
+  const root = normalizeServerRoot(serverRoot);
   //By leewheel 2026年11月9日 更新路径也用整合包自己的端口（my.ini 优先），别再按 config 里写死的 3396 拉 mysqld：
   // 否则 my.ini 说 3395、这里按 3396 起库，更新完世界服照样连不上。
-  const ports = inspectRepack(serverRoot).ports;
+  const ports = inspectRepack(root).ports;
   const services = config.server.services.map(service => ({ ...service, port: ports[service.id] || service.port }));
-  const control = new ServerControl({ root: serverRoot, services, commands: config.server.commands, notify: () => {} });
-  control.key = `update|${path.resolve(serverRoot)}`;
+  const control = new ServerControl({ root, services, commands: config.server.commands, notify: () => {} });
+  control.key = `update|${path.resolve(root)}`;
   return control;
 }
 
@@ -700,7 +704,11 @@ function updateServerControl(serverRoot) {
 // 旧实现把“启动 MySQL 失败”用 .catch(() => {}) 吞掉，玩家只看到“连不上数据库”，
 // 根本不知道启动器其实一步都没做——这就是老大说的“启动器根本没有去启动 MySQL”。
 // 返回**一条连接串集合**（worldserver.conf 里那三条），调用方只用一个变量接，不要再多套一层对象。
-async function ensureUpdateDatabase(serverRoot, note = () => {}) {
+async function ensureUpdateDatabase(serverRootInput, note = () => {}) {
+  //By leewheel 2026年11月11日 一律先按布局纠正目录：传进来整合包根时，readDbConfig/readMysqlIni
+  // 都会去 <整合包>\my.ini 找配置（不存在），起库也会去找 <整合包>\mysql\bin\mysqld.exe。
+  const serverRoot = normalizeServerRoot(serverRootInput);
+  if (path.resolve(String(serverRootInput || '')) !== path.resolve(serverRoot)) note(`服务端目录已纠正为 ${serverRoot}`);
   const conns = releaseUpdate.readDbConfig(serverRoot);
   const probe = conns.world || conns.auth || conns.characters || null;
   //By leewheel 2026年11月11日 报错文案必须说清「读的是哪个文件、连的是哪个端口」。
@@ -715,7 +723,9 @@ async function ensureUpdateDatabase(serverRoot, note = () => {}) {
   const control = updateServerControl(serverRoot);
   if (!control) throw new Error('启动器没有读到服务定义，无法自动启动数据库：请手动运行 Server\\1.MySQL.bat 后重试。更新中止（文件未提交）');
   const port = inspectRepack(serverRoot).ports.mysql || mine?.port || 3396;
-  note(`正在启动数据库（Server\\mysql\\bin\\mysqld.exe --defaults-file=Server\\my.ini，端口 ${port}）`);
+  //By leewheel 2026年11月11日 日志里印**绝对路径**：原来写死成 Server\mysql\bin\mysqld.exe，
+  // 玩家看不出启动器到底去哪个目录拉库，出问题时只能猜（老大 2026-11-11 晚截图就是这个疑问）。
+  note(`正在启动数据库（${path.join(serverRoot, 'mysql', 'bin', 'mysqld.exe')} --defaults-file=${path.join(serverRoot, 'my.ini')}，端口 ${port}）`);
   let startError = '';
   try {
     await control.start('mysql');
@@ -3124,7 +3134,10 @@ function registerIpc() {
     if (!options?.asset?.url) throw new Error('没有可用的更新包。');
     const root = launcherRootFolder();
     const version = String(options.version || options.asset.version || 'latest').replace(/[^A-Za-z0-9._-]+/g, '-');
-    const serverRoot = path.join(root, 'Server');
+    //By leewheel 2026年11月11日 更新用的服务端目录和「启动服务器」必须同源同结果：
+    // 老大实测“按启动服务器能起 MySQL，自动更新却说 mysql\bin\mysqld.exe 不存在”，
+    // 就是这里自己拼 path.join(root,'Server')，遇到根目录本身就是 Server 的放法就拼成 Server\Server。
+    const serverRoot = serverDirIn(root);
     const clientRoot = path.join(root, 'Client');
     if (!fs_exists(serverRoot) || !fs_exists(clientRoot)) throw new Error('先把目录整理成 Server 与 Client 两个目录（启动器会自动整理）。');
     releaseBusy = true;
@@ -3468,7 +3481,8 @@ function registerIpc() {
       await fs.mkdir(workDir, { recursive: true });
       progress({ phase: 'extract', version, message: `正在解压 ${localName}`, pct: 8 });
       await releaseUpdate.extractZip(zip, workDir, line => progress({ phase: 'extract', version, message: String(line).slice(0, 200), pct: 10 }));
-      const serverRoot = path.join(root, 'Server');
+      //By leewheel 2026年11月11日 同上：与「启动服务器」走同一个目录判定，别再各拼一套。
+      const serverRoot = serverDirIn(root);
       const clientRoot = path.join(root, 'Client');
       //By leewheel 2026年11月8日 本地包更新原来缺了两件事（老大 2026-11-08 12:54 实弹）：
       // ① 没停服——世界服还占着 exe，覆盖会 EBUSY；② 没启动 MySQL，conns 写死 null，
@@ -3724,7 +3738,7 @@ function registerIpc() {
   // 产品名必须写 COA，否则上传点不认；zip 里放 BUG信息.txt / 环境信息.json / 截图 / 日志尾部。
   handle('bugreport:preview', async () => {
     const root = launcherRootFolder();
-    const serverRoot = path.join(root, 'Server');
+    const serverRoot = serverDirIn(root);
     const clientRoot = path.join(root, 'Client');
     const running = (await serverControl()?.status().catch(() => []) || []).some(service => /world/i.test(service.id) && service.state === 'running');
     const env = bugReport.collectEnv({ root, serverRoot, clientRoot, launcherVersion: appVersion(), running });

@@ -104,10 +104,40 @@ function portOpen(port) {
   });
 }
 
+//By leewheel 2026年11月11日 传进来的必须是「服务端目录」（<整合包>\Server），不是整合包根。
+// 玩家反馈（2026-11-11 晚）：更新时报「MySQL 数据库: mysql\bin\mysqld.exe is missing」，
+// 而文件明明就在 Server\mysql\bin 下 —— 因为调用方把整合包根当成了服务端根，
+// 拼出来的路径是 <整合包>\mysql\bin\mysqld.exe，再加上报错里只印相对路径，
+// 看起来就像“启动器跑到 mysql\bin 目录里去找 mysql”。
+// 这里按布局自动纠正一层：根下没有 mysql\bin\mysqld.exe，但 <根>\Server 下有，就用后者。
+function normalizeServerRoot(root) {
+  const base = path.resolve(String(root || ''));
+  const hasMysqld = dir => fs.existsSync(path.join(dir, 'mysql', 'bin', 'mysqld.exe'));
+  if (hasMysqld(base)) return base;
+  const inner = path.join(base, 'Server');
+  if (fs.existsSync(inner) && (hasMysqld(inner) || fs.existsSync(path.join(inner, 'worldserver.exe')))) return inner;
+  return base;
+}
+//End By leewheel
+
+//By leewheel 2026年11月11日 从「启动器所在目录」推服务端目录（更新用）：三种放置都要对。
+//  ① 发布版：<根>\Server\mysql\bin\mysqld.exe
+//  ② 玩家把“服务器目录”直接指到 Server 本身：<根>\mysql\bin\mysqld.exe（此时 root 就是服务端根）
+//  ③ 都不像（还没装全）：仍返回 <根>\Server，让后面的报错把缺失路径说清楚
+function serverDirIn(packRoot) {
+  const base = path.resolve(String(packRoot || ''));
+  const looksServer = dir => fs.existsSync(path.join(dir, 'mysql', 'bin', 'mysqld.exe')) || fs.existsSync(path.join(dir, 'worldserver.exe'));
+  for (const dir of [path.join(base, 'Server'), base]) if (looksServer(dir)) return dir;
+  return path.join(base, 'Server');
+}
+//End By leewheel
+
 class ServerControl {
   constructor({ root, services, commands = {}, notify = () => {}, onAuthStarted = null }) {
     this.onAuthStarted = onAuthStarted;
-    this.root = path.resolve(root);
+    //By leewheel 2026年11月11日 记下调用方给的原始路径，纠偏后两边不一致时能说清“到底按哪个目录在找”。
+    this.rootGiven = path.resolve(root);
+    this.root = normalizeServerRoot(root);
     this.services = services;
     this.commands = commands;
     this.notify = notify;
@@ -135,7 +165,7 @@ class ServerControl {
   // Runs a repack command to completion, logging its output; stdin lines are sent then closed.
   async run(command, logId, input = [], secrets = []) {
     const exe = this.resolve(command.exe);
-    if (!fs.existsSync(exe)) throw new Error(`${command.exe} is missing. Install or repair the repack first.`);
+    if (!fs.existsSync(exe)) throw new Error(`${command.exe} 不存在：找不到 ${exe}。整合包不完整或服务端目录不对，请重新安装或修复整合包。`);
     await fsp.mkdir(path.dirname(this.logFile(logId)), { recursive: true });
     return new Promise((resolve, reject) => {
       const child = spawn(exe, command.args.map(arg => arg.replace(/\{root\}/g, this.root)), { cwd: this.root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -393,7 +423,14 @@ class ServerControl {
       return;
     }
     const exe = this.resolve(service.exe);
-    if (!fs.existsSync(exe)) throw new Error(`${service.name}: ${service.exe} is missing. Install or repair the repack first.`);
+    //By leewheel 2026年11月11日 报错必须给出**绝对路径**：只印 mysql\bin\mysqld.exe 这种相对路径，
+    // 玩家会以为启动器在“mysql\bin 目录”里找 mysql（实弹：老大 2026-11-11 晚的截图）。
+    if (!fs.existsSync(exe)) {
+      const other = this.rootGiven.toLowerCase() === this.root.toLowerCase()
+        ? ''
+        : `（调用方给的是 ${this.rootGiven}，已按布局纠正为 ${this.root}）`;
+      throw new Error(`${service.name}：找不到 ${exe}${other}。整合包不完整或服务端目录不对，请重新安装或修复整合包。`);
+    }
     await fsp.mkdir(path.dirname(this.logFile(id)), { recursive: true });
     //By leewheel 2026年11月4日 老大规则：日志只保留“上一次启动的一份”备份，绝不按日期堆文件。
     // 每次启动先把上一次的内容顶到 <日志>.1（同名覆盖），再把当前日志开成空白。
@@ -693,5 +730,5 @@ function runningInside() {
 //By leewheel 2026-11-05 导出 RA 配置自愈函数，供回归测试直接验证
 //By leewheel 2026年11月8日 顺带导出进程表与端口表的查询（都带缓存），国度的归属判定复用同一份，
 // 免得状态页每隔 5 秒把 PowerShell 和 netstat 各跑两次。
-module.exports = { ServerControl, validateServices, validateCommand, portOpen, ensureWorldConsole, listening, runningInside };
+module.exports = { ServerControl, validateServices, validateCommand, portOpen, ensureWorldConsole, listening, runningInside, normalizeServerRoot, serverDirIn };
 //End By leewheel

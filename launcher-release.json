@@ -1,9 +1,9 @@
 {
-  "version": "1.0.202611112037",
-  "title": "COA-LAUNCHER-1.0.202611112037",
-  "asset": "CoA-Launcher-1.0.202611112037.exe",
-  "size": 393025775,
-  "sha256": "7af3fad8839eb6710cbfbafce6e24802efebaa1d1ec45b748bc28bd318145aec",
-  "notes": "修复：更新时「连不上数据库」的提示不再指向 mysql\\admin-client.ini。数据库地址统一按 Server\\my.ini 里的端口、加上 Server\\configs\\worldserver.conf 里的用户名与库名去连；worldserver.conf 里没有连接串、或连接串没写引号，现在也都能读出来。数据库启动失败会直接显示真实原因（例如端口被别的程序占用），不再只报一句「连不上数据库」让人无从下手。同时保留上一版修复：首页常驻「强制关闭占用程序」按钮，主动关闭服务器不再误报「服务启动失败」。",
-  "at": "2026-11-11T12:37:37.431Z"
+  "version": "1.0.202611112107",
+  "title": "COA-LAUNCHER-1.0.202611112107",
+  "asset": "CoA-Launcher-1.0.202611112107.exe",
+  "size": 393026784,
+  "sha256": "81fe322c97a6b35a40db5079da8fbd48a39bb88df98714ec9e8440ff6d733065",
+  "notes": "修复：自动更新时「找不到 mysql\\bin\\mysqld.exe」，而首页「启动服务器」却能正常起 MySQL。原因是更新这条路自己拼服务端目录（拿整合包根目录当服务端目录），于是去找 <整合包>\\mysql\\bin\\mysqld.exe（那里本来就没有）；现在更新与「启动服务器」共用同一套目录判定（<整合包>\\Server，或启动器旁边就是服务端目录），不会再拼出 Server\\Server 这种路径。缺文件时报错也改成显示完整的绝对路径，并说明实际按哪个目录在找，不再只印 mysql\\bin\\mysqld.exe 这种相对写法。同时保留上一版修复：数据库按 Server\\my.ini 的端口、Server\\configs\\worldserver.conf 的账号连接，失败会显示真实原因；首页常驻「强制关闭占用程序」按钮；主动关闭服务器不再误报「服务启动失败」。",
+  "at": "2026-11-11T13:07:56.543Z"
 }
