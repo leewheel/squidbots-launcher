@@ -238,6 +238,9 @@ function subscribe() {
     // Only the bar is redrawn: the page underneath (a form being filled…) is left alone.
     const bar = $('#launcher-banner');
     if (bar) bar.innerHTML = launcherBanner();
+    //By leewheel 2026年11月12日 首页版本行上的「更新状态」也跟着刷（不整页重画，避免下载时闪按钮）
+    const ver = $('#launcher-ver');
+    if (ver && App.state.tab === 'home' && typeof launcherVersionLine === 'function') ver.outerHTML = launcherVersionLine();
     //By leewheel 2026年11月9日 阶段名改了：downloaded → ready（新实现里“已校验落位、可安装”叫 ready）。
     // 另外“倒计时”每秒推一次，只重画横幅就够（横幅在主框架里，任何页都看得到），
     // 不要再整页 App.render —— 那样下载期间每秒重画 5 次首页，按钮会闪、悬停会断。

@@ -405,3 +405,15 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
 .mini-service .light.on + .mem, .mini-service .mem { opacity: .95; }
 @media (max-height: 760px) { .classic-hero.server-hero { min-height: 300px; padding-top: 24px; padding-bottom: 26px; } }
 /* End By leewheel */
+/* By leewheel 2026年11月12日 首页版本行：更新状态 + 手动「检查更新」（老大报「有新版不提示」） */
+.launcher-ver { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.launcher-ver .launcher-ver-sep { color: rgba(224, 160, 80, .38); }
+.launcher-ver .launcher-ver-state { color: rgba(224, 160, 80, .62); }
+.launcher-ver .launcher-ver-state.bad { color: #e0776b; }
+.launcher-ver .launcher-ver-check {
+  background: none; border: 0; padding: 0 0 0 2px; cursor: pointer;
+  font: inherit; letter-spacing: .06em; color: rgba(224, 160, 80, .62);
+  border-bottom: 1px dashed rgba(224, 160, 80, .34);
+}
+.launcher-ver .launcher-ver-check:hover { color: rgba(240, 190, 120, .95); border-bottom-color: rgba(240, 190, 120, .7); }
+/* End By leewheel */

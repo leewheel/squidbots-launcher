@@ -310,7 +310,24 @@ App.pages.verify = {
 function launcherVersionLine() {
   const version = String(App.state.version || '').trim();
   if (!version) return '';
-  return `<p class="launcher-ver">${esc(t('home.launcherVersion', '启动器版本 v{version}', { version }))}</p>`;
+  //By leewheel 2026年11月12日 版本号后面常驻「更新状态 + 检查更新」。
+  // 老大实弹：GitHub 上明明发了新版，玩家那台启动器一声不吭。原因是查更新一直在后台悄悄做，
+  // 一旦清单被 CDN 缓存成旧版本（或被判成“已是最新”），界面上一个字都不显示，玩家只能干等。
+  // 现在状态摆在版本号旁边，随时能手动点一下重查。
+  const update = App.state.launcherUpdate || {};
+  const phase = String(update.phase || '');
+  const busy = ['checking', 'downloading', 'installing', 'ready'].includes(phase);
+  const state = phase === 'checking' ? '正在检查更新…'
+    : busy ? ''
+      : phase === 'uptodate' ? (update.unknown ? '更新检查没连上' : `已是最新${update.latest ? `（${update.latest}）` : ''}`)
+        : phase === 'error' ? '检查更新失败'
+          : phase === 'skipped' ? '有新版（已忽略）'
+            : '';
+  const warn = phase === 'error' || (phase === 'uptodate' && update.unknown);
+  const tail = state ? `<span class="launcher-ver-sep">·</span><span class="launcher-ver-state${warn ? ' bad' : ''}">${esc(state)}</span>` : '';
+  // 下载/安装/已就绪时首页有横幅，这里不再重复给按钮；其余状态都留一个手动入口
+  const check = busy ? '' : `<button class="launcher-ver-check" data-action="launcher-check"${warn ? ' data-force="1"' : ''}>检查更新</button>`;
+  return `<p class="launcher-ver" id="launcher-ver">${esc(t('home.launcherVersion', '启动器版本 v{version}', { version }))}${tail}${check}</p>`;
 }
 function homeView() {
   const s = App.state;

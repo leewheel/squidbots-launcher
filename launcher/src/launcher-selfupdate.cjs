@@ -36,6 +36,11 @@ const DEFAULT_MIRRORS = [
 
 // jsDelivr 三个入口（国内各线路速度不同，挨个试）。它读的是仓库里的纯文本清单，几十字节，最快。
 const JSDELIVR_HOSTS = ['https://cdn.jsdelivr.net', 'https://fastly.jsdelivr.net', 'https://gcore.jsdelivr.net'];
+//By leewheel 2026年11月12日 清单通道的兜底：raw.githubusercontent 只缓存几分钟，不像 jsDelivr 的分支缓存
+// 能压上十几小时。国内偶尔连不上，所以放在 jsDelivr 之后，只在那边全挂时才用它。
+const RAW_HOST = 'https://raw.githubusercontent.com';
+// 两条通道各给 15 秒：谁先回都不算数，必须两条都问过再比版本（查询很快，正常都在 1 秒内）。
+const CHANNEL_WINDOW = 15000;
 
 function repoOf(value) {
   const text = String(value || '').trim();
@@ -81,36 +86,42 @@ async function fetchText(url, { fetchImpl = fetch, timeout = 15000, headers = {}
 //   { version, title, asset, size, sha256, notes, at }
 // 这是最轻、最稳的一条通道：几十字节，jsDelivr 在国内有节点，且不受 GitHub API 限流影响。
 async function fromManifest({ repo, branch = 'main', fetchImpl, signal }) {
-  const failures = [];
-  for (const host of JSDELIVR_HOSTS) {
-    const url = `${host}/gh/${repo}@${branch}/launcher-release.json`;
-    try {
-      const text = await fetchText(url, { fetchImpl, signal, timeout: 12000 });
-      const data = JSON.parse(text);
-      const version = cleanVersion(data.version);
-      if (!version) throw new Error('清单里的版本号不合法');
-      const asset = String(data.asset || '');
-      return {
-        version, notes: String(data.notes || ''), asset, size: Number(data.size) || 0,
-        sha256: String(data.sha256 || '').toLowerCase(),
-        title: String(data.title || `${RELEASE_TITLE_PREFIX}${version}`),
-        //By leewheel 2026年11月9日 清单原来不带下载地址 —— 而清单是**主力通道**，一命中就直接进下载，
-        // 于是每次真更新都报“这个版本没有下载地址”。地址按 GitHub Releases 的固定规律拼，三种写法依次试：
-        //   ① tag 就叫版本号（本仓库的发版习惯） ② tag 是 v+版本号 ③ 按资产名取“最新发布”里的同名文件
-        // 第 ③ 条是为了 tag 命名换了也能下；SHA-256 会把关，取错文件不会被当成好 exe 顶上去。
-        url: String(data.url || (asset ? `https://github.com/${repo}/releases/download/${version}/${asset}` : '')),
-        urls: asset ? [
-          `https://github.com/${repo}/releases/download/${version}/${asset}`,
-          `https://github.com/${repo}/releases/download/v${version}/${asset}`,
-          `https://github.com/${repo}/releases/latest/download/${asset}`,
-        ] : [],
-        source: `清单（${hostOf(url)}）`,
-      };
-    } catch (error) {
-      failures.push(`${hostOf(url)}：${shortError(error)}`);
-    }
-  }
-  throw new Error(failures.join('；'));
+  //By leewheel 2026年11月12日 jsDelivr 的 `${repo}@${branch}` 是按**分支**缓存的，实测有过
+  // 拿到的清单比真实最新版落后好几个版本（本轮实弹：清单给 2146，GitHub 上已经是 0422）。
+  // 所以：① 每个地址都带一个“按分钟变化”的时间戳参数，能绕开就绕开；
+  //       ② 几个入口**并发**打，收齐后取版本号最高的那份 —— 某条线路缓存住了旧清单也压不住新版；
+  //       ③ 最后再加一个 raw.githubusercontent 兜底（它只缓存几分钟，不像 CDN 能压十几小时）。
+  const bucket = Math.floor(Date.now() / 60000);
+  const urls = [
+    ...JSDELIVR_HOSTS.map(host => `${host}/gh/${repo}@${branch}/launcher-release.json?t=${bucket}`),
+    `${RAW_HOST}/${repo}/${branch}/launcher-release.json`,
+  ];
+  const { values, failures } = await gather(urls, async url => {
+    const text = await fetchText(url, { fetchImpl, signal, timeout: 12000 });
+    const data = JSON.parse(text);
+    const version = cleanVersion(data.version);
+    if (!version) throw new Error('清单里的版本号不合法');
+    const asset = String(data.asset || '');
+    return {
+      version, notes: String(data.notes || ''), asset, size: Number(data.size) || 0,
+      sha256: String(data.sha256 || '').toLowerCase(),
+      title: String(data.title || `${RELEASE_TITLE_PREFIX}${version}`),
+      //By leewheel 2026年11月9日 清单原来不带下载地址 —— 而清单是**主力通道**，一命中就直接进下载，
+      // 于是每次真更新都报“这个版本没有下载地址”。地址按 GitHub Releases 的固定规律拼，三种写法依次试：
+      //   ① tag 就叫版本号（本仓库的发版习惯） ② tag 是 v+版本号 ③ 按资产名取“最新发布”里的同名文件
+      // 第 ③ 条是为了 tag 命名换了也能下；SHA-256 会把关，取错文件不会被当成好 exe 顶上去。
+      url: String(data.url || (asset ? `https://github.com/${repo}/releases/download/${version}/${asset}` : '')),
+      urls: asset ? [
+        `https://github.com/${repo}/releases/download/${version}/${asset}`,
+        `https://github.com/${repo}/releases/download/v${version}/${asset}`,
+        `https://github.com/${repo}/releases/latest/download/${asset}`,
+      ] : [],
+      source: `清单（${hostOf(url)}）`,
+    };
+  });
+  if (!values.length) throw new Error(failures.join('；'));
+  values.sort((a, b) => compareVersions(b.version, a.version) || downloadScore(b) - downloadScore(a));
+  return values[0];
 }
 
 // GitHub Releases：标题形如 COA-LAUNCHER-1.0.202611091830，资产 = 启动器 exe。
@@ -162,38 +173,76 @@ function assetOf(release, version) {
 
 async function fromGithubApi({ repo, mirrors, fetchImpl, signal }) {
   const api = `https://api.github.com/repos/${repo}/releases?per_page=10`;
-  const candidates = [
-    ...mirrors.map(prefix => `${prefix}${api}`), // 国内镜像反代优先
-    api,                                          // 直连兜底
-  ];
+  //By leewheel 2026年11月12日 镜像与直连**并发**打，谁先回用谁。
+  // 原来是挨个试（每个 15 秒超时），镜像不通时整条通道要几百秒，外层 15 秒窗口一到就判超时，
+  // 于是“GitHub 明明有新版”也查不出来 —— 实弹见本轮玩家反馈。
+  const urls = [...mirrors.map(prefix => `${prefix}${api}`), api];
+  const { values, failures } = await gather(urls, async url => {
+    const text = await fetchText(url, { fetchImpl, signal, timeout: 15000, headers: { Accept: 'application/vnd.github+json' } });
+    const list = JSON.parse(text);
+    if (!Array.isArray(list) && list?.message) throw new Error(String(list.message).slice(0, 60));
+    const release = pickRelease(list);
+    if (!release) throw new Error('还没有发布带 exe 的版本');
+    const version = versionFromRelease(release);
+    if (!version) throw new Error('发布标题里没有可识别的版本号');
+    const asset = assetOf(release, version);
+    if (!asset?.url) throw new Error('这个版本没有 exe 资产');
+    return {
+      version,
+      notes: String(release.body || ''),
+      asset: asset.name,
+      size: asset.size,
+      sha256: asset.sha256 || sha256FromBody(release.body, asset.name),
+      // 资产地址走镜像下载：这里只负责告诉调用方“GitHub 上的原始地址”
+      url: asset.url,
+      tag: String(release.tag_name || ''),
+      source: `GitHub Releases（${hostOf(url)}）`,
+    };
+  }, { grace: 1500 });
+  if (!values.length) throw new Error(failures.join('；'));
+  values.sort((a, b) => compareVersions(b.version, a.version) || downloadScore(b) - downloadScore(a));
+  return values[0];
+}
+
+/**
+ * 并发打一组地址，收齐后返回全部成功结果与失败明细。
+ *  - 第一个成功后最多再等 `grace` 毫秒就把已有的收下（慢线路不拖后腿）；
+ *  - 全部跑完立刻返回；超过 `hard` 毫秒强制收摊。
+ * 多个源返回的版本可能不一致（CDN 缓存），所以拿回**全部**再由调用方挑最高的那条。
+ */
+function gather(urls, parse, { grace = 2500, hard = 15000 } = {}) {
+  const values = [];
   const failures = [];
-  for (const url of candidates) {
-    try {
-      const text = await fetchText(url, { fetchImpl, signal, timeout: 15000, headers: { Accept: 'application/vnd.github+json' } });
-      const list = JSON.parse(text);
-      if (!Array.isArray(list) && list?.message) throw new Error(String(list.message).slice(0, 60));
-      const release = pickRelease(list);
-      if (!release) throw new Error('还没有发布带 exe 的版本');
-      const version = versionFromRelease(release);
-      if (!version) throw new Error('发布标题里没有可识别的版本号');
-      const asset = assetOf(release, version);
-      if (!asset?.url) throw new Error('这个版本没有 exe 资产');
-      return {
-        version,
-        notes: String(release.body || ''),
-        asset: asset.name,
-        size: asset.size,
-        sha256: asset.sha256 || sha256FromBody(release.body, asset.name),
-        // 资产地址走镜像下载：这里只负责告诉调用方“GitHub 上的原始地址”
-        url: asset.url,
-        tag: String(release.tag_name || ''),
-        source: `GitHub Releases（${hostOf(url)}）`,
-      };
-    } catch (error) {
-      failures.push(`${hostOf(url)}：${shortError(error)}`);
+  let left = urls.length;
+  let done = false;
+  return new Promise(resolve => {
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(hardTimer);
+      clearTimeout(graceTimer);
+      resolve({ values, failures });
+    };
+    const hardTimer = setTimeout(finish, hard);
+    hardTimer.unref?.();
+    let graceTimer = null;
+    for (const url of urls) {
+      (async () => {
+        try {
+          values.push(await parse(url));
+          if (!graceTimer) {
+            graceTimer = setTimeout(finish, grace);
+            graceTimer.unref?.();
+          }
+        } catch (error) {
+          failures.push(`${hostOf(url)}：${shortError(error)}`);
+        } finally {
+          left -= 1;
+          if (!left) finish();
+        }
+      })();
     }
-  }
-  throw new Error(failures.join('；'));
+  });
 }
 
 function shortError(error) {
@@ -206,35 +255,58 @@ function shortError(error) {
 }
 
 /**
- * 查最新版。三通道依次尝试，任一成功即返回。
- * 返回 { newer, current, latest: {version, notes, asset, size, sha256, url}, source, tried }
+ * 查最新版。**两条通道同时问**（仓库清单 + GitHub Releases），取版本号更高的那条。
+ *
+ *By leewheel 2026年11月12日 为什么不再“谁先回谁说了算”（这是玩家「启动器有新版却不提示」的根因）：
+ *  jsDelivr 是 CDN，`@main` 分支内容会被压进边缘缓存（最长十几小时）。于是会出现两种坏情况：
+ *   ① 缓存里正好是玩家手上那个版本  → 判成「已是最新」，界面上什么提示都没有，只能干等缓存过期；
+ *   ② 缓存里是中间某个旧版本        → 把玩家引去下已过期的包。
+ *  清单只有几十字节、GitHub API 也快，两条一起问几乎没有额外代价，但能保证**看到的是真的最新版**。
+ *  任一通道挂掉仍按原样容错（另一条的结果照用），两条全挂才抛 error.tried 交给上层静默处理。
  */
 async function check({ currentVersion, repo, branch = 'main', mirrors = DEFAULT_MIRRORS, fetchImpl = fetch, signal } = {}) {
   const target = repoOf(repo);
   const tried = [];
-  let latest = null;
-  try {
-    const manifest = await fromManifest({ repo: target, branch, fetchImpl, signal });
-    tried.push(`清单：${manifest.version}`);
-    latest = manifest;
-  } catch (error) {
-    tried.push(`清单：${shortError(error)}`);
+  const manifestP = fromManifest({ repo: target, branch, fetchImpl, signal })
+    .then(info => ({ kind: 'manifest', info }))
+    .catch(error => ({ kind: 'manifest', error }));
+  const apiP = fromGithubApi({ repo: target, mirrors, fetchImpl, signal })
+    .then(info => ({ kind: 'api', info }))
+    .catch(error => ({ kind: 'api', error }));
+  const [manifest, api] = await Promise.all([
+    orTimeout(manifestP, CHANNEL_WINDOW),
+    orTimeout(apiP, CHANNEL_WINDOW),
+  ]);
+  for (const row of [manifest, api]) {
+    const label = row.kind === 'manifest' ? '清单' : 'API';
+    tried.push(row.info ? `${label}：${row.info.version}` : `${label}：${row.timeout ? '超时' : shortError(row.error)}`);
   }
-  if (!latest) {
-    try {
-      latest = await fromGithubApi({ repo: target, mirrors, fetchImpl, signal });
-      tried.push(`API：${latest.version}`);
-    } catch (error) {
-      tried.push(`API：${shortError(error)}`);
-    }
-  }
-  if (!latest) {
+  const found = [manifest, api].filter(row => row.info);
+  if (!found.length) {
     const error = new Error(`查不到启动器的发布信息（${tried.join('；')}）`);
     error.tried = tried;
     throw error;
   }
+  // 版本高的优先；版本一样时挑“带 sha256、带下载地址”的那条（下载与校验更有底）
+  found.sort((a, b) => compareVersions(b.info.version, a.info.version) || downloadScore(b.info) - downloadScore(a.info));
+  const latest = found[0].info;
   const current = cleanVersion(currentVersion) || String(currentVersion || '');
   return { newer: isNewer(latest.version, current), current, latest, source: latest.source, tried };
+}
+
+// 版本相同时用来挑“更好用”的那条记录：能校验（sha256）> 能直连下载
+function downloadScore(info) {
+  return (info?.sha256 ? 4 : 0) + (info?.url ? 2 : 0) + (Array.isArray(info?.urls) && info.urls.length ? 1 : 0);
+}
+
+// 给一条通道加“超时即放弃”：慢的那条不能把整次检查拖死，另一条的结果照样能用
+function orTimeout(promise, ms) {
+  let timer = null;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => resolve({ timeout: true }), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).then(row => row || { timeout: true }).finally(() => { if (timer) clearTimeout(timer); });
 }
 
 // ---------------------------------------------------------------- 下载

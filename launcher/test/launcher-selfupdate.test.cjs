@@ -101,36 +101,39 @@ test('发布说明里的 sha256 三种写法都认', () => {
     });
 });
 
-test('清单通道（jsDelivr）最先用，命中就不再打 GitHub API', async () => {
+test('清单与 GitHub API 同时问，取版本更高的那条（清单被 CDN 缓存成旧版也不影响）', async () => {
   const calls = [];
-  const manifest = { version: '1.0.202611091900', asset: 'CoA-Launcher-1.0.202611091900.exe', size: 4096, sha256: 'b'.repeat(64), notes: '修卡顿', at: '2026-11-09T19:00:00Z' };
+  //By leewheel 2026年11月12日 这就是玩家「有新版却不提示」的现场：jsDelivr 的分支缓存把旧清单发下来，
+  // 真实最新版只在 GitHub API 里能看到。必须两条都比，不能谁先回谁说了算。
+  const stale = { version: '1.0.202611112146', asset: 'CoA-Launcher-1.0.202611112146.exe', size: 4096, sha256: 'b'.repeat(64), notes: '旧清单', at: '2026-11-11T20:26:00Z' };
+  const release = [{ name: 'COA-LAUNCHER-1.0.202611120422', draft: false, body: '', tag_name: '1.0.202611120422', assets: [{ name: 'CoA-Launcher-1.0.202611120422.exe', size: 8192, browser_download_url: 'https://github.com/leewheel/squidbots-launcher/releases/download/1.0.202611120422/a.exe' }] }];
   const fetchImpl = async url => {
     calls.push(String(url));
-    if (String(url).includes('/gh/')) return textResponse(JSON.stringify(manifest));
-    throw new Error('不该走到 API 通道');
+    if (String(url).includes('launcher-release.json')) return textResponse(JSON.stringify(stale));
+    if (String(url).includes('api.github.com')) return jsonResponse(release);
+    throw new Error('unexpected');
   };
-  const result = await su.check({ currentVersion: '1.0.202611090727', repo: 'leewheel/squidbots-launcher', fetchImpl });
+  const result = await su.check({ currentVersion: '1.0.202611112107', repo: 'leewheel/squidbots-launcher', mirrors: ['https://ghfast.top/'], fetchImpl });
+  assert.equal(result.latest.version, '1.0.202611120422', '旧清单不能把新版压住');
   assert.equal(result.newer, true);
-  assert.equal(result.latest.version, '1.0.202611091900');
-  assert.equal(result.latest.sha256, 'b'.repeat(64));
-  assert.match(result.source, /清单/);
-  assert.equal(calls.filter(url => url.includes('api.github.com')).length, 0);
+  assert.ok(calls.some(url => url.includes('api.github.com')), '必须同时问 GitHub API');
+  assert.match(result.tried.join('；'), /清单：1\.0\.202611112146.*API：1\.0\.202611120422/);
 });
 
-test('清单通道全挂时退回 GitHub API，且镜像反代排在直连前面', async () => {
+test('清单挂掉时用 API；镜像与直连并发，一次就成', async () => {
   const calls = [];
   const release = [{ name: 'COA-LAUNCHER-1.0.202611091900', draft: false, body: '', tag_name: 'v1', assets: [{ name: 'CoA-Launcher-1.0.202611091900.exe', size: 2048, browser_download_url: 'https://github.com/leewheel/squidbots-launcher/releases/download/v1/a.exe' }] }];
   const fetchImpl = async url => {
     calls.push(String(url));
-    if (String(url).includes('/gh/')) return textResponse('not found', 404);
+    if (String(url).includes('launcher-release.json')) return textResponse('not found', 404);
     if (String(url).includes('api.github.com')) return jsonResponse(release);
     throw new Error('unexpected');
   };
   const result = await su.check({ currentVersion: '1.0.202611090727', repo: 'leewheel/squidbots-launcher', mirrors: ['https://ghfast.top/'], fetchImpl });
   assert.equal(result.newer, true);
-  const api = calls.filter(url => url.includes('api.github.com'));
-  assert.equal(api.length, 1, '镜像一次就成功，不该再打直连');
-  assert.ok(api[0].startsWith('https://ghfast.top/'), '镜像必须排在直连之前');
+  assert.equal(result.latest.version, '1.0.202611091900');
+  assert.match(result.source, /GitHub Releases/);
+  assert.ok(calls.some(url => url.includes('api.github.com')), 'API 通道必须被问到');
 });
 
 test('三条通道全挂时抛出带明细的错误（不能静默当成“已是最新”）', async () => {
