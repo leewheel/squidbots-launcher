@@ -395,6 +395,25 @@
       }
     },
     {
+      "key": "DisableGm.Command",
+      "file": "worldserver.conf",
+      "group": "realm",
+      "kind": "bool",
+      "when": "reload",
+      "label": {
+        "en": "Block GM commands",
+        "fr": "Bloquer les commandes MJ",
+        "ru": "Блокировать команды ГМ",
+        "zh": "GM权限禁止"
+      },
+      "help": {
+        "en": "On: players cannot use commands that need GM rights (level up, add money, teleport, spawn and so on). On by default. Turn it off only for a while, to use a GM command yourself, then put it back on.",
+        "fr": "Activé : les joueurs ne peuvent pas utiliser les commandes nécessitant les droits MJ (monter de niveau, ajouter de l'or, se téléporter, invoquer, etc.). Activé par défaut. Ne le désactivez que le temps d'utiliser une commande MJ, puis remettez-le.",
+        "ru": "Включено: игроки не могут использовать команды, требующие прав ГМ (повышение уровня, деньги, телепорт, создание существ и т.д.). Включено по умолчанию. Отключайте лишь на время, чтобы воспользоваться командой ГМ, затем включите снова.",
+        "zh": "开启后玩家无法使用需要 GM 权限的命令（升级、加钱、传送、刷怪等），默认开启。需要临时使用 GM 命令时再关闭，用完记得开回来。改动在下次启动时或执行 .reload config 后生效。"
+      }
+    },
+    {
       "key": "AllowTwoSide.Interaction.Group",
       "file": "worldserver.conf",
       "group": "realm",
