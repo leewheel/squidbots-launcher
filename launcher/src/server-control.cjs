@@ -226,8 +226,16 @@ class ServerControl {
     if (this.ownsExe(service, owner.file)) return true;
     try {
       const record = JSON.parse(fs.readFileSync(path.join(this.root, '.state', `${service.id}.json`), 'utf8'));
-      return Number(record?.pid) === Number(owner.pid) && this.ownsExe(service, record.exe);
-    } catch { return false; }
+      if (Number(record?.pid) === Number(owner.pid) && this.ownsExe(service, record.exe)) return true;
+    } catch { /* 没有 .state 记录，继续往下兜底 */ }
+    //By leewheel 2026年11月12日 老大实弹 + 明确要求：本目录 Server\mysql\bin 的 mysqld 在运行，
+    // 却被报成「端口被其他程序占用 PID xxx」。原因：mysqld 以管理员/Windows 服务身份跑时，
+    // PowerShell 跨权限读不到它的 Path，三条证据全部落空。兜底判据：进程名与本服务的 exe 同名
+    // （mysqld.exe）即算自己人——这个端口本来就是本包 MySQL 独占的，能监听它的 mysqld
+    // 只可能是本包目录下的那份（系统另装的 MySQL 不会恰好占这个端口）。
+    const exeName = path.basename(String(service.exe || '')).toLowerCase();
+    if (!owner.file && owner.name && exeName && String(owner.name).toLowerCase() === exeName) return true;
+    return false;
   }
   //End By leewheel
   //End By leewheel
@@ -248,7 +256,9 @@ class ServerControl {
     //By leewheel 2026年11月12日 进程路径缓存必须过期：Windows 会复用 PID，永久缓存会把别的程序
     // 的旧路径当成当前监听者（自家 mysqld 被判成“别的程序”）。20 秒后重新问一次。
     const cached = this.paths.get(pid);
-    let file = cached && Date.now() - cached.at < 20000 ? cached.file : '';
+    const cacheValid = cached && Date.now() - cached.at < 20000;
+    let file = cacheValid && cached.file ? cached.file : '';
+    let name = cacheValid && cached.name ? cached.name : '';
     if (!file) {
       const { stdout: exePath } = await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).Path`], { windowsHide: true, timeout: 10000 }).catch(() => ({ stdout: '' }));
       file = exePath.trim();
@@ -256,11 +266,18 @@ class ServerControl {
       if (!file) {
         for (const child of this.children.values()) if (Number(child.pid) === pid && child.spawnfile) { file = child.spawnfile; break; }
       }
+      //By leewheel 2026年11月12日 路径实在读不到（mysqld 以管理员/系统服务身份跑，跨权限无权取 Path）：
+      // 补问进程名（ProcessName 跨权限可读），isOurs 拿它兜底判断，不再把自家的 mysqld 当成外来程序。
+      if (!file) {
+        const { stdout: exeName } = await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).ProcessName`], { windowsHide: true, timeout: 10000 }).catch(() => ({ stdout: '' }));
+        name = exeName.trim();
+      }
       if (this.paths.size > 64) this.paths.clear();
-      this.paths.set(pid, { file, at: file ? Date.now() : Date.now() - 17000 });
+      // 空路径只缓存 3 秒（很快重试取路径），带名字一起缓存
+      this.paths.set(pid, { file, name, at: file ? Date.now() : Date.now() - 17000 });
     }
-    if (!file) return { pid, file: '', inside: null };
-    return { pid, file, inside: path.resolve(file).toLowerCase().startsWith(this.root.toLowerCase() + path.sep) };
+    if (!file) return { pid, file: '', name, inside: null };
+    return { pid, file, name, inside: path.resolve(file).toLowerCase().startsWith(this.root.toLowerCase() + path.sep) };
   }
   //End By leewheel
 

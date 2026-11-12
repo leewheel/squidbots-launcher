@@ -3100,6 +3100,25 @@
       }
     },
     {
+      "key": "DestinyWeaver.Scaling.WalkInNoScale",
+      "file": "destiny_weaver.conf",
+      "group": "difficulty",
+      "kind": "bool",
+      "when": "reload",
+      "label": {
+        "en": "No scaling for walk-in dungeons",
+        "fr": "Pas de mise à l'échelle en entrant par la porte",
+        "ru": "Без масштабирования при входе с порога",
+        "zh": "副本门口进入不缩放等级"
+      },
+      "help": {
+        "en": "On (default): except for Dungeon Finder, entering a dungeon from its entrance keeps the creatures and loot at their authored levels. Off: a dungeon you walk into scales for you as well, like the official server does by default. Takes effect on the next start or a .reload config.",
+        "fr": "Activé (par défaut) : hormis via le Rechercheur de donjons, entrer dans un donjon par son entrée garde les créatures et le butin à leurs niveaux d'origine. Désactivé : le donjon dans lequel vous entrez à pied s'adapte aussi à vous, comme sur le serveur officiel par défaut. Effet au prochain démarrage ou après un .reload config.",
+        "ru": "Вкл (по умолчанию): кроме Поиска подземелий, вход в подземелье с порога оставляет существ и добычу на исходных уровнях. Выкл: подземелье, в которое вы вошли с порога, также масштабируется под вас, как по умолчанию на официальном сервере. Действует после следующего запуска или .reload config.",
+        "zh": "开启（默认）：除地下城查找器之外，从副本门口走进去，生物与掉落保持原始等级。关闭：门口走进去的副本也会为你缩放（官方服务器的默认行为）。改动在下次启动时或执行 .reload config 后生效。"
+      }
+    },
+    {
       "key": "CoA.UnlockLocalAppearanceCatalog",
       "file": "coa.conf",
       "group": "collections",

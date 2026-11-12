@@ -4346,6 +4346,9 @@ async function main() {
   if (!smokeDir) {
     try {
       launcherSwap.cleanupLegacy(launchRoot);
+      //By leewheel 2026年11月12日 把随包带的替换助手补到根目录：纯自更新安装的玩家根目录里原本没有助手，
+      // 退出替换只能让 385MB 便携版自己当替换器（要先解压 %TEMP%，慢且易被打断，老大反馈"太慢/没下文"）。
+      launcherSwap.ensureHelper(launchRoot);
       if (launcherSwap.ensureStagedSwap(launchRoot, process.pid)) send('repack:notice', { key: 'launcher.pending', text: '启动器新版本已就位：关闭后自动替换' });
     } catch { /* 换不动不影响启动 */ }
   }

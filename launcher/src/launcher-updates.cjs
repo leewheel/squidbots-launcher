@@ -108,7 +108,9 @@ function createLauncherUpdates(app, options = {}, notify = () => {}, canRestart 
       await canRestart();
       const file = path.join(root, launcherSwap.STAGED_NAME);
       if (!fs.existsSync(file)) throw new Error('新版文件不见了，请重新检查更新');
-      if (!launcherSwap.spawnTakeover(file, process.pid, { restart: true })) throw new Error('无法启动替换程序');
+      //By leewheel 2026年11月12日 优先独立小助手（毫秒级起来、直接改名）；不在时才退回"新便携版自己当替换器"
+      if (!launcherSwap.spawnReplaceHelper(root, process.pid, { restart: true }) &&
+          !launcherSwap.spawnTakeover(file, process.pid, { restart: true })) throw new Error('无法启动替换程序');
       set('installing', `正在重启并安装新版启动器 ${status.version || ''}…`, { version: status.version, percent: 100 });
       // 900ms 让替换进程先起来读文件，然后本进程直接退出（不停服、不弹“要关服吗”）
       setTimeout(() => { try { app.exit(0); } catch { process.exit(0); } }, 900);

@@ -76,7 +76,10 @@ async function performTakeover(root, oldPid, { timeoutMs = 10 * 60 * 1000, resta
   const deadline = Date.now() + timeoutMs;
   while (isRunning(oldPid) && Date.now() < deadline) await sleep(500);
   const metaFile = path.join(root, 'CoA启动器.new.json');
-  for (let attempt = 0; attempt < 20; attempt++) {
+  //By leewheel 2026年11月12日 重试不再固定 20 次（10 秒）：玩家中途重新打开启动器（目标被占用）
+  // 或杀软短暂握住句柄，10 秒试不完就直接放弃，留下 .new.exe"没下文"——改成一直试到超时，
+  // 文件一空闲就换上；替换进程是独立的，多等不影响玩家用旧版。
+  for (let attempt = 0; Date.now() < deadline; attempt++) {
     try {
       if (sizeOf(source) <= 0) return false;
       fs.rmSync(legacy, { force: true });
@@ -136,16 +139,40 @@ function ensureStagedSwap(root, selfPid) {
   return spawnTakeover(staged, selfPid, { restart: false });
 }
 
+/** 启动时：把随启动器打包的替换助手补到根目录（老的只有内容更新包才会带进来；
+ *  纯自更新安装的玩家根目录里没有助手，退出替换只能退回"385MB 便携版自己当替换器"，
+ *  它要先解压 %TEMP% 才能干活，又慢又容易被杀软/重开打断——老大 2026-11-12 反馈的就是这个）。 */
+//By leewheel 2026年11月12日
+function ensureHelper(root) {
+  const helper = path.join(root, HELPER_NAME);
+  if (sizeOf(helper) > 0) return true;
+  // 打包版：electron-builder extraResources 落在 resources\；开发态：launcher\tools\
+  const candidates = [
+    path.join(process.resourcesPath || '', HELPER_NAME),
+    path.join(__dirname, '..', 'tools', HELPER_NAME),
+  ];
+  for (const source of candidates) {
+    if (!source || sizeOf(source) <= 0) continue;
+    try { fs.copyFileSync(source, helper); return true; } catch { /* 占用中就下次启动再补 */ }
+  }
+  return false;
+}
+//End By leewheel
+
 /** 退出前调用：把自更新下载好的新版换上去（不拉新窗口，下次打开就是新版）。
  *  这里必须在本进程真正退出**之前** spawn，takeover 会等 PID 消失后再改名覆盖。 */
+//By leewheel 2026年11月12日 优先用独立小助手做替换（毫秒级起来、直接改名、带 launcher-replace.log 日志）；
+// 助手不在时才退回"新便携版自己当替换器"（要先解压 %TEMP%，慢且易被打断——老大反馈的"太慢/没下文"）。
 function swapOnQuit(root, selfPid) {
   try {
     const meta = readStagedMeta(root);
     if (!meta?.size) return false;
     const staged = path.join(root, STAGED_NAME);
     if (sizeOf(staged) !== meta.size) return false;
+    if (spawnReplaceHelper(root, selfPid, { restart: false })) return true;
     return spawnTakeover(staged, selfPid, { restart: false });
   } catch { return false; }
 }
+//End By leewheel
 
-module.exports = { stageLauncher, spawnTakeover, spawnReplaceHelper, performTakeover, cleanupLegacy, ensureStagedSwap, swapOnQuit, readStagedMeta, isRunning, STAGED_NAME, LEGACY_NAME, HELPER_NAME, TAKEOVER_FLAG };
+module.exports = { stageLauncher, spawnTakeover, spawnReplaceHelper, performTakeover, cleanupLegacy, ensureStagedSwap, ensureHelper, swapOnQuit, readStagedMeta, isRunning, STAGED_NAME, LEGACY_NAME, HELPER_NAME, TAKEOVER_FLAG };
