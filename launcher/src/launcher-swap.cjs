@@ -2,177 +2,178 @@
 //By leewheel 2026年11月6日 启动器替换自己（不用 PowerShell：本机实测 detached 起不来，且中文路径易出错）。
 // 🔴 正在运行的 exe 在 Windows 上既不能改名也不能覆盖（运行镜像不共享删除权限），老大实测：
 //    EBUSY: resource busy or locked, copyfile ... -> CoA启动器.exe
-// 做法：
-//  1) 更新时先把新 exe 落成 CoA启动器.new.exe；
-//  2) 用它自己当“替换器”：spawn(CoA启动器.new.exe --takeover=<旧PID>)，它等旧进程退出后
-//     把旧 exe 改名 .old.exe、把自己**复制**成 CoA启动器.exe（复制运行中的自己是读，允许），然后退出；
-//  3) 下次打开就是新版；上一轮的 .old.exe 由下次启动清理。
+//By leewheel 2026年11月15日 替换**只有一条路**：<root>\Update\Update.exe（见下方独立更新器段）。
+// 旧的 launcher-replace.exe 助手、以及“新 exe 自己带 --takeover 等旧进程”的自替换，
+// 全部删除——三套逻辑并存只会互相抢同一个文件名，谁也换不干净（老大原话：
+// “怎么还有 launcher-replace.exe”，这条必须彻底断掉）。
+// 现在的流程：
+//  1) 新版 exe 先落成 CoA启动器.new.exe（下载校验通过才落）；
+//  2) 拉起 Update.exe：它按映像路径强杀启动器整棵进程树（含 portable 外壳与 %TEMP% 内层）、
+//     用“能否独占打开目标文件”确认句柄真释放，再改名覆盖，最后按 --restart 决定是否拉起；
+//  3) 上一轮的 .old.exe、以及老版本遗留的 launcher-replace.exe 由下次启动清理。
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const STAGED_NAME = 'CoA启动器.new.exe';
 const LEGACY_NAME = 'CoA启动器.old.exe';
-const HELPER_NAME = 'launcher-replace.exe';
-const TAKEOVER_FLAG = '--takeover=';
+//By leewheel 2026年11月15日 老版本的替换助手文件名：只用于启动时清理残留，不再有任何调用。
+const LEGACY_HELPER_NAME = 'launcher-replace.exe';
+//By leewheel 2026年11月15日 独立更新器（LauncherUpdate\Update.exe）：见下方 ensureUpdater / spawnUpdater
+// ⚠️ 为什么不是 Update\：<root>\Update\ 是**更新包临时目录**（下载、解压、装完删除），
+// 把更新器放进去会被当成临时文件一起清掉（2026-11-15 实弹：更新完 Update\Update.exe 就没了）。
+// 换到独立的 LauncherUpdate\，语义清楚、永不与更新包抢目录。
+const UPDATER_DIR = 'LauncherUpdate';
+const UPDATER_NAME = 'Update.exe';
+const LEGACY_UPDATER_DIR = 'Update';   // 老位置，只用于启动时清理
+
+/** <root>\LauncherUpdate\Update.exe */
+function updaterPath(root) {
+  return path.join(root, UPDATER_DIR, UPDATER_NAME);
+}
+
+/** 确保 <root>\LauncherUpdate\Update.exe 就位：打包版从 resources 拷，开发态从 tools 拷。
+ *  每次启动都核一次大小，被删了/被截断了就补回来——更新器本身丢了，自更新就没法装了。 */
+function ensureUpdater(root) {
+  const dest = updaterPath(root);
+  const candidates = [
+    path.join(process.resourcesPath || '', UPDATER_NAME),
+    path.join(__dirname, '..', 'tools', UPDATER_NAME),
+  ];
+  const source = candidates.find(item => item && sizeOf(item) > 0);
+  if (!source) return false;
+  // 老位置的副本没有任何用处（那里是更新包临时目录），启动时顺手清掉
+  try { fs.rmSync(path.join(root, LEGACY_UPDATER_DIR, UPDATER_NAME), { force: true }); } catch { /* 占着就下次 */ }
+  // 已经就位且大小一致就不动（更新器可能正在运行，覆盖会失败，没必要试）
+  if (sizeOf(dest) === sizeOf(source)) return true;
+  try {
+    fs.mkdirSync(path.join(root, UPDATER_DIR), { recursive: true });
+    fs.copyFileSync(source, dest);
+    return sizeOf(dest) === sizeOf(source);
+  } catch {
+    return sizeOf(dest) > 0;   // 拷不动但老的还在，也算能用
+  }
+}
+
+/**
+ * 组装 Update.exe 的命令行（纯函数，方便单测逐条钉住参数）。
+ * 有 staged（已下好并校验过的文件）就带 --staged，让它跳过下载直接换；
+ * 没有才带 --url 让它自己下 —— 两条路都走同一个更新器。
+ */
+function updaterArgs(root, { url = '', sha256 = '', size = 0, version = '', staged = '', restart = false, waitMs = 1200, proxy = '', pid = process.pid } = {}) {
+  const args = [
+    `--target=${path.join(root, 'CoA启动器.exe')}`,
+    `--root=${root}`,
+    `--pid=${pid}`,
+    `--restart=${restart ? 1 : 0}`,
+    `--wait-ms=${waitMs}`,
+  ];
+  if (version) args.push(`--version=${version}`);
+  if (sha256) args.push(`--sha256=${sha256}`);
+  if (size) args.push(`--size=${size}`);
+  if (proxy) args.push(`--proxy=${proxy}`);
+  if (staged) args.push(`--staged=${staged}`);
+  else if (url) args.push(`--url=${url}`);
+  return args;
+}
+
+/**
+ * 拉起独立更新器——这是自更新唯一的执行入口。
+ * 它自己会：强杀启动器整棵进程树（含 portable 外壳与 %TEMP% 内层）→ 确认文件句柄释放 →
+ * 下载（或用 --staged 复用已下好的）→ 校验 SHA256 → 替换 → 重启。
+ *
+ * 关键点：detached + unref。启动器紧接着就会 app.exit(0)，更新器必须活下来继续干活。
+ * 启动器是 portable 打包，玩家双击的 exe 只是自解压外壳，真正在跑的是 %TEMP% 里的内层；
+ * 外壳在内层退出后还要清理临时目录、期间一直映射着 CoA启动器.exe —— 所以“等进程退出再换”
+ * 必须能把外壳也强杀掉，这正是旧方案（只等内层 PID）做不到的事。
+ */
+function spawnUpdater(root, options = {}) {
+  const exe = updaterPath(root);
+  if (sizeOf(exe) <= 0) return false;
+  const usableStaged = options.staged && sizeOf(options.staged) > 0 ? options.staged : '';
+  if (!usableStaged && !options.url) return false;
+  const args = updaterArgs(root, { ...options, staged: usableStaged });
+  try {
+    const child = spawn(exe, args, { cwd: root, detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+//End By leewheel
 
 function sizeOf(file) {
   try { return fs.statSync(file).size; } catch { return -1; }
 }
 
-function isRunning(pid) {
-  if (!pid || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
+//By leewheel 2026年11月15日 这里原来有 stageLauncher / spawnTakeover / spawnReplaceHelper 三个函数，
+// 分别负责“新版落位”“新 exe 自替换”“launcher-replace.exe 助手替换”。三套并存互相抢文件，
+// 全部删除，替换只由 Update.exe 完成（见本文件“独立更新器”段）。
+//End By leewheel
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+//By leewheel 2026年11月15日 performTakeover（新 exe 自己当替换器：等旧 PID → 改名 → 复制自己）也已删除。
+// 它只等“内层 PID”，而玩家双击的 portable 外壳还在映射目标文件 → 必然 EBUSY，
+// 这正是老大说的“完全做不到稳定自动替换”。替换独占交给 Update.exe。
+//End By leewheel
 
-/** 把包里的新 exe 落成 启动器.new.exe */
-function stageLauncher(root, sourceFile) {
-  const staged = path.join(root, STAGED_NAME);
-  fs.copyFileSync(sourceFile, staged);
-  return staged;
-}
-
-/** 启动“替换器”（就是新 exe 自己），它负责等旧进程退出后替换 */
-function spawnTakeover(stagedPath, oldPid, { restart = false } = {}) {
-  try {
-    const args = [`${TAKEOVER_FLAG}${oldPid}`];
-    if (restart) args.push('--restart');
-    const child = spawn(stagedPath, args, { stdio: 'ignore', windowsHide: true });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** 用独立助手做替换（常规做法：旧进程退出后改名，原文件不会被占用）：
- *  launcher-replace.exe <旧PID> <新exe> <目标exe> [restart]
- * 助手是独立的小 exe，它不动自己，只给别的文件改名，所以不会撞 EBUSY。 */
-function spawnReplaceHelper(root, oldPid, { restart = false } = {}) {
-  const helper = path.join(root, HELPER_NAME);
-  if (sizeOf(helper) <= 0 || sizeOf(path.join(root, STAGED_NAME)) <= 0) return false;
-  try {
-    const child = spawn(helper, [String(oldPid || 0), STAGED_NAME, 'CoA启动器.exe', restart ? '1' : '0'], { cwd: root, stdio: 'ignore', windowsHide: true });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** 替换器本体：等旧进程退出 → 旧 exe 改名 → 用**便携版原文件**（不是 process.execPath！
- *  便携版会把自己解压到 %TEMP% 再运行，process.execPath 指向的是临时目录里的内层 exe，
- *  复制它会把启动器换成“没有资源目录”的裸 exe）覆盖目标位置，然后删掉 .new.exe。 */
-//By leewheel 2026年11月9日 restart：替换成功后把新 exe 拉起来。
-// 在线更新点「重启并安装」时用得上——不然玩家会看到启动器自己消失，以为崩了。
-// ⚠️ 只给"玩家主动点更新"这一条路径用；启动时发现残留 .new.exe 的自动替换不能 restart，
-//   否则会在玩家刚关掉启动器时凭空弹出一个窗口。
-async function performTakeover(root, oldPid, { timeoutMs = 10 * 60 * 1000, restart = false } = {}) {
-  const target = path.join(root, 'CoA启动器.exe');
-  const legacy = path.join(root, LEGACY_NAME);
-  const source = path.join(root, STAGED_NAME);
-  const deadline = Date.now() + timeoutMs;
-  while (isRunning(oldPid) && Date.now() < deadline) await sleep(500);
-  const metaFile = path.join(root, 'CoA启动器.new.json');
-  //By leewheel 2026年11月12日 重试不再固定 20 次（10 秒）：玩家中途重新打开启动器（目标被占用）
-  // 或杀软短暂握住句柄，10 秒试不完就直接放弃，留下 .new.exe"没下文"——改成一直试到超时，
-  // 文件一空闲就换上；替换进程是独立的，多等不影响玩家用旧版。
-  for (let attempt = 0; Date.now() < deadline; attempt++) {
-    try {
-      if (sizeOf(source) <= 0) return false;
-      fs.rmSync(legacy, { force: true });
-      if (fs.existsSync(target)) fs.renameSync(target, legacy);
-      fs.copyFileSync(source, target);
-      try { fs.rmSync(source, { force: true }); } catch { /* 便携版原文件若还占着，下次启动再清 */ }
-      try { fs.rmSync(metaFile, { force: true }); } catch { /* 同上 */ }
-      if (restart) {
-        // 新 exe 已经就位：等 1 秒让文件句柄彻底释放，再拉起（不带 --takeover，走正常启动）
-        await sleep(1000);
-        try {
-          const child = spawn(target, [], { cwd: root, detached: true, stdio: 'ignore', windowsHide: false });
-          child.unref();
-        } catch { /* 拉不起来时玩家手动双击也一样 */ }
-      }
-      return true;
-    } catch {
-      await sleep(500);
-    }
-  }
-  return false;
-}
-
-/** 启动时清理上一轮留下的 .old.exe（删不掉就留着，不影响运行） */
+/** 启动时清理：上一轮留下的 .old.exe、老版本遗留的替换助手（删不掉就留着，不影响运行） */
 function cleanupLegacy(root) {
   try { fs.rmSync(path.join(root, LEGACY_NAME), { force: true }); } catch { /* 占用中 */ }
+  //By leewheel 2026年11月15日 老玩家根目录里还躺着 launcher-replace.exe：替换机制已经拆掉，
+  // 这个文件不再有任何用处，启动时顺手清掉，别让它一直挂在发布目录里。
+  try { fs.rmSync(path.join(root, LEGACY_HELPER_NAME), { force: true }); } catch { /* 占用中就下次 */ }
 }
 
-/** 启动时：如果有已落地的 new.exe，优先用独立助手换；没有助手时退回“新 exe 当替换器” */
+/** 已落地新版的元数据（下载落位时写入） */
 //By leewheel 2026年11月9日 就绪判据改成**先看元数据**：
 // 在线更新落位时会写 CoA启动器.new.json（版本 + size + sha256）。只有元数据里的 size 与文件实际大小一致
 // 才算“真就绪”；大小对不上（下载中断、磁盘出错、被别的东西覆盖）就认定是坏文件，直接删掉重下，
 // 绝不再把半截 exe 顶上去——那会让启动器直接打不开，玩家只能重下整个 375MB。
-//By leewheel 2026年11月9日 自更新落位的包（有元数据）**不在启动时换**，改到退出时换（见 swapOnQuit）：
-// 启动时 spawn 一个新 exe 等着本进程退出，而玩家可能要用上几个小时，那个进程就白等成一个僵尸；
-// 而且启动瞬间替换意味着“刚打开就被换掉”，日志/提示都没法解释。退出时换最干净：
-// 玩家关掉启动器 → 换好 → 下次打开就是新版。
 function readStagedMeta(root) {
   try { return JSON.parse(fs.readFileSync(path.join(root, 'CoA启动器.new.json'), 'utf8')); } catch { return null; }
 }
 
-function ensureStagedSwap(root, selfPid) {
+/** 启动时核对已落地的新版：坏包/半截包直接删掉重下，正常的留着等退出时由 Update.exe 换。
+ *  ⚠️ 这里**只做校验与清理**，绝不拉起任何替换进程——启动瞬间替换等于“刚打开就被换掉”，
+ *  玩家看到的只有窗口闪一下，日志也无从解释；退出时换最干净。 */
+function pruneStaged(root) {
   const staged = path.join(root, STAGED_NAME);
   const target = path.join(root, 'CoA启动器.exe');
   if (sizeOf(staged) <= 0) return false;
   const meta = readStagedMeta(root);
-  if (meta?.size && sizeOf(staged) !== meta.size) {
+  const drop = () => {
     try { fs.rmSync(staged, { force: true }); } catch { /* 删不掉就先留着 */ }
     try { fs.rmSync(path.join(root, 'CoA启动器.new.json'), { force: true }); } catch { /* 同上 */ }
     return false;
-  }
-  // 自更新落位的包：交给 swapOnQuit（退出时换），这里什么都不做
+  };
+  if (meta?.size && sizeOf(staged) !== meta.size) return drop();
+  // 自更新落位的包：交给 swapOnQuit（退出时换）
   if (meta?.size) return false;
-  // 没有元数据的是老流程（内容更新包里带的 exe）：沿用原来的“大小不同才换”
-  if (sizeOf(staged) === sizeOf(target)) { try { fs.rmSync(staged, { force: true }); } catch { /* 删不掉就算了 */ } return false; }
-  if (spawnReplaceHelper(root, selfPid)) return true;
-  return spawnTakeover(staged, selfPid, { restart: false });
-}
-
-/** 启动时：把随启动器打包的替换助手补到根目录（老的只有内容更新包才会带进来；
- *  纯自更新安装的玩家根目录里没有助手，退出替换只能退回"385MB 便携版自己当替换器"，
- *  它要先解压 %TEMP% 才能干活，又慢又容易被杀软/重开打断——老大 2026-11-12 反馈的就是这个）。 */
-//By leewheel 2026年11月12日
-function ensureHelper(root) {
-  const helper = path.join(root, HELPER_NAME);
-  if (sizeOf(helper) > 0) return true;
-  // 打包版：electron-builder extraResources 落在 resources\；开发态：launcher\tools\
-  const candidates = [
-    path.join(process.resourcesPath || '', HELPER_NAME),
-    path.join(__dirname, '..', 'tools', HELPER_NAME),
-  ];
-  for (const source of candidates) {
-    if (!source || sizeOf(source) <= 0) continue;
-    try { fs.copyFileSync(source, helper); return true; } catch { /* 占用中就下次启动再补 */ }
-  }
+  // 没有元数据的是老流程遗留（内容更新包里带的 exe）：与目标同尺寸说明早就换过了，删掉
+  if (sizeOf(staged) === sizeOf(target)) return drop();
   return false;
 }
 //End By leewheel
 
 /** 退出前调用：把自更新下载好的新版换上去（不拉新窗口，下次打开就是新版）。
- *  这里必须在本进程真正退出**之前** spawn，takeover 会等 PID 消失后再改名覆盖。 */
-//By leewheel 2026年11月12日 优先用独立小助手做替换（毫秒级起来、直接改名、带 launcher-replace.log 日志）；
-// 助手不在时才退回"新便携版自己当替换器"（要先解压 %TEMP%，慢且易被打断——老大反馈的"太慢/没下文"）。
-function swapOnQuit(root, selfPid) {
+ *  唯一入口是 <root>\Update\Update.exe——它在本进程退出后强杀整棵进程树、确认句柄释放再替换。 */
+//By leewheel 2026年11月15日 旧的“助手替换 / 新 exe 自替换”两条兜底已删除：
+// 兜底看着安全，实际是三套逻辑抢同一个文件名，反而让替换永远不稳。
+function swapOnQuit(root) {
   try {
     const meta = readStagedMeta(root);
     if (!meta?.size) return false;
     const staged = path.join(root, STAGED_NAME);
     if (sizeOf(staged) !== meta.size) return false;
-    if (spawnReplaceHelper(root, selfPid, { restart: false })) return true;
-    return spawnTakeover(staged, selfPid, { restart: false });
+    if (!ensureUpdater(root)) return false;
+    return spawnUpdater(root, { staged, sha256: meta.sha256 || '', size: meta.size, version: meta.version || '', restart: false });
   } catch { return false; }
 }
 //End By leewheel
 
-module.exports = { stageLauncher, spawnTakeover, spawnReplaceHelper, performTakeover, cleanupLegacy, ensureStagedSwap, ensureHelper, swapOnQuit, readStagedMeta, isRunning, STAGED_NAME, LEGACY_NAME, HELPER_NAME, TAKEOVER_FLAG };
+module.exports = {
+  cleanupLegacy, pruneStaged, swapOnQuit, readStagedMeta,
+  STAGED_NAME, LEGACY_NAME,
+  //By leewheel 2026年11月15日 独立更新器（Update\Update.exe）：替换的唯一入口
+  UPDATER_DIR, UPDATER_NAME, updaterPath, ensureUpdater, updaterArgs, spawnUpdater };

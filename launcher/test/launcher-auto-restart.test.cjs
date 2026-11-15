@@ -79,8 +79,10 @@ test('下载完自动强制重启：倒计时归零 → 拉起替换进程（--r
   const exits = [];
   const quits = [];
   const spawns = [];
-  const real = launcherSwap.spawnTakeover;
-  launcherSwap.spawnTakeover = (file, pid, options) => { spawns.push({ file, pid, options }); return true; };
+  //By leewheel 2026年11月15日 自更新统一由独立更新器 Update\Update.exe 执行（强杀进程树 + 替换 + 重启），
+  // 替换只此一条路：桩住它就能断言“到底有没有拉起替换、带没带 restart”。
+  const realUpdater = launcherSwap.spawnUpdater;
+  launcherSwap.spawnUpdater = (root, options) => { spawns.push({ file: options.staged, pid: process.pid, options }); return true; };
   try {
     const updates = createLauncherUpdates(fakeApp({ exits, quits }), {
       currentVersion: CURRENT, root, repo: 'leewheel/squidbots-launcher',
@@ -109,7 +111,7 @@ test('下载完自动强制重启：倒计时归零 → 拉起替换进程（--r
     assert.deepEqual(exits, [0], '本进程要 app.exit(0) 让位');
     assert.deepEqual(quits, [], '绝不能走 app.quit()：before-quit 里有停服逻辑，会把玩家的世界服关掉');
   } finally {
-    launcherSwap.spawnTakeover = real;
+    launcherSwap.spawnUpdater = realUpdater;
   }
 });
 
@@ -119,8 +121,10 @@ test('正在准备数据时不硬来：横幅如实说在等，30 秒后自己�
   const exe = fakeExe();
   const exits = [];
   const spawns = [];
-  const real = launcherSwap.spawnTakeover;
-  launcherSwap.spawnTakeover = (file, pid, options) => { spawns.push({ file, options }); return true; };
+  //By leewheel 2026年11月15日 自更新统一由独立更新器 Update\Update.exe 执行（强杀进程树 + 替换 + 重启）；
+  // 替换只此一条路，桩住它就能断言“到底有没有拉起替换、带没带 restart”。
+  const realUpdater = launcherSwap.spawnUpdater;
+  launcherSwap.spawnUpdater = (root, options) => { spawns.push({ file: options.staged, pid: process.pid, options }); return true; };
   let busy = true;
   try {
     const updates = createLauncherUpdates(fakeApp({ exits }), {
@@ -143,7 +147,7 @@ test('正在准备数据时不硬来：横幅如实说在等，30 秒后自己�
     assert.equal(spawns.length, 1, '空下来之后必须自己把重启补上，不用玩家再点');
     assert.equal(spawns[0].options.restart, true);
   } finally {
-    launcherSwap.spawnTakeover = real;
+    launcherSwap.spawnUpdater = realUpdater;
   }
 });
 
@@ -152,8 +156,10 @@ test('世界服在跑时不算失败：一直等，停服后 60 秒内自己把�
   const root = tmpDir();
   const exe = fakeExe();
   const spawns = [];
-  const real = launcherSwap.spawnTakeover;
-  launcherSwap.spawnTakeover = (file, pid, options) => { spawns.push({ file, options }); return true; };
+  //By leewheel 2026年11月15日 自更新统一由独立更新器 Update\Update.exe 执行（强杀进程树 + 替换 + 重启）；
+  // 替换只此一条路，桩住它就能断言“到底有没有拉起替换、带没带 restart”。
+  const realUpdater = launcherSwap.spawnUpdater;
+  launcherSwap.spawnUpdater = (root, options) => { spawns.push({ file: options.staged, pid: process.pid, options }); return true; };
   let worldRunning = true;
   const refuse = () => {
     const error = new Error('世界服正在运行，重启启动器会让它掉线');
@@ -183,7 +189,7 @@ test('世界服在跑时不算失败：一直等，停服后 60 秒内自己把�
     assert.equal(spawns.length, 1);
     assert.equal(spawns[0].options.restart, true);
   } finally {
-    launcherSwap.spawnTakeover = real;
+    launcherSwap.spawnUpdater = realUpdater;
   }
 });
 

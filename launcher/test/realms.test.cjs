@@ -13,7 +13,8 @@ function repack({ knowsRealms = true, version = '2.6' } = {}) {
   fs.mkdirSync(path.join(configs, 'modules'), { recursive: true });
   fs.writeFileSync(path.join(root, 'CoA-Bots', 'Core', 'worldserver.exe'), '');
   fs.writeFileSync(path.join(root, 'CoA-Bots', 'release.json'), JSON.stringify({ version }));
-  fs.writeFileSync(path.join(root, 'CoA-Bots', 'coa_common.py'), knowsRealms ? 'MYSQL_DATA_KNOWN = {"acore_characters_wildcard", "acore_characters_reborn", "acore_characters_dawnrise"}\n' : 'MYSQL_DATA_KNOWN = {"acore_characters"}\n');
+  //By leewheel 20261115 第 5 个国度 living 也要求更新工具认识它的库（与真实 coa_common.py 一致）
+  fs.writeFileSync(path.join(root, 'CoA-Bots', 'coa_common.py'), knowsRealms ? 'MYSQL_DATA_KNOWN = {"acore_characters_wildcard", "acore_characters_reborn", "acore_characters_dawnrise", "acore_characters_living"}\n' : 'MYSQL_DATA_KNOWN = {"acore_characters"}\n');
   fs.writeFileSync(path.join(configs, 'worldserver.conf'), [
     'RealmID = 1', 'WorldServerPort = 8085', 'Ra.Port = 3443', 'SOAP.Enabled = 1', 'Rate.XP.Kill = 1',
     'CharacterCreating.Disabled.ClassMask = 0', 'LogsDir = "C:/x/Core/Logs"',
@@ -34,7 +35,8 @@ const value = (file, key) => new RegExp(`^${key.replace(/\./g, '\\.')}\\s*=\\s*(
 function realmFolder(root, key, saved) {
   const dir = path.join(root, 'Royaumes', key);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'realm.json'), JSON.stringify({ key, id: { wildcard: 2, reborn: 3, dawnrise: 4 }[key], name: key, worldPort: 8185, raPort: 3543, autostart: true, ...saved }));
+  //By leewheel 20261115 补第 5 个国度 living 的 RealmID 映射
+  fs.writeFileSync(path.join(dir, 'realm.json'), JSON.stringify({ key, id: { wildcard: 2, reborn: 3, dawnrise: 4, living: 5 }[key], name: key, worldPort: 8185, raPort: 3543, autostart: true, ...saved }));
   return dir;
 }
 
@@ -44,7 +46,8 @@ test('without any realm, the server calls change nothing', async () => {
   await realms.stopAll(root);
   assert.deepStrictEqual(await realms.startMarked(root), []);
   const status = await realms.status(root, { live: false });
-  assert.deepStrictEqual(status.realms.map(realm => realm.state), ['absent', 'absent', 'absent']);
+  //By leewheel 20261115 国度由 3 个变 4 个（新增 living）
+  assert.deepStrictEqual(status.realms.map(realm => realm.state), ['absent', 'absent', 'absent', 'absent']);
   assert.ok(!fs.existsSync(path.join(root, 'Royaumes')));
   assert.strictEqual(snapshot(root), before);
 });
@@ -210,19 +213,23 @@ test('a switched-off realm never starts, not even with the server', async () => 
 
 test('start with the server: a realm waits its turn, and is left stopped when memory is too low', async () => {
   const root = repack();
+  //By leewheel 2026年11月15日 端口随机：默认端口（8185…）在本机真的开着世界服时，
+  // 这些国度会被正确判成「端口被其他程序占用」，测试就跟着环境飘。这里避开真实端口。
+  let port = 45000 + (process.pid % 500) * 4;
   for (const key of ['wildcard', 'reborn', 'dawnrise']) {
-    const dir = realmFolder(root, key, { autostart: true });
+    const dir = realmFolder(root, key, { autostart: true, worldPort: port += 2, raPort: port += 2 });
     fs.mkdirSync(path.join(dir, 'configs'));
     fs.writeFileSync(path.join(dir, 'configs', 'worldserver.conf'), '');
     fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ 'playerbots.conf': { 'AiPlayerbot.MaxRandomBots': '150' } }));
   }
   await realms.queueMarked(root);
-  let list = (await realms.status(root, { live: false })).realms;
+  //By leewheel 20261115 living 是第 5 个国度（本测试没建它），只看已建的三个国度
+  let list = (await realms.status(root, { live: false })).realms.filter(realm => realm.state !== 'absent');
   assert.deepStrictEqual(list.map(realm => `${realm.state}:${realm.after}`), ['queued:coa', 'queued:coa', 'queued:coa']);
   assert.strictEqual(list[0].firstStart, true);
   const failed = await realms.startMarked(root, { freeMb: () => 1000 });
   assert.deepStrictEqual(failed.map(item => item.error), ['memory', 'memory', 'memory']);
-  list = (await realms.status(root, { live: false })).realms;
+  list = (await realms.status(root, { live: false })).realms.filter(realm => realm.state !== 'absent');
   assert.deepStrictEqual(list.map(realm => realm.state), ['stopped', 'stopped', 'stopped']);
   assert.deepStrictEqual(list[0].skipped, { reason: 'memory', need: realms.neededMb(150), free: 1000 });
   assert.strictEqual(realms.neededMb(300), 6600);

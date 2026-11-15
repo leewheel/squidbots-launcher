@@ -924,6 +924,7 @@
   "realms.botsHint": "当前游戏中的机器人数 / 此国度设定的数量。",
   "realms.botsSoon": "暂无机器人：将在后续版本中加入。",
   "realms.coaText": "经典国度：Conquest of Azeroth 的职业，你现有的角色和机器人。",
+  "realms.livingText": "鲜活世界服：像官方新开服一样开门——角色从零开始，1000 个机器人跟着玩家一起长大，公会、入侵与经济从第一天慢慢长起来。",
   "realms.confCoa": "这些值也适用于其他国度，各国度自行修改的项除外。",
   "realms.confRealm": "标为“同 CoA”的值沿用 Conquest of Azeroth。修改后即成为此国度自己的值；锁形图标表示其游戏模式的规则。",
   "realms.console": "控制台",

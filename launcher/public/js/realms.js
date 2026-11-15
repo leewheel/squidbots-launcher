@@ -26,6 +26,11 @@ const REALM_EMBLEMS = {
     <path d="M14 42a18 18 0 0 1 36 0Z" fill="url(#re-fp)"/>
     <path d="M32 10v8M15 17l5 5.5M49 17l-5 5.5M7 31h7M50 31h7" stroke="url(#re-fp)" stroke-width="2.6" stroke-linecap="round"/>
     <path d="M6 47h52M14 53h36" stroke="url(#re-fp)" stroke-width="2.6" stroke-linecap="round" opacity=".6"/></svg>`,
+  //By leewheel 20261115 第 5 个国度 Malfurion（鲜活世界服）徽标：新月托一片生命之叶
+  living: `<svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="re-lv" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#2f9e5f"/><stop offset="1" stop-color="#a8f0b8"/></linearGradient></defs>
+    <path d="M40 12a20 20 0 1 0 0 40 22 22 0 0 1 0-40Z" fill="url(#re-lv)"/>
+    <path d="M25 45c10-1 17-8 18-19-11 1-18 8-18 19Z" fill="#fff6d8" opacity=".92"/>
+    <path d="M25 46c3.5-6 7.5-10.5 12.5-14" stroke="#2f9e5f" stroke-width="2" stroke-linecap="round"/></svg>`,
 };
 
 const REALMS_INFO = {
@@ -33,11 +38,14 @@ const REALMS_INFO = {
   wildcard: { color: '#c27bff', title: 'Wildcard', sub: 'Darkmoon', textKey: 'realms.wildcardText', text: 'One class, the Hero: its spells and talents are drawn at random. A new game every time.' },
   reborn: { color: '#ff8a3d', title: 'Warcraft Reborn', sub: 'Bronzebeard', textKey: 'realms.rebornText', text: 'The ten original classes, reworked: classic Warcraft, plus.' },
   dawnrise: { color: '#5cc8ff', title: 'Free Pick', sub: 'Dawnrise', textKey: 'realms.dawnriseText', text: 'One class, the Hero: choose every spell and talent yourself, from every class.', experimental: true, noBots: true, since: '2.8.2' },
+  //By leewheel 20261115 第 5 个国度：Malfurion（鲜活世界服）——按官方新开服的样子开门，
+  // 角色从零开始，机器人跟着玩家一起成长，公会/入侵/经济从第一天慢慢长起来。
+  living: { color: '#7ddc8a', title: 'Malfurion', sub: 'Living World', textKey: 'realms.livingText', text: 'A new world opening like an official server: fresh characters, 1000 bots that level up with the players, guilds, invasions, and an auction house that fills up as the world grows.', since: '3.0' },
 };
 const realmEmblem = (key, size = 56) => `<span class="realm-emblem realm-${key} s${size}">${REALM_EMBLEMS[key] || ''}</span>`;
 const realmTitle = key => REALMS_INFO[key]?.title || key;
 // Short names, for the lights of the home page.
-const realmShort = key => ({ coa: 'CoA', wildcard: 'Wildcard', reborn: 'Reborn', dawnrise: 'Free Pick' }[key] || key);
+const realmShort = key => ({ coa: 'CoA', wildcard: 'Wildcard', reborn: 'Reborn', dawnrise: 'Free Pick', living: 'Malfurion' }[key] || key);
 
 async function loadRealms() {
   const before = !!App.state.realms?.available;
@@ -109,7 +117,7 @@ function realmCard(realm, busy) {
       : r.supported ? t('realms.needNewer', 'Comes with CoA Bots 2.6: its update tool must know the databases of this realm.')
       : t('realms.needBots', 'Needs CoA Bots in this server.');
     return `<article class="realm-card realm-${realm.key} absent">${head}
-      <ul class="realm-promise"><li>${icon('user')}${esc(t('realms.ownChars', 'Its own characters (your CoA characters stay where they are)'))}</li>${info.noBots ? '' : `<li>${icon('bot')}${esc(t('realms.ownBots', 'Its own bots, {n} to start with', { n: 150 }))}</li>`}<li>${icon('key')}${esc(t('realms.sameAccount', 'The same game accounts'))}</li></ul>
+      <ul class="realm-promise"><li>${icon('user')}${esc(t('realms.ownChars', 'Its own characters (your CoA characters stay where they are)'))}</li>${info.noBots ? '' : `<li>${icon('bot')}${esc(t('realms.ownBots', 'Its own bots, {n} to start with', { n: realm.key === 'living' ? 1000 : 150 }))}</li>`}<li>${icon('key')}${esc(t('realms.sameAccount', 'The same game accounts'))}</li></ul>
       <div class="realm-buttons">${creatable ? `<button class="button primary small wide" data-action="realm-create" data-key="${realm.key}" ${busy ? 'disabled' : ''}>${icon('play')}${esc(working ? t('realms.creating', 'Switching on…') : t('realms.activate', 'Switch on'))}</button>` : `<small class="muted">${esc(why)}</small>`}</div>
       <footer class="realm-more"><small class="muted">${creatable ? esc(working && App.state.realmLine ? App.state.realmLine : t('realms.createTime', 'About a minute.')) : ''}</small></footer>
     </article>`;
@@ -354,7 +362,7 @@ async function realmCardDialog(key) {
   App.state.cardsData = data;
   $('#card-image').addEventListener('change', event => { $('#card-title-note').hidden = !titled(event.target.value); });
 }
-const CARD_DEFAULTS = { coa: { mode: 11, image: 'Voljin', description: 13977864, subtitle: '' }, wildcard: { mode: 6, image: 'Darkmoon', description: 13977904, name: 'Darkmoon', subtitle: '' }, reborn: { mode: 12, image: 'Bronzebeard', description: 1397607, name: 'Bronzebeard', subtitle: 'Warcraft Reborn' }, dawnrise: { mode: 9, image: 'Dawnrise', description: 13977920, name: 'Dawnrise', subtitle: 'Free Pick' } };
+const CARD_DEFAULTS = { coa: { mode: 11, image: 'Voljin', description: 13977864, subtitle: '' }, wildcard: { mode: 6, image: 'Darkmoon', description: 13977904, name: 'Darkmoon', subtitle: '' }, reborn: { mode: 12, image: 'Bronzebeard', description: 1397607, name: 'Bronzebeard', subtitle: 'Warcraft Reborn' }, dawnrise: { mode: 9, image: 'Dawnrise', description: 13977920, name: 'Dawnrise', subtitle: 'Free Pick' }, living: { mode: 11, image: 'Malfurion', description: 13977864, name: '', subtitle: 'New server' } };
 Object.assign(App.actions, {
   'realm-card': button => guard(() => realmCardDialog(button.dataset.key), button),
   'realm-card-default': button => {

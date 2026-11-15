@@ -6,7 +6,7 @@
 //   1) 查版本：国内 CDN（jsDelivr）→ 镜像反代 GitHub API → GitHub API 直连，三条通道，谁先通用谁；
 //   2) 下载：镜像前缀优先（gh-proxy / ghfast …），支持断点续传（Range），带“没动静”看门狗；
 //   3) 校验：sha256（release 资产的 digest / 发布说明里的 sha256 行 / 同名 .sha256 资产）+ PE 头 + 体积；
-//   4) 自替换：落成 <启动器目录>\CoA启动器.new.exe，再由**新 exe 自己**带 --takeover=<旧PID> 等旧进程退出后换名覆盖。
+//   4) 自替换：落成 <启动器目录>\CoA启动器.new.exe，再由 <启动器目录>\Update\Update.exe 强杀整棵进程树后覆盖。
 //      （运行中的 exe 在 Windows 上既不能改名也不能覆盖，必须由外部程序做，见 launcher-swap.cjs）
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');

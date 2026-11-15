@@ -9,7 +9,8 @@
 //   · Release title 固定 COA-LAUNCHER-<版本号>，资产就是 CoA-Launcher-<版本号>.exe
 //   · 启动时查一次，有新版就**自动下载**，下载好提示「重启并安装」
 //   · 更新连接以国内镜像为主力（jsDelivr 清单 + gh-proxy/ghfast 等反代），GitHub 直连只作兜底
-//   · 自替换必须可靠：新 exe 落成 CoA启动器.new.exe，由它自己带 --takeover 等旧进程退出后覆盖
+//   · 自替换必须可靠：新 exe 落成 CoA启动器.new.exe，由 <root>\Update\Update.exe 强杀整棵进程树后覆盖
+//     （2026-11-15 老大定：替换只留这一条路，助手与自替换兜底全部删除）
 const fs = require('node:fs');
 const path = require('node:path');
 const selfUpdate = require('./launcher-selfupdate.cjs');
@@ -108,9 +109,21 @@ function createLauncherUpdates(app, options = {}, notify = () => {}, canRestart 
       await canRestart();
       const file = path.join(root, launcherSwap.STAGED_NAME);
       if (!fs.existsSync(file)) throw new Error('新版文件不见了，请重新检查更新');
-      //By leewheel 2026年11月12日 优先独立小助手（毫秒级起来、直接改名）；不在时才退回"新便携版自己当替换器"
-      if (!launcherSwap.spawnReplaceHelper(root, process.pid, { restart: true }) &&
-          !launcherSwap.spawnTakeover(file, process.pid, { restart: true })) throw new Error('无法启动替换程序');
+      //By leewheel 2026年11月15日 替换只交给独立更新器 Update\Update.exe：
+      // 它按映像路径强杀启动器整棵进程树（portable 外壳 + %TEMP% 内层 + electron 子进程），
+      // 用“能否独占打开目标文件”确认句柄真释放，再替换、再重启。
+      // 旧的 launcher-replace.exe 助手与新 exe 自替换兜底已删除——三条路并存只会互相抢文件。
+      launcherSwap.ensureUpdater(root);
+      const meta = launcherSwap.readStagedMeta(root) || {};
+      const launched = launcherSwap.spawnUpdater(root, {
+        staged: file,
+        sha256: meta.sha256 || '',
+        size: meta.size || 0,
+        version: status.version || meta.version || '',
+        restart: true,
+        waitMs: 1200,
+      });
+      if (!launched) throw new Error('更新程序 Update\\Update.exe 没能启动，请重新打开启动器再试一次');
       set('installing', `正在重启并安装新版启动器 ${status.version || ''}…`, { version: status.version, percent: 100 });
       // 900ms 让替换进程先起来读文件，然后本进程直接退出（不停服、不弹“要关服吗”）
       setTimeout(() => { try { app.exit(0); } catch { process.exit(0); } }, 900);

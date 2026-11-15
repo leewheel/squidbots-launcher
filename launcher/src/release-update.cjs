@@ -1438,8 +1438,7 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
   //By leewheel 2026年11月6日 启动器自己也能随包更新：
   // 🔴 正在运行的 exe 不能改名也不能覆盖（运行镜像不共享删除权限），会报
   //    EBUSY: resource busy or locked, copyfile ... -> CoA启动器.exe（老大实测）。
-  // 所以这里只把新 exe 落成 CoA启动器.new.exe；替换交给主进程 spawn 这个新 exe 当“替换器”
-  // （launcher-swap.cjs：等旧进程退出 → 旧 exe 改名 .old.exe → 复制自己到目标位置）。包删不删都不影响。
+  // 所以这里只把新 exe 落成 CoA启动器.new.exe，替换由 Update.exe 在旧进程退出后完成。包删不删都不影响。
   const launcherFrom = await findDir(folder, ['launcher']);
   if (launcherFrom) {
     onPhase('launcher');
@@ -1448,11 +1447,16 @@ async function applyUpdate({ root, world, serverRoot, clientRoot, onPhase = () =
     if (exeName) {
       const staged = path.join(root, 'CoA启动器.new.exe');
       await fsp.copyFile(path.join(launcherFrom, exeName), staged);
-      // 替换助手（独立小 exe）：由它在旧进程退出后给文件改名，避免 EBUSY
-      const helperSource = names.find(name => /^launcher-replace\.exe$/i.test(name));
-      if (helperSource) await fsp.copyFile(path.join(launcherFrom, helperSource), path.join(root, 'launcher-replace.exe')).catch(() => {});
+      //By leewheel 2026年11月15日 独立更新器落到 <root>\LauncherUpdate\Update.exe：替换的唯一入口。
+      // ⚠️ 不放 Update\：那是更新包临时目录，装完会被整体清掉（实弹：更新后 Update\Update.exe 消失）。
+      // 包里没带也不致命——启动器每次启动会从自己的 resources 里补一份。
+      const updaterSource = names.find(name => /^Update\.exe$/i.test(name));
+      if (updaterSource) {
+        await fsp.mkdir(path.join(root, 'LauncherUpdate'), { recursive: true }).catch(() => {});
+        await fsp.copyFile(path.join(launcherFrom, updaterSource), path.join(root, 'LauncherUpdate', 'Update.exe')).catch(() => {});
+      }
       result.launcherPending = true;
-      onLine(helperSource ? '启动器新版本已就位：关闭启动器后自动替换' : '启动器新版本已就位：下次打开时替换');
+      onLine('启动器新版本已就位：关闭启动器后自动替换');
     } else {
       result.warnings.push('包里有 launcher 目录但没找到 exe，启动器未更新');
     }

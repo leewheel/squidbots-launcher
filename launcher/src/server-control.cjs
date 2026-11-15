@@ -10,6 +10,9 @@ const fsp = require('node:fs/promises');
 const path = require('node:path');
 
 const exec = promisify(execFile);
+//By leewheel 2026年11月15日 进程表改用 tasklist 一次取全表：状态轮询每 5 秒一次，
+// 原来每次都要冷启动一个 PowerShell（1~3 秒、上百 MB），慢机器上还会叠加，最后把电脑拖死。
+const { processTable, exePaths } = require('./proc-table.cjs');
 const SERVICE_ID = /^[a-z][a-z0-9-]{1,20}$/;
 const ACCOUNT = /^[A-Za-z0-9]{3,17}$/;
 const PASSWORD = /^[\x21-\x7E]{6,16}$/;
@@ -213,6 +216,22 @@ class ServerControl {
     // 由管理脚本启动、没有直接 exe 的服务：仍要求在本包目录内。
     return target.startsWith(this.root.toLowerCase() + path.sep);
   }
+
+  //By leewheel 2026年11月15日 tasklist 只给映像名（不给完整路径），这里按“映像名 == 本服务 exe 的文件名”
+  // 判断归属。比路径判定宽松一点，但配合端口、children、.state 三条证据已经足够，
+  // 而且原来读不到路径时（mysqld 以服务身份跑）本来也是这么兜底的。
+  ownsName(service, name) {
+    if (!name) return false;
+    const lower = String(name).toLowerCase();
+    return this.serviceExes(service).some(exe => path.basename(exe) === lower);
+  }
+
+  /** 进程表里的一行是否属于本服务：有完整路径就严格按路径，读不到路径（跨权限）才退回按映像名 */
+  ownsRow(service, row) {
+    if (!row) return false;
+    if (row.file) return this.ownsExe(service, row.file);
+    return this.ownsName(service, row.name);
+  }
   //By leewheel 2026年11月12日 「这个端口后面是不是自己人」的唯一判据，三个证据按可靠度排序：
   // 1) children 里记着这个 PID —— 就是本启动器这一秒拉起来的；
   // 2) .state/<id>.json 记着这个 PID 且 exe 是本服务的 —— 本包上一次/管理脚本拉起来的；
@@ -252,29 +271,18 @@ class ServerControl {
     const line = stdout.split(/\r?\n/).find(row => new RegExp(`:${port}\\s+\\S+\\s+LISTENING\\s+\\d+`).test(row));
     const pid = Number(line?.trim().split(/\s+/).pop());
     if (!pid) return null;
-    this.paths ||= new Map();
-    //By leewheel 2026年11月12日 进程路径缓存必须过期：Windows 会复用 PID，永久缓存会把别的程序
-    // 的旧路径当成当前监听者（自家 mysqld 被判成“别的程序”）。20 秒后重新问一次。
-    const cached = this.paths.get(pid);
-    const cacheValid = cached && Date.now() - cached.at < 20000;
-    let file = cacheValid && cached.file ? cached.file : '';
-    let name = cacheValid && cached.name ? cached.name : '';
+    //By leewheel 2026年11月15日 不再打 PowerShell 取进程路径/名字：
+    // 进程表（tasklist，一次全表，永不同时跑两个）里就有映像名，isOurs 用它兜底判定。
+    // 老大实弹：这两个 PowerShell 在状态轮询里每 5 秒各来一次，是“电脑卡死”的主力。
+    const table = await processTable();
+    const row = table.find(item => item.pid === pid);
+    const name = row?.name || '';
+    // 路径按 PID 缓存 60 秒（proc-table 内部）：端口稳定时这条查询每分钟最多一次
+    const paths = await exePaths([pid]);
+    let file = paths.get(pid) || '';
+    // 启动瞬间 tasklist/路径查询可能还没看到它：先按子进程记录补上（拿得到完整路径更准）
     if (!file) {
-      const { stdout: exePath } = await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).Path`], { windowsHide: true, timeout: 10000 }).catch(() => ({ stdout: '' }));
-      file = exePath.trim();
-      // 启动瞬间 PowerShell 偶尔读不到路径：先按子进程记录补上，不再把这半秒的空值缓存 20 秒
-      if (!file) {
-        for (const child of this.children.values()) if (Number(child.pid) === pid && child.spawnfile) { file = child.spawnfile; break; }
-      }
-      //By leewheel 2026年11月12日 路径实在读不到（mysqld 以管理员/系统服务身份跑，跨权限无权取 Path）：
-      // 补问进程名（ProcessName 跨权限可读），isOurs 拿它兜底判断，不再把自家的 mysqld 当成外来程序。
-      if (!file) {
-        const { stdout: exeName } = await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${pid}).ProcessName`], { windowsHide: true, timeout: 10000 }).catch(() => ({ stdout: '' }));
-        name = exeName.trim();
-      }
-      if (this.paths.size > 64) this.paths.clear();
-      // 空路径只缓存 3 秒（很快重试取路径），带名字一起缓存
-      this.paths.set(pid, { file, name, at: file ? Date.now() : Date.now() - 17000 });
+      for (const child of this.children.values()) if (Number(child.pid) === pid && child.spawnfile) { file = child.spawnfile; break; }
     }
     if (!file) return { pid, file: '', name, inside: null };
     return { pid, file, name, inside: path.resolve(file).toLowerCase().startsWith(this.root.toLowerCase() + path.sep) };
@@ -293,13 +301,11 @@ class ServerControl {
       // Windows gives a number again once its process ended (the launcher itself got MySQL's old one): the process
       // must still be the program the repack started.
       //By leewheel 2026-11-03 光对镜像名还不够：PID 被系统复用给另一个同名 exe 时会误判“启动中”，
-      // 灯就一直闪。再核对运行中进程的完整路径必须与记录一致；对不上即过期记录，删掉报停止。
-      const { stdout } = await exec('tasklist.exe', ['/FI', `PID eq ${Number(record.pid)}`, '/FO', 'CSV', '/NH'], { windowsHide: true, timeout: 8000 });
-      const name = /^"([^"]+)"/m.exec(stdout)?.[1] || '';
-      if (name.toLowerCase() !== path.basename(String(record.exe)).toLowerCase()) { this.forget(id); return false; }
-      const { stdout: exePath } = await exec('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${Number(record.pid)}).Path`], { windowsHide: true, timeout: 10000 }).catch(() => ({ stdout: '' }));
-      const running = exePath.trim().toLowerCase();
-      if (!running || !running.startsWith(this.root.toLowerCase())) { this.forget(id); return false; }
+      // 灯就一直闪。这里核对映像名必须与记录一致；不再额外打 PowerShell 取完整路径
+      // ——.state 里的 exe 在本包目录内，映像名对上就等于还是那支程序（2026-11-15 去 PowerShell）。
+      const table = await processTable();
+      const row = table.find(item => item.pid === Number(record.pid));
+      if (!row || String(row.name).toLowerCase() !== path.basename(String(record.exe)).toLowerCase()) { this.forget(id); return false; }
       return true;
     } catch { return false; }
   }
@@ -321,7 +327,7 @@ class ServerControl {
     //By leewheel 2026年11月8日 只认本服务自己的 exe（MySQL 就是 Server\mysql\bin\mysqld.exe），
     // 包内别处的同名程序不再算成“本服务正在加载”；国度自己的世界服进程也要排除（同一个 exe）。
     const others = realmPids(this.root);
-    return rows.find(row => this.ownsExe(service, row.file) && !others.has(row.pid)) || null;
+    return rows.find(row => this.ownsRow(service, row) && !others.has(row.pid)) || null;
     //End By leewheel
   }
   //End By leewheel
@@ -367,7 +373,7 @@ class ServerControl {
       let pid = 0;
       let memory = 0;
       if (state === 'running' || state === 'starting') {
-        const own = rows.find(row => this.ownsExe(service, row.file) && !others.has(row.pid));
+        const own = rows.find(row => this.ownsRow(service, row) && !others.has(row.pid));
         if (own) { pid = own.pid; memory = Number(own.memory) || 0; }
       }
       return { id: service.id, name: service.name, port: service.port, state, other, pid, memory, variant: this.variant(service), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) };
@@ -667,7 +673,13 @@ class ServerControl {
   // 只杀 exe 在 root 内的进程，绝不动系统 MySQL、E:\ 其他项目等外来进程。
   async killAllInside() {
     if (process.platform !== 'win32') return [];
-    const script = "Get-CimInstance Win32_Process -Filter \"Name='worldserver.exe' OR Name='authserver.exe' OR Name='mysqld.exe'\" | ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ExecutablePath }";
+    //By leewheel 2026年11月15日 先用进程表筛候选，只有真的存在 worldserver/authserver/mysqld 才去取路径，
+    // 而且一次查询把所有候选一起拿回来 —— 没有进程时一个 PowerShell 都不开。
+    const table = await processTable({ fresh: true });
+    const candidates = table.filter(row => ['worldserver.exe', 'authserver.exe', 'mysqld.exe'].includes(String(row.name).toLowerCase()));
+    if (!candidates.length) return [];
+    const filter = candidates.map(row => `ProcessId=${row.pid}`).join(' OR ');
+    const script = `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { '{0}|{1}' -f $_.ProcessId, $_.ExecutablePath }`;
     const { stdout } = await exec('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true, timeout: 15000 }).catch(() => ({ stdout: '' }));
     const lower = this.root.toLowerCase() + path.sep;
     const killed = [];
@@ -776,25 +788,28 @@ function listening(fresh = false) {
 
 //By leewheel 2026年11月4日 一次问清“世界服/登录服/数据库进程还在不在”：status() 每 5 秒问一次，
 // 逐个 PID 去打 PowerShell 太慢（而且 .state 记录可能根本没有），这里合并成一次查询并缓存 4 秒。
-let insideCache = { at: 0, job: null };
+//By leewheel 2026年11月15日 改用 tasklist（proc-table.cjs）：不再启动 PowerShell。
+// 老大实弹：更新时 PowerShell 一个接一个地开，最后电脑卡死 —— 就是这里每 5 秒一个冷启动造成的。
+// 现在是一次 tasklist 拿全表（几毫秒），并且进程内部永不同时存在第二个查询。
+let insideCache = { at: 0, job: null, rows: [] };
 function runningInside() {
   if (process.platform !== 'win32') return Promise.resolve([]);
   if (insideCache.job && Date.now() - insideCache.at < 4000) return insideCache.job;
-  //By leewheel 2026年11月11日 顺带把内存占用（WorkingSetSize）一起查回来：首页要显示每个服务占多少内存，
-  // 每 5 秒一次状态刷新不能为这个多打三条 PowerShell，就合并进这一次查询里。
-  const script = "Get-CimInstance Win32_Process -Filter \"Name='worldserver.exe' OR Name='authserver.exe' OR Name='mysqld.exe'\" | ForEach-Object { '{0}|{1}|{2}' -f $_.ProcessId, $_.ExecutablePath, $_.WorkingSetSize }";
   insideCache = {
     at: Date.now(),
-    job: exec('powershell.exe', ['-NoProfile', '-Command', script], { windowsHide: true, timeout: 15000 })
-      .then(result => String(result.stdout).split(/\r?\n/).map(line => {
-        const parts = String(line).split('|');
-        if (parts.length < 2) return null;
-        const pid = Number(parts[0]);
-        const file = parts.slice(1, -1).join('|').trim();
-        const memory = Number(parts[parts.length - 1]) || 0;
-        return pid && file ? { pid, file, memory } : null;
-      }).filter(Boolean))
-      .catch(() => []),
+    rows: insideCache.rows,
+    job: (async () => {
+      const table = await processTable();
+      const names = ['worldserver.exe', 'authserver.exe', 'mysqld.exe'];
+      const candidates = table.filter(row => names.includes(String(row.name).toLowerCase()));
+      // 服务全停时这里就是空表：一个 PowerShell 都不开（更新期间正是这个状态）
+      if (!candidates.length) return [];
+      // 有同名进程才去问完整路径（一次批量、缓存 60 秒），归属判定仍按路径严格比对
+      const paths = await exePaths(candidates.map(row => row.pid));
+      return candidates.map(row => ({ pid: row.pid, name: row.name, file: paths.get(row.pid) || '', memory: row.memory || 0 }));
+    })()
+      .then(rows => { insideCache.rows = rows; return rows; })
+      .catch(() => insideCache.rows || []),
   };
   return insideCache.job;
 }

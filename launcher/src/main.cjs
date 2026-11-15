@@ -402,7 +402,7 @@ function launcherRootFolder() {
 function queueSwapOnQuit(where) {
   if (launcherUpdates?.status?.phase === 'installing') return false;
   try {
-    if (!launcherSwap.swapOnQuit(launcherRootFolder(), process.pid)) return false;
+    if (!launcherSwap.swapOnQuit(launcherRootFolder())) return false;
     closingLog(`已安排替换新版启动器（${where}）`);
     return true;
   } catch { return false; }
@@ -3320,9 +3320,13 @@ function registerIpc() {
       //By leewheel 2026年11月6日 启动器自替换：按常规做法——独立助手等本进程退出后改名替换
       // （运行中的 exe 既不能改名也不能覆盖，只有进程退出后才允许，所以必须由别的程序来做）。
       if (result.launcherPending) {
-        const helper = launcherSwap.spawnReplaceHelper(root, process.pid, { restart: false });
-        const scheduled = helper || launcherSwap.spawnTakeover(path.join(root, launcherSwap.STAGED_NAME), process.pid);
-        progress({ phase: 'launcher', version, message: scheduled ? '启动器新版本已就位：关闭启动器后自动替换' : '启动器新版本已就位：下次打开时替换', pct: null });
+        //By leewheel 2026年11月15日 替换只有独立更新器一条路（Update\Update.exe），不再有任何兜底分支：
+        // 兜底只会让两套逻辑抢同一个文件，反而谁都换不干净。
+        launcherSwap.ensureUpdater(root);
+        const meta = launcherSwap.readStagedMeta(root) || {};
+        const stagedExe = path.join(root, launcherSwap.STAGED_NAME);
+        const scheduled = launcherSwap.spawnUpdater(root, { staged: stagedExe, sha256: meta.sha256 || '', size: meta.size || 0, version, restart: false });
+        progress({ phase: 'launcher', version, message: scheduled ? '启动器新版本已就位：关闭启动器后自动替换' : '更新器未能启动：关闭启动器时会再试一次', pct: null });
       }
       //By leewheel 2026年11月5日 更新包会覆盖 configs：更新完成后必须再把数据库自动更新关掉
       await enforceDbUpdatesOff(serverRoot, { notify: false }).catch(() => {});
@@ -3574,7 +3578,11 @@ function registerIpc() {
       if (result.sqlPending) throw new Error(`数据库未就绪，数据脚本没有导入：${result.sqlPending}。更新未完成`);
       await clearPendingSql(root);
       if (result.launcherPending) {
-        launcherSwap.spawnReplaceHelper(root, process.pid, { restart: false });
+        //By leewheel 2026年11月15日 本地包同样只有独立更新器一条路
+        launcherSwap.ensureUpdater(root);
+        const meta = launcherSwap.readStagedMeta(root) || {};
+        const stagedExe = path.join(root, launcherSwap.STAGED_NAME);
+        launcherSwap.spawnUpdater(root, { staged: stagedExe, sha256: meta.sha256 || '', size: meta.size || 0, version: version || '', restart: false });
       }
       const entry = { version: version || 'local', tag: 'local', asset: path.basename(zip), at: new Date().toISOString(), files: { server: result.server, client: result.client }, dbc: result.dbc.filter(item => item.ok).map(item => `${item.table}→${item.archive}`), sql: result.sql, warnings: result.warnings,
         //By leewheel 2026年11月9日 本地包同样记下数据表核对结果
@@ -4341,15 +4349,17 @@ async function main() {
   // 先整理根目录（散文件 → Client\ / Server\），再定配置与设置文件的位置；目录不可写时退回 %APPDATA%。
   const portableAllowed = app.isPackaged && !smokeDir && !process.env.COA_LAUNCHER_PROFILE;
   const launchRoot = launcherRootFolder();
-  //By leewheel 2026年11月6日 启动器自替换（换不了正在运行的 exe，所以由新 exe 当替换器）：
-  // 启动时若发现已落地的 CoA启动器.new.exe，就让它等本进程退出后把自己换到根目录。
+  //By leewheel 2026年11月15日 自更新的准备全在这里：更新器就位 + 核对已落地新版。
+  // 真正的替换发生在退出时（swapOnQuit → Update.exe 强杀整棵进程树，等句柄释放后覆盖）。
   if (!smokeDir) {
     try {
       launcherSwap.cleanupLegacy(launchRoot);
-      //By leewheel 2026年11月12日 把随包带的替换助手补到根目录：纯自更新安装的玩家根目录里原本没有助手，
-      // 退出替换只能让 385MB 便携版自己当替换器（要先解压 %TEMP%，慢且易被打断，老大反馈"太慢/没下文"）。
-      launcherSwap.ensureHelper(launchRoot);
-      if (launcherSwap.ensureStagedSwap(launchRoot, process.pid)) send('repack:notice', { key: 'launcher.pending', text: '启动器新版本已就位：关闭后自动替换' });
+      //By leewheel 2026年11月15日 <root>\Update\Update.exe 每次启动核一遍：被误删/被杀软删掉就补回来。
+      launcherSwap.ensureUpdater(launchRoot);
+      //By leewheel 2026年11月15日 核对已落地的新版：半截包/坏包直接删掉重下，合法的留着等退出时换。
+      // 这里不再补“替换助手”——替换只有 Update.exe 一条路，助手已从打包资源和发布目录里移除。
+      launcherSwap.pruneStaged(launchRoot);
+      if (launcherSwap.readStagedMeta(launchRoot)?.size) send('repack:notice', { key: 'launcher.pending', text: '启动器新版本已就位：关闭后自动替换' });
     } catch { /* 换不动不影响启动 */ }
   }
   //By leewheel 2026年11月6日 启动器一跑就把游戏分辨率对齐系统分辨率（Client\WTF\Config.wtf）。
@@ -4478,6 +4488,9 @@ async function main() {
   setInterval(async () => {
     const found = serverControl();
     if (!found) return;
+    //By leewheel 2026年11月15日 更新/拷文件期间不做服务状态轮询：那段时间机器本来就在满负荷干活
+    // （解压、拷几百 MB、导数据），界面也不需要每 5 秒刷一次灯。
+    if (update?.busy || busyFiles) return;
     const services = await found.status().catch(() => []);
     if (window && window.isVisible() && !window.isMinimized()) send('repack:services', services);
     const world = services.find(service => /world/i.test(service.id));
@@ -4539,18 +4552,9 @@ async function main() {
   setInterval(() => refreshComponents(), 30 * 60 * 1000).unref();
 }
 
-//By leewheel 2026年11月6日 替换器模式（--takeover=<旧PID>）：等旧启动器退出，把旧 exe 改名 .old.exe、
-// 把自己复制成 CoA启动器.exe，然后直接退出——不开窗口、不抢单实例锁。更新时由主进程 spawn 自己。
-const takeoverArg = process.argv.find(arg => String(arg).startsWith('--takeover=')) || '';
-const takeoverPid = Number(takeoverArg.split('=')[1]) || 0;
-//By leewheel 2026年11月9日 --restart：玩家在「重启并安装」里点的，替换完把新 exe 拉起来。
-// 启动时自动替换那条路径不带这个参数（不然会在玩家关掉启动器时凭空弹窗）。
-const takeoverRestart = process.argv.includes('--restart');
-if (takeoverPid > 0) {
-  launcherSwap.performTakeover(launcherRootFolder(), takeoverPid, { restart: takeoverRestart })
-    .catch(() => false)
-    .finally(() => app.exit(0));
-} else if (!smokeDir && !app.requestSingleInstanceLock()) {
+//By leewheel 2026年11月15日 替换器模式（--takeover=<旧PID>）已彻底删除：替换只由 Update.exe 做，
+// 启动器本身不再有任何“自己换自己”的分支（那种做法只等内层 PID，portable 外壳还映射着文件，必然 EBUSY）。
+if (!smokeDir && !app.requestSingleInstanceLock()) {
   //By leewheel 2026年11月6日 老大反馈：已经有一个启动器在跑时，双击新的 build 会“进程自己消失、不弹窗”，
   // 看着像崩溃。其实是被单实例锁挡掉了（而且锁是跨版本共享的，两个 exe 用同一个 userData）。
   // 这里改成**先弹一句中文提示再退出**，玩家/我们自己都知道是“已经在运行”，不是坏了。
@@ -4573,8 +4577,8 @@ if (takeoverPid > 0) {
   app.on('second-instance', () => showWindow());
   app.whenReady().then(main).catch(error => { dialog.showErrorBox(boxText('launchFailed')[0], error.message); app.quit(); });
   //By leewheel 2026年11月9日 启动器自更新的最后一步：退出前把已下载的新版换上去。
-  // 玩家没点「重启并安装」就关掉启动器的话，这条兜底保证他下次打开就是新版——
-  // 换名/覆盖只能等本进程真正退出，所以由新 exe 带 --takeover=<本PID> 去等，换完不拉新窗口。
+  //By leewheel 2026年11月15日 由 Update.exe 执行（唯一入口）：它会强杀整棵进程树再覆盖，
+  // 所以这里只负责“把更新器拉起来”，本进程紧接着退出。
   app.on('will-quit', () => {
     if (smokeDir) return;
     queueSwapOnQuit('will-quit');

@@ -62,12 +62,25 @@ const MODES = {
       'worldserver.conf': { 'PlayerStart.CustomSpells': '1', 'AlwaysMaxSkillForLevel': '1', 'CharacterCreating.Disabled.ClassMask': '4294966783' },
     },
   },
+  //By leewheel 20261115 【3.0 新增的第 5 个国度：Malfurion（鲜活世界服）】
+  // 依据上游启动器 realms.cjs 的 MODES.living：按官方新开服的样子开门——角色库从空开始，
+  // 首次开局轨迹（CoaFreshStart）与拍卖行投放曲线（LaunchCurve）由国度强制打开；
+  // 其余（孤狼自给、鲜活世界包、经济）在建国度时一次性写进它自己的个性设置（见 livingOwn）。
+  // 端口 = 主服世界端口 + 4×100 = 8485（ports() 按 step 自动算），RealmID = 5。
+  living: {
+    id: 5, name: 'Malfurion', prefix: 'rndlv', step: 4,
+    keys: {
+      'playerbots.conf': { 'AiPlayerbot.CoaFreshStart.Enable': '1', 'AiPlayerbot.CoaEconomy.LaunchCurve.Enable': '1' },
+    },
+  },
 };
 // Tables the new characters database needs filled (the world fails or misbehaves without them).
 const SEED_TABLES = ['updates', 'updates_include', 'worldstates', 'active_arena_season', 'playerbots_names', 'playerbots_guild_names',
   'playerbots_arena_team_names', 'coa_build_creator', 'coa_build_creator_enchant', 'coa_build_creator_item_type', 'coa_build_creator_spell',
   'instance_reset', 'pool_quest_save'];
 const DEFAULT_BOTS = 150;
+//By leewheel 20261115 鲜活世界服（living）默认 1000 个机器人：上游 3.0 的既定值，只在建国度时写入，之后玩家可改
+const LIVING_BOTS = 1000;
 const KEY = /^[a-z]{3,12}$/;
 const CONF_KEY = /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/;
 const FILE_ID = /^[A-Za-z0-9_.-]{1,60}\.conf$/;
@@ -221,7 +234,9 @@ function listenOwners() {
 
 // 本机所有 worldserver.exe：pid + 完整路径（复用 server-control 的进程表，4 秒缓存）。
 function worldProcesses() {
-  return runningInside().then(rows => rows.filter(row => /worldserver\.exe$/i.test(String(row.file || ''))));
+  //By leewheel 2026年11月15日 进程表改由 tasklist 提供，只给映像名（不再有完整路径）：
+  // 按映像名筛 worldserver.exe 即可，不再依赖 row.file。
+  return runningInside().then(rows => rows.filter(row => /^worldserver\.exe$/i.test(String(row.name || ''))));
 }
 
 // 这个端口上监听的是不是本整合包的世界服：是 → 它的 pid；不是（空着或别人的）→ 0
@@ -230,7 +245,11 @@ async function ownWorldPid(root, port) {
   const pid = owners.get(Number(port));
   if (!pid) return 0;
   const row = procs.find(item => item.pid === pid);
-  return row && insideRoot(root, row.file) ? pid : 0;
+  if (!row) return 0;
+  //By leewheel 2026年11月15日 必须按完整路径判定（进程表已带回路径）：读不到路径时宁可判“不是自己”，
+  // 也不能把别的整合包的世界服当成自己这个国度在跑。
+  if (!row.file) return 0;
+  return insideRoot(root, row.file) ? pid : 0;
 }
 
 // 端口被别人的程序占着 → { pid, file }；空着、或就是自己的世界服 → null
@@ -240,7 +259,7 @@ async function portStranger(root, port) {
   if (!pid) return null;
   if (await ownWorldPid(root, port)) return null;
   const row = (await worldProcesses()).find(item => item.pid === pid);
-  return { pid, file: row?.file || '' };
+  return { pid, file: row?.file || row?.name || '' };
 }
 //End By leewheel
 
@@ -254,7 +273,9 @@ async function processOf(root, key) {
   if (!state?.pid || !pidAlive(state.pid)) return 0;
   const row = (await worldProcesses()).find(item => item.pid === Number(state.pid));
   const expected = path.basename(String(state.exe || worldExe(root))).toLowerCase();
-  if (!row || !insideRoot(root, row.file) || path.basename(row.file).toLowerCase() !== expected) {
+  //By leewheel 2026年11月15日 进程表只有映像名：映像名与记录一致即认，不再核对完整路径。
+  const actual = row ? (row.file ? path.basename(row.file).toLowerCase() : String(row.name || '').toLowerCase()) : '';
+  if (!row || actual !== expected || (row.file && !insideRoot(root, row.file))) {
     try { await fsp.unlink(file); } catch {}
     return 0;
   }
@@ -280,11 +301,149 @@ function imposed(key, saved) {
     out['manastorm-endless.conf'] = { 'Manastorm.Enable': '0' };
   }
   out['coa_custom_races.conf'] = { 'CoACustomRaces.Enable': '0', 'CoACustomRaces.BotsEnable': '0' };
+  //By leewheel 20261115 【鲜活世界服不开老拍卖行】
+  // 本服核心仍带独立的 mod-ah-bot-plus（玩家用 .ahbot 铺货），而 living 用的是 CoA 经济体系里的自营拍卖行。
+  // 不禁用 mod_ahbot 的话，开服第一天就有满仓紫装，与“按官方新服的样子开门”的定位冲突（与上游 imposedNow 同义）。
+  if (key === 'living') out['mod_ahbot.conf'] = { ...out['mod_ahbot.conf'], 'AuctionHouseBot.Enable': '0' };
+  //End By leewheel
   // CoA tells its random bots from alts by this prefix: it must be the realm's bot prefix (else its bots count as alts).
   out['coa.conf'] = { ...out['coa.conf'], 'CoA.RandomBotAccountPrefix': `"${m.prefix}"` };
   out['playerbots.conf'] = { ...out['playerbots.conf'], 'AiPlayerbot.RandomBotAccountPrefix': `"${m.prefix}"`, 'AiPlayerbot.CoaStatusFile': '"Logs/bot-status.json"', 'AiPlayerbot.CommandServerPort': '0' };
   return out;
 }
+
+//By leewheel 20261115 【鲜活世界服（living）建国度时一次性写入的个性设置】
+// 依据上游启动器 catalog：self-found-world 配方 + living 鲜活世界包 + livingOwn 的额外项，
+// 全部展开成字面值写在本文件里（不新增数据文件依赖），保证本启动器单文件可跑。
+// 与上游保持两处一致：
+//  ① AiPlayerbot.CoaEconomy.AHBot.Enable 不写——本服核心仍带独立 mod-ah-bot-plus，
+//     两套拍卖行同时开会在开服第一天互相顶货；老拍卖行由 imposed() 在 living 下强制关闭。
+//  ② DungeonClear.SelfFound.* 四项（孤狼也能凑小副本队）写在 mod_dungeon_clear.conf。
+// 这些值只在建国度时写一次进 settings.json；玩家之后在设置页怎么改都以玩家为准。
+function livingOwn() {
+  const P = 'AiPlayerbot.';
+  const E = `${P}CoaEconomy.`;
+  return {
+    'playerbots.conf': {
+      // 孤狼自给：自己打自己的，不靠交易行
+      [`${P}CoaSelfFound`]: '1',
+      [`${P}CoaSelfFoundMaxLevel`]: '59',
+      [`${P}CoaSelfFoundBotsPercent`]: '20',
+      [`${P}RandomBotXPRate`]: '2',
+      // 新服开门：首杀公告、开局追赶、鲜活聊天、公会应答、新装需求改需求骰
+      [`${P}CoaWorld.ServerFirst.Enable`]: '1',
+      [`${P}CoaFreshStart.Enable`]: '1',
+      [`${P}CoaFreshStart.CatchUp.Enable`]: '1',
+      [`${P}CoaFreshStart.CatchUp.CountGameMasters`]: '1',
+      [`${P}CoaLive.Chat.Enable`]: '1',
+      [`${P}CoaWorld.Guilds.AnswerAsk`]: '1',
+      [`${P}LootNeedRollLevel`]: '2',
+      // 经济：四件套（过滤 / 买家 / 市价 / 稀有度）全开，新服金币稀缺
+      [`${E}Filter.Enable`]: '1',
+      [`${E}Buyer.Enable`]: '1',
+      [`${E}Market.Enable`]: '1',
+      [`${E}Rarity.Enable`]: '1',
+      [`${E}LaunchCurve.Enable`]: '1',
+      [`${E}LaunchCurve.LevelMargin`]: '5',
+      [`${E}LaunchCurve.StartStockPercent`]: '15',
+      [`${E}LaunchCurve.LaunchPremiumPercent`]: '0',
+      [`${E}BotStartGoldPercent`]: '0',
+      [`${E}BotLevelGold`]: '10:5000,15:10000,20:20000,25:30000,30:50000,35:70000,40:100000,45:120000,50:150000,55:200000,60:250000,65:300000,70:350000,75:400000,80:500000',
+      [`${E}PriceScalePercent`]: '60',
+      [`${E}Artisans.Enable`]: '1',
+      [`${E}Artisans.Stock.Enable`]: '1',
+      [`${E}Artisans.RecursiveCost.Enable`]: '1',
+      [`${E}Artisans.LearnRareRecipes.Enable`]: '1',
+      [`${E}Artisans.MaterialsOnDelivery`]: '1',
+      [`${E}Artisans.Addon`]: '1',
+      [`${E}CraftOrders.Enable`]: '1',
+      [`${E}CraftOrders.AdvertiseMinutes`]: '8',
+      [`${E}Materials.Enable`]: '1',
+      [`${E}AuctionClock.Enable`]: '1',
+      [`${E}RpgSell.Enable`]: '1',
+      [`${E}BotAuctions.Enable`]: '1',
+      [`${E}BotAuctions.RealHousePrices`]: '1',
+      // 世界：入侵 / 资源争夺 / 副本模拟 / 恢复 / 旅行 / 野外 PvP / 刷怪密度 / 升级保护 / 首都突袭
+      [`${P}CoaWorld.Invasions.Enable`]: '1',
+      [`${P}CoaWorld.Invasions.Scourge.Enable`]: '1',
+      [`${P}CoaWorld.Invasions.Legion.Enable`]: '1',
+      [`${P}CoaWorld.Invasions.AhnQiraj.Enable`]: '1',
+      [`${P}CoaWorld.Invasions.OneAtATime`]: '1',
+      [`${P}CoaWorld.ResourceRush.Enable`]: '1',
+      [`${P}CoaWorld.DungeonSim.Enable`]: '1',
+      [`${P}CoaWorld.Recovery.Enable`]: '1',
+      [`${P}CoaWorld.Travel.Enable`]: '1',
+      [`${P}CoaWorld.Travel.Hearthstone`]: '1',
+      [`${P}CoaWorld.WorldPvp.Enable`]: '1',
+      [`${P}CoaWorld.WorldPvp.Skirmish.Enable`]: '1',
+      [`${P}CoaWorld.WorldPvp.CapitalDefence.Enable`]: '1',
+      [`${P}CoaWorld.Density.Enable`]: '1',
+      [`${P}CoaWorld.Leveling.Enable`]: '1',
+      [`${P}CoaWorld.Leveling.AreaGuard`]: '1',
+      [`${P}CoaWorld.CapitalRaid.Enable`]: '1',
+      [`${P}CoaWorld.SlowIdleTriggers`]: '1',
+      [`${P}CoaWorld.BgSim.ReplaceAutoJoin`]: '0',
+      [`${P}CoaWorld.BgSim.Shop`]: '1',
+      [`${P}CoaWorld.BgSim.Announce`]: '1',
+      // 公会：订单 / 装备 / 名录 / 活动 / 创建许可 / 会长在线
+      [`${P}CoaWorld.Guilds.Enable`]: '1',
+      [`${P}CoaWorld.Guilds.Help`]: '1',
+      [`${P}CoaWorld.Guilds.Orders`]: '1',
+      [`${P}CoaWorld.Guilds.Gear`]: '1',
+      [`${P}CoaWorld.Guilds.GearAsk`]: '1',
+      [`${P}CoaWorld.Guilds.Catalog`]: '1',
+      [`${P}CoaWorld.Guilds.Activities`]: '1',
+      [`${P}CoaWorld.Guilds.Charters`]: '1',
+      [`${P}CoaWorld.Guilds.PlayerGuildOnline`]: '1',
+      [`${P}CoaWorld.Guilds.Greetings`]: '1',
+      [`${P}CoaWorld.Guilds.Addon`]: '1',
+      [`${P}CoaWorld.Events.Addon`]: '1',
+      // 战斗：呼吸守护 / 卡战斗清理 / 战斗清洗 / 首领与副本专项 / 装备评分 / 玩家指挥 / 拾取规则
+      [`${P}CoaCombat.BreathGuard.Enable`]: '1',
+      [`${P}CoaCombat.StuckCombat.Enable`]: '1',
+      [`${P}CoaCombat.CombatPurge.Enable`]: '1',
+      [`${P}CoaCombat.SunkenTemple.Enable`]: '1',
+      [`${P}CoaCombat.MoltenCore.Enable`]: '1',
+      [`${P}CoaCombat.BlackwingLair.Enable`]: '1',
+      [`${P}CoaCombat.ZulGurub.Enable`]: '1',
+      [`${P}CoaCombat.AhnQiraj.Enable`]: '1',
+      [`${P}CoaCombat.PullGuardSight.Enable`]: '1',
+      [`${P}CoaCombat.CallOfTheGrave.Enable`]: '1',
+      [`${P}CoaCombat.PlayerLed.Enable`]: '1',
+      [`${P}CoaCombat.GearScore.Enable`]: '1',
+      [`${P}CoaCombat.LootNeedEpicOnly`]: '0',
+      [`${P}CoaCombat.LootNeedMinUpgradePct`]: '10',
+      // 鲜活（LIVE）与灵魂
+      [`${P}CoaLive.Enable`]: '1',
+      [`${P}CoaLive.Social.Enable`]: '1',
+      [`${P}CoaLive.City.Enable`]: '1',
+      [`${P}CoaLive.Immersion.Enable`]: '1',
+      [`${P}CoaLive.Sheath.Enable`]: '1',
+      [`${P}CoaLive.CleanWorld.Enable`]: '1',
+      [`${P}CoaLive.NightBank.Enable`]: '1',
+      [`${P}CoaLive.ChannelQuestions.Enable`]: '1',
+      [`${P}CoaLive.Sessions.Enable`]: '0',
+      [`${P}CoaLive.TradeMessagesPerMinute`]: '1',
+      [`${P}CoaLive.MaintenanceSpread`]: '1',
+      [`${P}CoaLive.NoAwayFlag`]: '1',
+      [`${P}CoaSoul.Enable`]: '1',
+      [`${P}CoaSoul.Addon`]: '1',
+      // 杂项：机器人不显示“离开”标记、背包清理不重置、上下线不周期化
+      [`${P}CoaBotSurname`]: '0',
+      [`${P}CoaBotIdentify`]: '1',
+      [`${P}RefreshClearsInventory`]: '0',
+      [`${P}EnablePeriodicOnlineOffline`]: '0',
+      [`${P}CoaAltBags.Enable`]: '1',
+    },
+    'mod_dungeon_clear.conf': {
+      'DungeonClear.SelfFound.MaxGroups': '4',
+      'DungeonClear.SelfFound.IntervalS': '90',
+      'DungeonClear.SelfFound.LevelWindow': '2',
+      'DungeonClear.SelfFound.RoleFallbackMaxLevel': '30',
+    },
+  };
+}
+//End By leewheel
 
 // The repack's update tool refuses a mysql\data with databases it does not know (code 15): a realm is only offered when
 // the installed CoA Bots tools list the realm databases, so a realm can never block an update of CoA.
@@ -544,8 +703,11 @@ async function skipCoaAtStart(root) {
 // ---------------------------------------------------------------- create
 // MySQL must run. Never touches a database that already exists (a realm removed by hand and created again keeps
 // its characters).
-async function create(root, key, { bots = DEFAULT_BOTS, notify = () => {} } = {}) {
+//By leewheel 20261115 living（Malfurion）默认 1000 个机器人，且允许玩家给这个国度起自己的名字
+async function create(root, key, { bots = key === 'living' ? LIVING_BOTS : DEFAULT_BOTS, notify = () => {}, name } = {}) {
   const m = mode(key);
+  // 鲜活世界服取玩家给的名字（字母、数字、空格、' 与 -）；不合法就用默认名
+  const realmName = key === 'living' && typeof name === 'string' && /^[\p{L}\p{N} '-]{2,32}$/u.test(name.trim()) ? name.trim() : m.name;
   if (!fs.existsSync(worldExe(root))) throw new Error('The realms need CoA Bots installed in this server.');
   if (!versionReady(botsVersion(root)) || !updaterKnows(root, key)) throw new Error('This realm needs a newer CoA Bots: its update tool must know the realm databases.');
   await refreshBotConfigs(root);
@@ -564,7 +726,8 @@ async function create(root, key, { bots = DEFAULT_BOTS, notify = () => {} } = {}
   // The realm id: the usual one, unless another realm of this server already has it.
   const rows = (await sql(root, 'SELECT id, name FROM acore_auth.realmlist')).split(/\r?\n/).filter(Boolean).map(line => line.split('\t'));
   let id = m.id;
-  const same = rows.find(([, name]) => name === m.name);
+  //By leewheel 20261115 用国度自己的名字（living 可由玩家命名）比对已有 realmlist，避免重名重复建
+  const same = rows.find(([, listed]) => listed === realmName);
   if (same) id = Number(same[0]);
   else if (rows.some(([rid]) => Number(rid) === id)) id = Math.max(...rows.map(([rid]) => Number(rid))) + 1;
 
@@ -605,17 +768,26 @@ async function create(root, key, { bots = DEFAULT_BOTS, notify = () => {} } = {}
   const user = ((confValue(ws, 'CharacterDatabaseInfo') || '').split(';')[2] || 'acore').replace(/'/g, '');
   const hosts = (await sql(root, `SELECT host FROM mysql.user WHERE user = '${user}'`)).split(/\r?\n/).filter(Boolean);
   for (const host of hosts) for (const db of [chars, botsDb]) await sql(root, `GRANT ALL PRIVILEGES ON ${db}.* TO '${user}'@'${host.replace(/'/g, '')}'`);
-  await listRealm(root, { id, name: m.name, worldPort: p.worldPort });
+  await listRealm(root, { id, name: realmName, worldPort: p.worldPort });
 
-  const saved = { key, id, name: m.name, worldPort: p.worldPort, raPort: p.raPort, autostart: true, created: new Date().toISOString() };
+  const saved = { key, id, name: realmName, worldPort: p.worldPort, raPort: p.raPort, autostart: true, created: new Date().toISOString() };
   await fsp.writeFile(path.join(dir, 'realm.json'), JSON.stringify(saved, null, 2));
   // A new realm starts with fewer bots than most CoA realms: one more world costs memory.
   const own = await ownSettings(root, key);
+  let changed = false;
   if (!own['playerbots.conf']?.[BOT_COUNT[1]]) {
     const count = String(Math.max(0, Math.min(2000, m.bots ?? (Number(bots) || DEFAULT_BOTS))));
     own['playerbots.conf'] = { ...own['playerbots.conf'], [BOT_COUNT[0]]: count, [BOT_COUNT[1]]: count };
-    await writeOwn(root, key, own);
+    changed = true;
   }
+  //By leewheel 20261115 鲜活世界服：建国度时一次性写入它的固有设置；
+  // 玩家已改过的键优先（后面 own[fileId] 覆盖 defaults），之后在设置页怎么改都以玩家为准。
+  if (key === 'living') {
+    for (const [fileId, keys] of Object.entries(livingOwn())) own[fileId] = { ...keys, ...own[fileId] };
+    changed = true;
+  }
+  //End By leewheel
+  if (changed) await writeOwn(root, key, own);
   await writeConfigs(root, key, saved);
   return saved;
 }
