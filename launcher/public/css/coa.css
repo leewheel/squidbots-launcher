@@ -452,3 +452,10 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
 .token-box-text { padding: 28px 26px 30px; gap: 16px; }
 .token-message { margin: 0; font-size: 15px; line-height: 1.9; color: #f0dcbe; text-align: center; letter-spacing: .02em; }
 /* End By leewheel */
+/* By leewheel 2026年11月17日 标题下的小字（老大要求）：宽度不许超过二维码，所以 max-width 跟白框一致 224px */
+.token-sub {
+  margin: -8px 0 0; max-width: 224px;
+  font-size: 12px; line-height: 1.6; letter-spacing: .04em;
+  color: rgba(232, 214, 184, .58); text-align: center;
+}
+/* End By leewheel */

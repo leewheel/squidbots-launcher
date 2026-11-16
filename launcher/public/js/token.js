@@ -14,6 +14,8 @@ let tokenCloseTimer = null;
 let tokenTextTimer = null;
 // 第一屏拿到的正文（主进程 payment.cjs 的 QR_TEXT，只此一份，界面不另抄一段）
 let tokenPayload = '';
+//By leewheel 2026年11月17日 标题下那行小字（老大要求）：说明码是现场生成的，宽度不超过二维码
+const TOKEN_SUB = '实时生成二维码，不会被篡改';
 
 function tokenDialogOpen() {
   clearTimeout(tokenCloseTimer);
@@ -23,6 +25,7 @@ function tokenDialogOpen() {
   dialog.open(
     `<div class="token-box" id="token-box">
       <h2 class="token-title">BY ME SOME TOKEN</h2>
+      <p class="token-sub">${TOKEN_SUB}</p>
       <button class="token-qr" id="token-qr" type="button" data-action="token-text" aria-label="查看二维码内容">${skeleton(3)}</button>
       <p class="token-note">仅用于本项目的Token购买(￥10元)</p>
       <footer class="dialog-foot token-foot">
@@ -70,6 +73,7 @@ function tokenDialogPay() {
   dialog.open(
     `<div class="token-box" id="token-box-pay">
       <h2 class="token-title">BY ME SOME TOKEN</h2>
+      <p class="token-sub">${TOKEN_SUB}</p>
       <div class="token-qr" id="token-pay">${skeleton(3)}</div>
       <p class="token-note">仅用于本项目的Token购买(￥10元)</p>
       <footer class="dialog-foot token-foot">
