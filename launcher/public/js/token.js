@@ -1,9 +1,10 @@
 'use strict';
 //By leewheel 2026年11月16日 「By Me Some Token」打赏弹窗（老大 2026-11-16 定的样子）：
-//   对话框正上方大标题 BY ME SOME TOKEN → 中间实时生成的收款二维码 → 下面一行“仅用于本项目的Token购买”
+//   对话框正上方大标题 BY ME SOME TOKEN → 中间实时生成的二维码 → 下面一行说明
 //   → 底部两个按钮「可以」/「给劳资滚！」。
-// 二维码由主进程 src\payment.cjs 现场画（wxp:// 收款链接），界面里没有任何图片文件，
+// 二维码由主进程 src\payment.cjs 现场画，界面里没有任何图片文件，
 // 所以那条“不许用截图”的要求是由生成方式本身保证的，不是靠人工检查。
+//By leewheel 2026年11月17日 二维码内容与说明文字都换了：二维码里放结项文案，说明行补上价格「(￥10元)」。
 //End By leewheel
 
 let tokenCloseTimer = null;
@@ -15,7 +16,7 @@ function tokenDialogOpen() {
     `<div class="token-box" id="token-box">
       <h2 class="token-title">BY ME SOME TOKEN</h2>
       <div class="token-qr" id="token-qr">${skeleton(3)}</div>
-      <p class="token-note">仅用于本项目的Token购买</p>
+      <p class="token-note">仅用于本项目的Token购买(￥10元)</p>
       <footer class="dialog-foot token-foot">
         <button class="button ghost" type="button" data-action="token-no">给劳资滚！</button>
         <button class="button primary" type="button" data-action="token-yes">可以</button>

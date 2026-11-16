@@ -1061,7 +1061,8 @@ function registerIpc() {
   handle('ports:kill', async port => (serverControl() ? serverControl().killPortOwner(Number(port)) : null));
   //By leewheel 2026年11月16日 「By Me Some Token」：每次调用都现画一张二维码（PNG data URL），
   // 界面不落地任何图片文件，也就不存在“把老截图打进包里”这回事。
-  handle('token:qr', async () => ({ dataUrl: await payment.qrDataUrl(), link: payment.PAYMENT_LINK }));
+  //By leewheel 2026年11月17日 二维码内容改成老大给的结项文案（见 payment.cjs 的 QR_TEXT），字段 name 同步改成 text。
+  handle('token:qr', async () => ({ dataUrl: await payment.qrDataUrl(), text: payment.QR_TEXT }));
   //End By leewheel
   handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: appVersion() }); return true; });
   handle('window', action => {
