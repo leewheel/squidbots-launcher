@@ -439,3 +439,16 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
 .token-thanks { margin: 6px 0 4px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 15px; line-height: 1.7; color: #f3d29a; }
 .token-thanks .icon { color: #e0776b; flex: 0 0 auto; }
 /* End By leewheel */
+/* By leewheel 2026年11月17日 二维码改成可点的按钮（老大要求：悬浮显示那段话、点开弹文字框）：
+   必须把浏览器给 button 的默认边框/背景/内边距全部清掉，否则白框会多出一圈灰边。 */
+.token-qr {
+  cursor: pointer; border: 0; font: inherit; color: inherit;
+  transition: box-shadow .18s ease, transform .18s ease;
+}
+.token-qr:hover { box-shadow: 0 0 0 2px rgba(224, 160, 80, .75), 0 12px 30px rgba(0, 0, 0, .45); transform: translateY(-1px); }
+.token-qr:active { transform: translateY(0); }
+.token-qr:focus-visible { outline: 2px solid rgba(240, 190, 120, .9); outline-offset: 3px; }
+/* 点开后的纯文字框：内容居中、可换行，5 秒后自动关 */
+.token-box-text { padding: 28px 26px 30px; gap: 16px; }
+.token-message { margin: 0; font-size: 15px; line-height: 1.9; color: #f0dcbe; text-align: center; letter-spacing: .02em; }
+/* End By leewheel */

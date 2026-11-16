@@ -1063,7 +1063,7 @@ function registerIpc() {
   // 界面不落地任何图片文件，也就不存在“把老截图打进包里”这回事。
   //By leewheel 2026年11月17日 二维码内容改成“扫码看这段话”。第一版把中文直接塞进二维码，
   // 微信扫出来只说「不支持显示二维码中的文字」，所以改成指向仓库里的 TOKEN.md 页面（见 payment.cjs 的 QR_URL）。
-  handle('token:qr', async () => ({ dataUrl: await payment.qrDataUrl(), url: payment.QR_URL }));
+  handle('token:qr', async () => ({ dataUrl: await payment.qrDataUrl(), url: payment.QR_URL, text: payment.QR_TEXT }));
   //End By leewheel
   handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: appVersion() }); return true; });
   handle('window', action => {
