@@ -417,3 +417,25 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
 }
 .launcher-ver .launcher-ver-check:hover { color: rgba(240, 190, 120, .95); border-bottom-color: rgba(240, 190, 120, .7); }
 /* End By leewheel */
+/* By leewheel 2026年11月16日 「By Me Some Token」打赏弹窗（老大 2026-11-16 要求）：
+   标题居中在对话框正上方 → 二维码居中 → 一行说明 → 底部两个按钮。
+   二维码是主进程现场生成的 PNG（白底），所以这里只给白框和尺寸，不引入任何图片资源。 */
+.tab.tab-token svg, .tab.tab-token .icon { color: #e0a850; }
+.tab.tab-token:hover { color: #ffd88a; }
+.dialog.token { width: min(420px, 92vw); }
+.token-box { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; padding: 26px 26px 20px; }
+.token-title { margin: 0; font: 700 20px var(--display); letter-spacing: .14em; text-transform: uppercase; color: #f3d29a; }
+.token-qr {
+  width: 224px; height: 224px; padding: 9px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  background: #ffffff; border-radius: 12px;
+  box-shadow: 0 0 0 1px rgba(224, 160, 80, .38), 0 10px 26px rgba(0, 0, 0, .38);
+}
+.token-qr .token-image { display: block; width: 100%; height: 100%; }
+.token-qr .skeleton { width: 100%; }
+.token-note { margin: 0; font-size: 13px; color: rgba(232, 214, 184, .76); }
+.token-foot { display: flex; gap: 10px; width: 100%; margin: 0; padding: 0; border: 0; }
+.token-foot .button { flex: 1 1 0; justify-content: center; }
+.token-thanks { margin: 6px 0 4px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 15px; line-height: 1.7; color: #f3d29a; }
+.token-thanks .icon { color: #e0776b; flex: 0 0 auto; }
+/* End By leewheel */

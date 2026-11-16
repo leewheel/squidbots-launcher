@@ -59,6 +59,13 @@ const App = {
     $('#tabs-right').innerHTML = App.state.config.edition === 'server'
       ? bugTab + rightTabs.map(([id, iconName, label]) => `<button class="tab${App.state.tab === id ? ' active' : ''}" data-tab="${id}">${icon(iconName)}<span>${esc(label)}</span>${id === 'server' && (isNew('settings') || isNew('wizard')) ? newDot() : ''}</button>`).join('')
       : '';
+    //By leewheel 2026年11月16日 「By Me Some Token」按钮挂在「模块」右边（老大 2026-11-16 要求）。
+    // 它不是页面（没有 data-tab），点开是一个打赏弹窗，所以走 data-action → App.actions['token-open']。
+    const tokenButton = App.state.config.edition === 'server'
+      ? `<button class="tab tab-token" data-action="token-open" title="${esc('给这个项目买点 Token：纯自愿，不买也能玩全部内容')}">${icon('coin')}<span>By Me Some Token</span></button>`
+      : '';
+    if (tokenButton) $('#tabs').insertAdjacentHTML('beforeend', tokenButton);
+    //End By leewheel
     const banner = $('#launcher-banner');
     if (banner) banner.innerHTML = App.state.config.edition === 'server' && typeof launcherBanner === 'function' ? launcherBanner() : '';
     const page = App.pages[App.state.tab];

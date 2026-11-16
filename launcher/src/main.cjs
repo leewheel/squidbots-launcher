@@ -44,6 +44,9 @@ const live = require('./live.cjs');
 const eco = require('./eco.cjs');
 const modules = require('./modules.cjs');
 const realms = require('./realms.cjs');
+//By leewheel 2026年11月16日 「By Me Some Token」打赏弹窗的二维码：现场生成，不读任何图片文件
+const payment = require('./payment.cjs');
+//End By leewheel
 const { mysqlLender } = require('./mysql-lender.cjs');
 const { fixManage } = require('./manage-fix.cjs');
 //By leewheel 2026-11-03 服务端/客户端更新 + 首次运行目录整形
@@ -1056,6 +1059,10 @@ function registerIpc() {
   //By leewheel 2026年11月7日 端口体检与强制关闭（启动器启动时自动扫一次，界面给按钮）
   handle('ports:scan', async () => (serverControl() ? serverControl().scanPorts() : []));
   handle('ports:kill', async port => (serverControl() ? serverControl().killPortOwner(Number(port)) : null));
+  //By leewheel 2026年11月16日 「By Me Some Token」：每次调用都现画一张二维码（PNG data URL），
+  // 界面不落地任何图片文件，也就不存在“把老截图打进包里”这回事。
+  handle('token:qr', async () => ({ dataUrl: await payment.qrDataUrl(), link: payment.PAYMENT_LINK }));
+  //End By leewheel
   handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: appVersion() }); return true; });
   handle('window', action => {
     if (action === 'minimize') window.minimize();
