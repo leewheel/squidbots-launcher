@@ -13,10 +13,16 @@ const path = require('node:path');
 const payment = require('../src/payment.cjs');
 
 const EXPECTED_URL = 'https://github.com/leewheel/squidbots-launcher/blob/main/TOKEN.md';
+const EXPECTED_PAY = 'wxp://f2f1xK54LfOF4fuSPzcKvYk77whnJPVjCDvJz5yCorxdJ0SKYJ-i3Hx6CQvFkYWtvCGJ';
 
 test('二维码指向 TOKEN.md 页面（微信只认链接，纯文字码不显示）', () => {
   assert.equal(payment.QR_URL, EXPECTED_URL);
   assert.ok(payment.QR_URL.startsWith('https://'), '必须是 https 链接');
+});
+
+test('点「可以」后出的收款码就是微信个人收款码（wxp://）', () => {
+  assert.equal(payment.PAY_URL, EXPECTED_PAY);
+  assert.ok(payment.PAY_URL.startsWith('wxp://'), '微信个人收款码以 wxp:// 开头');
 });
 
 test('页面正文就是老大那段话，且与仓库里的 TOKEN.md 对得上', () => {
@@ -55,4 +61,11 @@ test('生成的二维码能被解回同一个链接', async t => {
   const code = jsQR(new Uint8ClampedArray(png.data), png.width, png.height);
   assert.ok(code, '画出来的图必须是一个可识别的二维码');
   assert.equal(code.data, payment.QR_URL);
+
+  // 收款码也要能被解回 wxp:// 链接，否则玩家扫了付不了钱
+  const payUrl = await payment.payQrDataUrl();
+  const payPng = PNG.sync.read(Buffer.from(payUrl.slice('data:image/png;base64,'.length), 'base64'));
+  const payCode = jsQR(new Uint8ClampedArray(payPng.data), payPng.width, payPng.height);
+  assert.ok(payCode, '收款码必须可识别');
+  assert.equal(payCode.data, payment.PAY_URL);
 });

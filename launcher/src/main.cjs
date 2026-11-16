@@ -1064,6 +1064,8 @@ function registerIpc() {
   //By leewheel 2026年11月17日 二维码内容改成“扫码看这段话”。第一版把中文直接塞进二维码，
   // 微信扫出来只说「不支持显示二维码中的文字」，所以改成指向仓库里的 TOKEN.md 页面（见 payment.cjs 的 QR_URL）。
   handle('token:qr', async () => ({ dataUrl: await payment.qrDataUrl(), url: payment.QR_URL, text: payment.QR_TEXT }));
+  //By leewheel 2026年11月17日 「可以」之后出的**收款码**（wxp:// 微信个人收款码），与第一屏那个码是两份内容。
+  handle('token:pay', async () => ({ dataUrl: await payment.payQrDataUrl(), url: payment.PAY_URL }));
   //End By leewheel
   handle('whatsnew:seen', async () => { await persist({ ...settings, lastSeenVersion: appVersion() }); return true; });
   handle('window', action => {

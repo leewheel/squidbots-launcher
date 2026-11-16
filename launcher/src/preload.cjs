@@ -28,6 +28,8 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   portsKill: port => call('ports:kill', Number(port)),
   //By leewheel 2026年11月16日 「By Me Some Token」弹窗的二维码（主进程实时生成，返回 PNG data URL）
   tokenQr: () => call('token:qr'),
+  //By leewheel 2026年11月17日 「可以」之后出的收款码（wxp:// 微信个人收款码）
+  tokenPay: () => call('token:pay'),
   //End By leewheel
   window: action => call('window', action),
   saveSettings: patch => call('settings:save', patch),
