@@ -121,6 +121,37 @@ test('顶层 configs\\ 覆盖 server\\configs\\ 时，落地核对不能误报�
   await fsp.rm(root, { recursive: true, force: true });
 });
 
+test('DBC 阶段会把客户端那份盖到 ClientData：核对必须拿客户端负载比，不能拿包内旧副本', async () => {
+  //By leewheel 2026年11月17日 实弹：11.16 包只更新了客户端 Spell.dbc（256,874,968），
+  // server\clientdata\dbc\spell.dbc 还是 11.15 的旧副本（256,874,954）；装完 DBC 阶段写成新版，
+  // 落地核对拿旧副本一比就「大小不一致」→ 每个玩家都卡在最后一步。
+  const root = await tempDir('coa-dbc-');
+  const pkg = path.join(root, 'pkg');
+  await writeFiles(pkg, {
+    'server/clientdata/dbc/spell.dbc': 'OLD-SPELL-954',
+    'client/data/dbc/patch-ZZN.mpq/Spell.dbc': 'NEW-SPELL-968',
+  });
+  const serverRoot = path.join(root, 'Server');
+  const clientRoot = path.join(root, 'Client');
+  // applyUpdate 的真实结果：server\ 先铺旧副本，DBC 阶段再被客户端那份盖掉
+  await writeFiles(serverRoot, { 'clientdata/dbc/spell.dbc': 'NEW-SPELL-968' });
+  const ok = await releaseUpdate.verifyInstalled({ folder: pkg, root, serverRoot, clientRoot });
+  assert.deepEqual(ok.problems, [], `DBC 被客户端覆盖是正常结果，不该报错：${ok.problems.join('；')}`);
+
+  // 真没被覆盖（DBC 阶段没跑 / 拷失败）→ 落地还是旧副本，必须报
+  await fsp.writeFile(path.join(serverRoot, 'clientdata/dbc/spell.dbc'), 'OLD-SPELL-954');
+  const stale = await releaseUpdate.verifyInstalled({ folder: pkg, root, serverRoot, clientRoot });
+  assert.equal(stale.problems.length, 1);
+  assert.match(stale.problems[0], /spell\.dbc/);
+
+  // 同尺寸不同内容（11.15 的 itemrandomproperties.dbc 就是这样被静默放过的）→ 也要报
+  await fsp.writeFile(path.join(serverRoot, 'clientdata/dbc/spell.dbc'), 'NEW-SPELL-96X');
+  const sameSize = await releaseUpdate.verifyInstalled({ folder: pkg, root, serverRoot, clientRoot });
+  assert.equal(sameSize.problems.length, 1);
+  assert.match(sameSize.problems[0], /md5 不一致/);
+  await fsp.rm(root, { recursive: true, force: true });
+});
+
 test('镜像接上后一个字节都不发：看门狗放弃这个源，换下一个（不能无限期卡住）', async () => {
   const dir = await tempDir('coa-stall-');
   const target = path.join(dir, 'update.zip');

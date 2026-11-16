@@ -1183,24 +1183,53 @@ async function verifyInstalled({ folder, root, serverRoot, clientRoot }) {
   const mpqFrom = await findDir(content, ['mpq']);
   if (mpqFrom) areas.push({ label: 'mpq', from: mpqFrom, to: path.join(clientRoot, 'Data'), only: /\.mpq$/i });
 
+  //By leewheel 2026年11月17日 服务端 ClientData\dbc\ 下的文件，安装时会被 DBC 阶段用“客户端那份”再盖一次
+  // （applyDbcTree，第 794-819 行：client\data\dbc\** 拷进 ClientData\dbc\** 再注入补丁档）。
+  // 所以核对的基准必须是**客户端负载**，不能拿包内 server\clientdata 的副本 —— 那份只是“先落地一次的旧拷贝”。
+  // 实弹（2026-11-17 玩家全服卡住）：11.16 包只更新了客户端 Spell.dbc（256,874,968），
+  // 服务端副本还是 11.15 的（256,874,954），装完 DBC 阶段写成新版 → 拿旧副本一比就报
+  // 「Server/clientdata/dbc/spell.dbc：大小不一致（包内 256874954 ≠ 目标 256874968）。更新中止」，
+  // 每个玩家都会卡在这一步，重试多少次都一样。
+  const dbcPayload = new Map();
+  if (clientFrom) {
+    for (const entry of await walkFiles(path.join(clientFrom, 'data', 'dbc'))) {
+      const name = path.basename(entry.rel).toLowerCase();
+      if (name.endsWith('.dbc') && !dbcPayload.has(name)) dbcPayload.set(name, entry.file);
+    }
+  }
+
   for (const area of areas) {
     for (const item of await walkFiles(area.from)) {
       const rel = item.rel.split(path.sep).join('/');
       if (area.skip && area.skip(rel)) continue;
       if (area.only && !area.only.test(path.basename(item.file))) continue;
       const target = path.join(area.to, item.rel);
-      const src = await fsp.stat(item.file).catch(() => null);
+      // 同名的客户端 DBC 就是最终会落在服务端的那一份
+      const payload = area.label === 'Server' && /^clientdata\/dbc\//i.test(rel)
+        ? dbcPayload.get(path.basename(item.file).toLowerCase())
+        : '';
+      const source = payload || item.file;
+      const sourceLabel = payload ? '客户端负载' : '包内';
+      const src = await fsp.stat(source).catch(() => null);
       const dst = await fsp.stat(target).catch(() => null);
       checked++;
       if (!src) { problems.push(`${area.label}/${rel}：包里的源文件读不到`); continue; }
       if (!dst) { problems.push(`${area.label}/${rel}：目标位置没有这个文件`); continue; }
-      if (src.size !== dst.size) { problems.push(`${area.label}/${rel}：大小不一致（包内 ${src.size} ≠ 目标 ${dst.size}）`); continue; }
+      if (src.size !== dst.size) { problems.push(`${area.label}/${rel}：大小不一致（${sourceLabel} ${src.size} ≠ 目标 ${dst.size}）`); continue; }
       // 两个服务端可执行文件是“能不能起来”的关键，字节数一样也要再核一次内容
       if (area.label === 'Server' && /^(worldserver|authserver)\.exe$/i.test(rel)) {
         try {
-          const [a, b] = [await fileMd5(item.file), await fileMd5(target)];
+          const [a, b] = [await fileMd5(source), await fileMd5(target)];
           hashes[rel.toLowerCase()] = b;
-          if (a !== b) problems.push(`${area.label}/${rel}：md5 不一致（包内 ${a.slice(0, 12)}… ≠ 目标 ${b.slice(0, 12)}…）`);
+          if (a !== b) problems.push(`${area.label}/${rel}：md5 不一致（${sourceLabel} ${a.slice(0, 12)}… ≠ 目标 ${b.slice(0, 12)}…）`);
+        } catch (error) {
+          problems.push(`${area.label}/${rel}：md5 计算失败（${error.message}）`);
+        }
+      } else if (payload) {
+        //By leewheel 2026年11月17日 DBC 同尺寸不同内容也要抓：11.15 的 itemrandomproperties.dbc
+        // 服务端旧副本与客户端那份一模一样长（1,263,571）却不是一个文件，只比大小永远发现不了。
+        try {
+          if (await fileMd5(payload) !== await fileMd5(target)) problems.push(`${area.label}/${rel}：md5 不一致（客户端负载 ≠ 目标）`);
         } catch (error) {
           problems.push(`${area.label}/${rel}：md5 计算失败（${error.message}）`);
         }
