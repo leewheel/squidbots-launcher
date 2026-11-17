@@ -61,9 +61,9 @@ const App = {
       : '';
     //By leewheel 2026年11月16日 「By Me Some Token」按钮挂在「模块」右边（老大 2026-11-16 要求）。
     // 它不是页面（没有 data-tab），点开是一个打赏弹窗，所以走 data-action → App.actions['token-open']。
-    const tokenButton = App.state.config.edition === 'server'
-      ? `<button class="tab tab-token" data-action="token-open" title="${esc('给这个项目买点 Token：纯自愿，不买也能玩全部内容')}">${icon('coin')}<span>By Me Some Token</span></button>`
-      : '';
+    //By leewheel 2026年11月17日 老大要求把「By Me Some Token」按钮隐藏：不注入即可，
+    // token.js 里的弹窗逻辑原样保留，想恢复时把下面 tokenButton 赋值改回 token-open 按钮那行就行。
+    const tokenButton = '';
     if (tokenButton) $('#tabs').insertAdjacentHTML('beforeend', tokenButton);
     //End By leewheel
     const banner = $('#launcher-banner');
