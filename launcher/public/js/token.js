@@ -23,6 +23,7 @@ function tokenDialogOpen() {
       <div class="token-qr" id="token-pay">${skeleton(3)}</div>
       <p class="token-note">仅用于本项目的Token购买(￥10元)</p>
       <footer class="dialog-foot token-foot">
+        <button class="button ghost" type="button" data-action="token-no">滚!臭要饭的!</button>
         <button class="button primary" type="button" data-action="token-paid">大爷赏你了</button>
       </footer>
     </div>`,
@@ -57,3 +58,9 @@ function tokenDialogThanks() {
 
 App.actions['token-open'] = () => tokenDialogOpen();
 App.actions['token-paid'] = () => tokenDialogThanks();
+//By leewheel 2026年11月18日 老大要求补一个「滚!臭要饭的!」：点了直接关掉弹窗，什么都不发生
+App.actions['token-no'] = () => {
+  clearTimeout(tokenCloseTimer);
+  tokenCloseTimer = null;
+  dialog.close();
+};
