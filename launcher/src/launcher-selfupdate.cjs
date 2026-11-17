@@ -14,6 +14,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { once } = require('node:events');
 const { mirrorCandidates, parseVersion, compareVersions } = require('./release-update.cjs');
+//By leewheel 2026年11月17日 双渠道（标准版 / 捐赠版）各自的清单名、标题前缀、tag 与资产名都从这里取。
+const { channelOf } = require('./launcher-channel.cjs');
 
 // 仓库与发版规则：老大用 Release title = COA-LAUNCHER-<版本号>，资产名自带版本号。
 const DEFAULT_REPO = 'leewheel/squidbots-launcher';
@@ -85,34 +87,37 @@ async function fetchText(url, { fetchImpl = fetch, timeout = 15000, headers = {}
 // 仓库里的纯文本清单（由 scripts/write-launcher-release.cjs 在打包后生成，随仓库推送）：
 //   { version, title, asset, size, sha256, notes, at }
 // 这是最轻、最稳的一条通道：几十字节，jsDelivr 在国内有节点，且不受 GitHub API 限流影响。
-async function fromManifest({ repo, branch = 'main', fetchImpl, signal }) {
+async function fromManifest({ repo, branch = 'main', channel, fetchImpl, signal }) {
   //By leewheel 2026年11月12日 jsDelivr 的 `${repo}@${branch}` 是按**分支**缓存的，实测有过
   // 拿到的清单比真实最新版落后好几个版本（本轮实弹：清单给 2146，GitHub 上已经是 0422）。
   // 所以：① 每个地址都带一个“按分钟变化”的时间戳参数，能绕开就绕开；
   //       ② 几个入口**并发**打，收齐后取版本号最高的那份 —— 某条线路缓存住了旧清单也压不住新版；
   //       ③ 最后再加一个 raw.githubusercontent 兜底（它只缓存几分钟，不像 CDN 能压十几小时）。
   const bucket = Math.floor(Date.now() / 60000);
+  //By leewheel 2026年11月17日 双渠道：清单文件名按渠道取（标准版 launcher-release.json、捐赠版 launcher-release-token.json），
+  // 两条链路各读各的、各发各的，互不覆盖。
+  const row = channelOf(channel);
   const urls = [
-    ...JSDELIVR_HOSTS.map(host => `${host}/gh/${repo}@${branch}/launcher-release.json?t=${bucket}`),
-    `${RAW_HOST}/${repo}/${branch}/launcher-release.json`,
+    ...JSDELIVR_HOSTS.map(host => `${host}/gh/${repo}@${branch}/${row.manifest}?t=${bucket}`),
+    `${RAW_HOST}/${repo}/${branch}/${row.manifest}`,
   ];
   const { values, failures } = await gather(urls, async url => {
     const text = await fetchText(url, { fetchImpl, signal, timeout: 12000 });
     const data = JSON.parse(text);
     const version = cleanVersion(data.version);
     if (!version) throw new Error('清单里的版本号不合法');
-    const asset = String(data.asset || '');
+    const asset = String(data.asset || '') || row.assetOf(version);
     return {
       version, notes: String(data.notes || ''), asset, size: Number(data.size) || 0,
       sha256: String(data.sha256 || '').toLowerCase(),
-      title: String(data.title || `${RELEASE_TITLE_PREFIX}${version}`),
+      title: String(data.title || `${row.titlePrefix}${version}`),
       //By leewheel 2026年11月9日 清单原来不带下载地址 —— 而清单是**主力通道**，一命中就直接进下载，
       // 于是每次真更新都报“这个版本没有下载地址”。地址按 GitHub Releases 的固定规律拼，三种写法依次试：
       //   ① tag 就叫版本号（本仓库的发版习惯） ② tag 是 v+版本号 ③ 按资产名取“最新发布”里的同名文件
       // 第 ③ 条是为了 tag 命名换了也能下；SHA-256 会把关，取错文件不会被当成好 exe 顶上去。
-      url: String(data.url || (asset ? `https://github.com/${repo}/releases/download/${version}/${asset}` : '')),
+      url: String(data.url || (asset ? `https://github.com/${repo}/releases/download/${row.tagOf(version)}/${asset}` : '')),
       urls: asset ? [
-        `https://github.com/${repo}/releases/download/${version}/${asset}`,
+        `https://github.com/${repo}/releases/download/${row.tagOf(version)}/${asset}`,
         `https://github.com/${repo}/releases/download/v${version}/${asset}`,
         `https://github.com/${repo}/releases/latest/download/${asset}`,
       ] : [],
@@ -124,19 +129,33 @@ async function fromManifest({ repo, branch = 'main', fetchImpl, signal }) {
   return values[0];
 }
 
-// GitHub Releases：标题形如 COA-LAUNCHER-1.0.202611091830，资产 = 启动器 exe。
-function pickRelease(list) {
+// GitHub Releases：标题形如 COA-LAUNCHER-1.0.202611091830（标准版）/ COA-TOKEN-1.0.202611172030（捐赠版），资产 = 启动器 exe。
+//By leewheel 2026年11月17日 双渠道：必须按渠道挑，否则捐赠版会被标准版当成“自己的新版”。
+// 标准版只认 COA-LAUNCHER- 前缀且**明确排除** COA-TOKEN-；捐赠版只认 COA-TOKEN- 或资产名里带 Token 的 exe。
+function pickRelease(list, channel) {
   if (!Array.isArray(list)) return null;
+  const row = channelOf(channel);
+  const token = row.key === 'token';
   const rows = list.filter(item => item && !item.draft);
-  // 先按标题前缀找（老大发版规则），再退回第一个带 exe 资产的正式版
-  const titled = rows.find(item => String(item.name || '').toUpperCase().startsWith(RELEASE_TITLE_PREFIX));
-  const withExe = rows.find(item => (item.assets || []).some(asset => /\.exe$/i.test(asset.name || '')));
+  const hasExe = item => (item.assets || []).some(asset => /\.exe$/i.test(asset.name || ''));
+  const titled = rows.find(item => {
+    const name = String(item.name || '').toUpperCase();
+    return token ? name.startsWith('COA-TOKEN-') : name.startsWith(RELEASE_TITLE_PREFIX) && !name.startsWith('COA-TOKEN-');
+  });
+  const withExe = rows.find(item => hasExe(item) && (token
+    ? (item.assets || []).some(asset => /token.*\.exe$/i.test(asset.name || ''))
+    : (item.assets || []).some(asset => /\.exe$/i.test(asset.name || '') && !/token/i.test(asset.name || ''))));
   return titled || withExe || null;
 }
 
-function versionFromRelease(release) {
-  const fromTitle = cleanVersion(String(release?.name || '').toUpperCase().replace(RELEASE_TITLE_PREFIX, ''));
+function versionFromRelease(release, channel) {
+  const row = channelOf(channel);
+  const fromTitle = cleanVersion(String(release?.name || '').toUpperCase().replace(row.titlePrefix, ''));
   if (fromTitle) return fromTitle;
+  // 捐赠版的标题前缀与标准版不同，这里再按资产名兜一次（CoA-Launcher-Token-<版本号>.exe）
+  const exe = (release?.assets || []).find(asset => /\.exe$/i.test(asset.name || ''));
+  const fromAsset = exe ? cleanVersion(String(exe.name || '')) : '';
+  if (fromAsset) return fromAsset;
   return cleanVersion(release?.tag_name || '') || '';
 }
 
@@ -171,7 +190,7 @@ function assetOf(release, version) {
   };
 }
 
-async function fromGithubApi({ repo, mirrors, fetchImpl, signal }) {
+async function fromGithubApi({ repo, mirrors, channel, fetchImpl, signal }) {
   const api = `https://api.github.com/repos/${repo}/releases?per_page=10`;
   //By leewheel 2026年11月12日 镜像与直连**并发**打，谁先回用谁。
   // 原来是挨个试（每个 15 秒超时），镜像不通时整条通道要几百秒，外层 15 秒窗口一到就判超时，
@@ -181,9 +200,9 @@ async function fromGithubApi({ repo, mirrors, fetchImpl, signal }) {
     const text = await fetchText(url, { fetchImpl, signal, timeout: 15000, headers: { Accept: 'application/vnd.github+json' } });
     const list = JSON.parse(text);
     if (!Array.isArray(list) && list?.message) throw new Error(String(list.message).slice(0, 60));
-    const release = pickRelease(list);
+    const release = pickRelease(list, channel);
     if (!release) throw new Error('还没有发布带 exe 的版本');
-    const version = versionFromRelease(release);
+    const version = versionFromRelease(release, channel);
     if (!version) throw new Error('发布标题里没有可识别的版本号');
     const asset = assetOf(release, version);
     if (!asset?.url) throw new Error('这个版本没有 exe 资产');
@@ -264,13 +283,13 @@ function shortError(error) {
  *  清单只有几十字节、GitHub API 也快，两条一起问几乎没有额外代价，但能保证**看到的是真的最新版**。
  *  任一通道挂掉仍按原样容错（另一条的结果照用），两条全挂才抛 error.tried 交给上层静默处理。
  */
-async function check({ currentVersion, repo, branch = 'main', mirrors = DEFAULT_MIRRORS, fetchImpl = fetch, signal } = {}) {
+async function check({ currentVersion, repo, branch = 'main', channel, mirrors = DEFAULT_MIRRORS, fetchImpl = fetch, signal } = {}) {
   const target = repoOf(repo);
   const tried = [];
-  const manifestP = fromManifest({ repo: target, branch, fetchImpl, signal })
+  const manifestP = fromManifest({ repo: target, branch, channel, fetchImpl, signal })
     .then(info => ({ kind: 'manifest', info }))
     .catch(error => ({ kind: 'manifest', error }));
-  const apiP = fromGithubApi({ repo: target, mirrors, fetchImpl, signal })
+  const apiP = fromGithubApi({ repo: target, mirrors, channel, fetchImpl, signal })
     .then(info => ({ kind: 'api', info }))
     .catch(error => ({ kind: 'api', error }));
   const [manifest, api] = await Promise.all([

@@ -63,7 +63,11 @@ const App = {
     // 它不是页面（没有 data-tab），点开是一个打赏弹窗，所以走 data-action → App.actions['token-open']。
     //By leewheel 2026年11月17日 老大要求把「By Me Some Token」按钮隐藏：不注入即可，
     // token.js 里的弹窗逻辑原样保留，想恢复时把下面 tokenButton 赋值改回 token-open 按钮那行就行。
-    const tokenButton = '';
+    //By leewheel 2026年11月17日 双渠道定案：标准版（channel=plain）不显示按钮、捐赠版（channel=token）照旧显示，
+    // 两个版本各自更新、互不干扰。渠道来自构建期写入的 package.json coaChannel，运行期经 publicConfig 传到这里。
+    const tokenButton = App.state.config.channel === 'token'
+      ? `<button class="tab tab-token" data-action="token-open" title="${esc('给这个项目买点 Token：纯自愿，不买也能玩全部内容')}">${icon('coin')}<span>By Me Some Token</span></button>`
+      : '';
     if (tokenButton) $('#tabs').insertAdjacentHTML('beforeend', tokenButton);
     //End By leewheel
     const banner = $('#launcher-banner');

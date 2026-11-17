@@ -12,9 +12,12 @@
     "dist": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && electron-builder --win nsis --publish never",
     "stage": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs",
     "dist:obf": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/write-launcher-release.cjs",
+    "dist:obf": "node scripts/set-channel.cjs plain && node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/write-launcher-release.cjs",
+    "dist:obf:token": "node scripts/set-channel.cjs token && node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/write-launcher-release.cjs",
     "release:manifest": "node scripts/write-launcher-release.cjs",
     "release:prune": "node scripts/prune-releases.cjs"
   },
+  "coaChannel": "plain",
   "build": {
     "appId": "org.coa.launcher-lite",
     "productName": "征服艾泽拉斯 单机启动器",
