@@ -1359,6 +1359,23 @@ function releasePkgLine(run) {
   const version = run.pkgVersion ? `（${run.pkgVersion}）` : '';
   return `<p class="release-pkg">${icon('layers')}<span>${esc(t('release.package', '更新包'))}：${esc(order)}${esc(run.pkg)}${esc(version)}</span></p>`;
 }
+//By leewheel 2026-11-17 老大要求：更新过程中 UI 也要显示更新日志，玩家在等下载 / 导库时能看到本次更新了什么、修了什么 BUG。
+// 数据源是 releaseCheck 拿到的待装队列（每项带 GitHub Release 说明 notes）。
+// 正在装哪个包就显示哪个包的日志（run.pkgVersion 匹配队列项）；还没拿到包名时显示队首（最早要装的）那个；
+// 本地包 / 队列里匹配不上的包不给日志——本地包内容无法保证与在线说明一致，宁可留空也不误导。
+function releaseNotesForRun(run) {
+  const pending = App.state.releaseInfo?.pending || [];
+  const version = run.pkgVersion || '';
+  const hit = version ? pending.find(item => item.version === version) : null;
+  const item = hit || (!version && pending.length ? pending[0] : null);
+  const notes = String(item?.notes || '').slice(0, 4000);
+  if (!notes) return '';
+  const label = item.version || run.pkg || '';
+  return `<details class="update-notes release-run-notes" open>
+    <summary>${esc(t('release.runNotes', '本次更新内容'))}${label ? ` · ${esc(prettyUpdateVersion(label))}` : ''}</summary>
+    <div class="patch-notes release-notes">${markdownLite(notes)}</div>
+  </details>`;
+}
 function releaseRunView(run) {
   const pct = Math.max(0, Math.min(100, Math.round(run.pct || 0)));
   //By leewheel 2026年11月8日 allDone = 队列里的中间态（第 n 个补丁装完、还在装下一个）：
@@ -1400,6 +1417,7 @@ function releaseRunView(run) {
     ${speedLine}
     ${status}
     <ol class="release-steps">${steps}</ol>
+    ${releaseNotesForRun(run)}
     ${errorBlock}
   </div>`;
 }
