@@ -421,10 +421,16 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
    标题居中在对话框正上方 → 二维码居中 → 一行说明 → 底部两个按钮。
    二维码是主进程现场生成的 PNG（白底），所以这里只给白框和尺寸，不引入任何图片资源。 */
 .tab.tab-token svg, .tab.tab-token .icon { color: #e0a850; }
+/*By leewheel 2026年11月18日 「打赏Token」按原样显示：主题里的 .tab 有 text-transform: uppercase，会把 Token 变成 TOKEN */
+.tab.tab-token span { text-transform: none; }
+/*By leewheel 2026年11月18日 --display 是 Cinzel（小型大写字形，lowercase 也画成大写），中文不受影响但 Token 会变 TOKEN，
+  按钮标签改用正文字体，保证「打赏Token」原样显示。 */
+.tab.tab-token span { font-family: var(--body); }
 .tab.tab-token:hover { color: #ffd88a; }
 .dialog.token { width: min(420px, 92vw); }
 .token-box { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; padding: 26px 26px 20px; }
-.token-title { margin: 0; font: 700 20px var(--display); letter-spacing: .14em; text-transform: uppercase; color: #f3d29a; }
+/*By leewheel 2026年11月18日 标题字体改 var(--body)：Cinzel 的 lowercase 画成大写，会让「打赏Token」显示成「打赏TOKEN」 */
+.token-title { margin: 0; font: 700 20px var(--body); letter-spacing: .1em; text-transform: none; color: #f3d29a; }
 .token-qr {
   width: 224px; height: 224px; padding: 9px; box-sizing: border-box;
   display: flex; align-items: center; justify-content: center;

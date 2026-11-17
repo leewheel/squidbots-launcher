@@ -1,7 +1,7 @@
 {
   "name": "coa-launcher-lite",
   "productName": "征服艾泽拉斯 单机启动器",
-  "version": "1.0.202611171753",
+  "version": "1.0.202611180450",
   "description": "征服艾泽拉斯（Conquest of Azeroth）单机整合包启动器：一键启动/停止本地 MySQL、登录服务器与世界服务器，管理设置、备份与国度。",
   "license": "MIT",
   "author": "leewheel",
@@ -12,12 +12,9 @@
     "dist": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && electron-builder --win nsis --publish never",
     "stage": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs",
     "dist:obf": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/write-launcher-release.cjs",
-    "dist:obf": "node scripts/set-channel.cjs plain && node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/write-launcher-release.cjs",
-    "dist:obf:token": "node scripts/set-channel.cjs token && node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/write-launcher-release.cjs",
     "release:manifest": "node scripts/write-launcher-release.cjs",
     "release:prune": "node scripts/prune-releases.cjs"
   },
-  "coaChannel": "plain",
   "build": {
     "appId": "org.coa.launcher-lite",
     "productName": "征服艾泽拉斯 单机启动器",
@@ -55,7 +52,7 @@
       "icon": "editions/server/icon.png"
     },
     "portable": {
-      "unpackDirName": "CoALauncherLite-1.0.202611171753",
+      "unpackDirName": "CoALauncherLite-1.0.202611180450",
       "requestExecutionLevel": "user"
     },
     "publish": null

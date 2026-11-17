@@ -21,8 +21,6 @@ function createLauncherUpdates(app, options = {}, notify = () => {}, canRestart 
   const root = String(options.root || '');
   const repo = selfUpdate.repoOf(options.repo);
   const branch = String(options.branch || 'main');
-  //By leewheel 2026年11月17日 双渠道：标准版与捐赠版各自查各自的清单/Release，互不干扰。
-  const channel = String(options.channel || 'plain');
   const mirrors = Array.isArray(options.mirrors) && options.mirrors.length ? options.mirrors : selfUpdate.DEFAULT_MIRRORS;
   const fetchImpl = options.fetchImpl || fetch;
   //By leewheel 2026年11月9日 更新目录放在启动器旁边：<root>\Update\launcher
@@ -53,7 +51,7 @@ function createLauncherUpdates(app, options = {}, notify = () => {}, canRestart 
 
   async function lookup() {
     const result = await selfUpdate.check({
-      currentVersion, repo, branch, channel, mirrors, fetchImpl,
+      currentVersion, repo, branch, mirrors, fetchImpl,
       signal: AbortSignal.timeout(25000),
     });
     return result;

@@ -64,9 +64,6 @@ function obfuscate(file) {
     license: pkg.license,
     author: pkg.author,
     main: pkg.main,
-    //By leewheel 2026年11月17日 渠道字段必须带进 asar：运行期 main.cjs 靠它决定查哪条更新线、
-    // 渲染层靠它决定是否显示「By Me Some Token」。漏掉这一行，两条渠道会退回同一份清单、互相顶版本。
-    coaChannel: pkg.coaChannel === 'token' ? 'token' : 'plain',
   };
   fs.writeFileSync(path.join(out, 'package.json'), JSON.stringify(staged, null, 2), 'utf8');
 

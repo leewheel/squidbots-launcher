@@ -273,21 +273,6 @@ function appVersion() {
   } catch { /* 读不到就用 Electron 的 */ }
   return app.getVersion();
 }
-//By leewheel 2026年11月17日 构建渠道：set-channel.cjs 在打包前把 coaChannel 写进 package.json，
-// 这里从包内 package.json 读回来。两条线各自更新、各自发版，界面也据它决定要不要显示打赏按钮。
-// 用惰性求值：模块加载时 app 还没 ready，getAppPath 虽然能用，但没必要在这时候碰它。
-let launcherChannelCache = '';
-function launcherChannelKey() {
-  if (launcherChannelCache) return launcherChannelCache;
-  let value = 'plain';
-  try {
-    const file = path.join(app.getAppPath(), 'package.json');
-    const parsed = JSON.parse(require('node:fs').readFileSync(file, 'utf8'));
-    value = String(parsed?.coaChannel || '').trim().toLowerCase() === 'token' ? 'token' : 'plain';
-  } catch { /* 读不到按标准版：宁可少按钮，也不能让普通版玩家拿到捐赠版行为 */ }
-  launcherChannelCache = value;
-  return value;
-}
 //By leewheel 2026年11月6日 下载速度显示：KB/s 或 MB/s；剩余时间写成“x分y秒”
 function formatSpeed(kbps) {
   const value = Number(kbps) || 0;
@@ -1032,8 +1017,6 @@ function publicConfig() {
   return {
     appName: config.appName,
     edition: config.edition,
-    //By leewheel 2026年11月17日 渲染层据此决定「By Me Some Token」按钮显示与否（token 版才显示）
-    channel: launcherChannelKey(),
     hasFeed: !!config.feedUrl,
     hasMmaps: !!config.server?.mmapsUrl,
     // The repack updater: core, bots and addon come from one signed update; the old bots channel is not offered.
@@ -4440,9 +4423,6 @@ async function main() {
     root: launcherRootFolder(),
     repo: config.launcherUpdateRepo,
     branch: config.launcherUpdateBranch,
-    //By leewheel 2026年11月17日 双渠道：构建期写进 package.json 的 coaChannel 决定查哪条更新线
-    // （标准版 launcher-release.json / 捐赠版 launcher-release-token.json）。
-    channel: launcherChannelKey(),
     mirrors: config.downloadMirrors,
     fetchImpl: netFetch,
     // 玩家点过「忽略这个版本」就不再提示（下次检查其余版本照常）

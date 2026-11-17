@@ -36,7 +36,7 @@ if (pkg.version !== version) { pkg.version = version; dirty = true; }
 //By leewheel 2026年11月6日 便携版解压目录必须带版本号：
 // 便携版 exe 会把自身解压到 %TEMP%\<解压目录名> 再运行，目录名固定的话新启动器会**复用旧的解压内容**，
 // 结果就是“exe 换了、跑的还是老代码”（实弹：界面/功能都还是上一版）。带上版本号，每次都是新的解压目录。
-const unpackDirName = `CoALauncherLite${String(pkg.coaChannel || 'plain') === 'token' ? 'Token' : ''}-${version}`;
+const unpackDirName = `CoALauncherLite-${version}`;
 if (pkg.build?.portable && pkg.build.portable.unpackDirName !== unpackDirName) {
   pkg.build.portable.unpackDirName = unpackDirName;
   dirty = true;

@@ -59,14 +59,12 @@ const App = {
     $('#tabs-right').innerHTML = App.state.config.edition === 'server'
       ? bugTab + rightTabs.map(([id, iconName, label]) => `<button class="tab${App.state.tab === id ? ' active' : ''}" data-tab="${id}">${icon(iconName)}<span>${esc(label)}</span>${id === 'server' && (isNew('settings') || isNew('wizard')) ? newDot() : ''}</button>`).join('')
       : '';
-    //By leewheel 2026年11月16日 「By Me Some Token」按钮挂在「模块」右边（老大 2026-11-16 要求）。
+    //By leewheel 2026年11月16日 「打赏Token」按钮挂在「模块」右边（老大 2026-11-16 要求）。
     // 它不是页面（没有 data-tab），点开是一个打赏弹窗，所以走 data-action → App.actions['token-open']。
-    //By leewheel 2026年11月17日 老大要求把「By Me Some Token」按钮隐藏：不注入即可，
-    // token.js 里的弹窗逻辑原样保留，想恢复时把下面 tokenButton 赋值改回 token-open 按钮那行就行。
-    //By leewheel 2026年11月17日 双渠道定案：标准版（channel=plain）不显示按钮、捐赠版（channel=token）照旧显示，
-    // 两个版本各自更新、互不干扰。渠道来自构建期写入的 package.json coaChannel，运行期经 publicConfig 传到这里。
-    const tokenButton = App.state.config.channel === 'token'
-      ? `<button class="tab tab-token" data-action="token-open" title="${esc('给这个项目买点 Token：纯自愿，不买也能玩全部内容')}">${icon('coin')}<span>By Me Some Token</span></button>`
+    //By leewheel 2026年11月18日 老大定案：只保留打赏版（不再分标准版/捐赠版两个渠道），
+    // 所以按钮始终显示；文字按老大要求改成中文「打赏Token」，点开首屏直接是收款码。
+    const tokenButton = App.state.config.edition === 'server'
+      ? `<button class="tab tab-token" data-action="token-open" title="${esc('给这个项目买点 Token：纯自愿，不买也能玩全部内容')}">${icon('coin')}<span>打赏Token</span></button>`
       : '';
     if (tokenButton) $('#tabs').insertAdjacentHTML('beforeend', tokenButton);
     //End By leewheel
