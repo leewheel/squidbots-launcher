@@ -1282,8 +1282,10 @@ function showReleaseUpdate() {
     ensureReleaseProgressWatch();
     const notes = String(info.latest?.notes || '').slice(0, 4000);
     const history = (info.history || []).slice(-3).reverse();
+    //By leewheel 2026年11月18日 老大反馈：更新说明框太小、不重要的内容占地方。
+    // 更新记录折进 <details>（默认收起），把高度让给更新说明。
     const historyHtml = history.length
-      ? `<h3>${esc(t('release.history', '更新记录'))}</h3><ul class="notes">${history.map(item => `<li><strong>${esc(item.version || '?')}</strong> · ${esc(formatDate(item.at, true))} · ${esc(t('release.files', '服务端 {s} 个 / 客户端 {c} 个', { s: item.files?.server ?? 0, c: item.files?.client ?? 0 }))}</li>`).join('')}</ul>`
+      ? `<details class="release-history-fold"><summary>${esc(t('release.history', '更新记录'))}（最近 ${history.length} 次）</summary><ul class="notes">${history.map(item => `<li><strong>${esc(item.version || '?')}</strong> · ${esc(formatDate(item.at, true))} · ${esc(t('release.files', '服务端 {s} 个 / 客户端 {c} 个', { s: item.files?.server ?? 0, c: item.files?.client ?? 0 }))}</li>`).join('')}</ul></details>`
       : '';
     const body = info.error
       ? `<p class="conf-warn">${icon('warning')}<span>${esc(info.error)}</span></p>`
@@ -1297,7 +1299,7 @@ function showReleaseUpdate() {
             ? `<p class="status-line">${esc(t('release.empty', '上游仓库还没有发布任何版本（releases 为空），发布后这里就会显示更新。'))}</p><p class="muted small">${esc(t('release.scope', '这里检查的是服务端与客户端的内容更新，不是启动器自身的版本。'))}</p>`
             : `${releaseVersionsHtml(info)}
           ${pendingHtml}
-          ${notes ? `<h3>${esc(t('release.notes', '更新说明'))}</h3><div class="patch-notes release-notes">${markdownLite(notes)}</div>` : ''}
+          ${notes ? `<h3>${esc(t('release.notes', '更新说明'))}</h3><div class="patch-notes release-notes release-notes-main">${markdownLite(notes)}</div>` : ''}
           ${asset ? `<p class="muted small">${esc(t('release.asset', '更新包'))}：${esc(asset.name)} · ${esc(formatBytes(asset.size))}</p>` : `<p class="conf-warn">${icon('warning')}<span>${esc(t('release.noAsset', '这个版本没有附带 zip 更新包。'))}</span></p>`}
           <div id="release-progress"></div>
           <label class="check"><input type="checkbox" id="release-delete" checked><span>${esc(t('release.deleteAfter', '更新完成后自动删除 Update 临时目录'))}</span></label>
@@ -1314,7 +1316,7 @@ function showReleaseUpdate() {
       ${!running ? `<button class="button ghost" data-action="release-speedtest" title="${esc('给所有下载镜像测速，下载时自动用最快的那个')}">${icon('chart')}镜像测速</button>` : ''}
       ${!running ? `<button class="button ghost" data-action="release-local" title="${esc('GitHub 上没有 zip 资产时，用本地的 CoA-Update-*.zip 覆盖安装')}">${icon('download')}从本地包更新</button>` : ''}
     </footer>`;
-    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${running || finished || failed ? '' : historyHtml}</div>${footer}`, 'xwide');
+    dialog.open(`${dialog.header(t('verify.update', '检查更新'))}<div class="dialog-content">${body}${running || finished || failed ? '' : historyHtml}</div>${footer}`, 'xwide release-dialog');
     //By leewheel 2026年11月8日 重开时按当前状态画一次（走统一入口，带结构指纹，避免重复重建）
     if (running) paintReleaseProgress(run);
   }).catch(error => {

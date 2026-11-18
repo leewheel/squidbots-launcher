@@ -465,3 +465,51 @@ body.has-layout-alert .app { grid-template-rows: auto auto 1fr; }
   color: rgba(232, 214, 184, .58); text-align: center;
 }
 /* End By leewheel */
+
+/* By leewheel 2026年11月18日 「检查更新」弹窗重排（老大反馈：更新内容的框体太小，不重要的反而占大比例）：
+   把更新说明做成主体——给足高度、做成高对比卡片；更新记录折起来、说明段降权。
+   选择器带 .release-dialog，避免影响其它同样用 release-notes 的弹窗（机器人帮助、进行中日志等）。 */
+dialog.release-dialog { width: min(1080px, 94vw); }
+dialog.release-dialog .dialog-content { gap: 8px; padding: 14px 20px 10px; }
+dialog.release-dialog .dialog-content > h3 {
+  margin: 8px 0 0; font: 700 14px var(--display);
+  letter-spacing: .05em; color: var(--gold, #f3d29a);
+}
+
+/* 更新说明：主体内容，占满剩余高度 + 明确对比 */
+.release-notes-main {
+  min-height: 32vh; max-height: 52vh; overflow: auto;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(240, 190, 120, .34);
+  border-left: 3px solid var(--accent, #e0a850);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .085), rgba(255, 255, 255, .025));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .06), 0 6px 18px rgba(0, 0, 0, .32);
+  color: var(--text);
+  font-size: 14px; line-height: 1.8;
+  overscroll-behavior: contain;
+}
+.release-notes-main h2, .release-notes-main h3, .release-notes-main h4 { color: #f7dfae; margin: 12px 0 6px; }
+.release-notes-main h2:first-child, .release-notes-main h3:first-child, .release-notes-main h4:first-child { margin-top: 0; }
+.release-notes-main p, .release-notes-main li { color: #efe3cd; }
+.release-notes-main p { margin: 6px 0; }
+.release-notes-main ul { margin: 6px 0 10px; padding-left: 20px; display: grid; gap: 5px; }
+.release-notes-main strong { color: #fff6e4; font-weight: 700; }
+.release-notes-main code { background: rgba(255, 255, 255, .12); color: #ffe9c0; }
+.release-notes-main a { color: #ffd88a; }
+
+/* 更新记录：默认收起，只占一行；需要时展开 */
+.release-history-fold { margin-top: 2px; }
+.release-history-fold > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; }
+.release-history-fold > summary:hover { color: var(--text); }
+.release-history-fold .notes { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); }
+
+/* 归位规则说明 / 复选框：降权，不抢主体 */
+dialog.release-dialog .dialog-content > p.muted.small { opacity: .7; line-height: 1.55; font-size: 12px; }
+dialog.release-dialog .check { opacity: .85; }
+
+/* 版本行：当前版本 / 最新版本 各占一行，别粘成一串 */
+dialog.release-dialog .realm-badge > div { display: grid; gap: 3px; min-width: 0; }
+dialog.release-dialog .realm-badge strong { display: block; font-size: 13.5px; color: var(--text); }
+dialog.release-dialog .realm-badge small { display: block; font-size: 12.5px; color: var(--muted); }
+/* End By leewheel */
