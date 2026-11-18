@@ -936,7 +936,7 @@
   "realms.created": "{name} 已就绪：启动它，然后在游戏的国度列表中选择它。",
   "realms.creating": "正在开启…",
   "realms.dashboard": "仪表盘",
-  "realms.dawnriseText": "只有一个职业——英雄：你可以从所有职业中自行挑选每个法术和天赋。",
+  "realms.dawnriseText": "只有一个职业——英雄：你可以从所有职业中自行挑选每个法术和天赋。机器人也以英雄身份参战，每人一套预设配点。",
   "realms.disable": "关闭",
   "realms.disableBody": "它的世界会停止，并从游戏的国度列表中移除。它的角色、机器人和设置都会保留：随时可以重新开启。",
   "realms.disableHint": "停止它并从国度列表中移除；不删除任何内容。",

@@ -50,8 +50,10 @@ const MODES = {
   // without GameModeMask 64). RealmType "live seasonal" picks the seasonal rows of CharacterAdvancement.dbc, as Darkmoon.
   dawnrise: {
     id: 4, name: 'Dawnrise (Free Pick)', prefix: 'rndfp', step: 3,
-    // Experimental: made without bots, they cannot play the Free Pick Hero yet (the player can raise the count later).
-    bots: 0,
+    //By leewheel 20261118 Free Pick 机器人上线：机器人以英雄（class 10）建号，按玩家可选的原型模板配点
+    //（坦克 / 近战 / 远程 / 治疗各一套），实现见 mod-playerbots 的 CoaFreepick.cpp。
+    // 不再写死 bots: 0 —— 不写就取默认 150 个，与 Wildcard / Reborn 一致。
+    //End By leewheel
     keys: {
       // No challenge mode is imposed on every character (the CoA realm's empty value, written so a change there never leaks in).
       'mod-coa-challenges.conf': { 'CoAChallenges.GameModes.Realm': '' },

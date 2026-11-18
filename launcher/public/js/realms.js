@@ -37,7 +37,7 @@ const REALMS_INFO = {
   coa: { color: '#e8b04a', title: 'Conquest of Azeroth', sub: 'CoA', textKey: 'realms.coaText', text: 'The classic realm: the classes of Conquest of Azeroth, your characters and your bots of today.' },
   wildcard: { color: '#c27bff', title: 'Wildcard', sub: 'Darkmoon', textKey: 'realms.wildcardText', text: 'One class, the Hero: its spells and talents are drawn at random. A new game every time.' },
   reborn: { color: '#ff8a3d', title: 'Warcraft Reborn', sub: 'Bronzebeard', textKey: 'realms.rebornText', text: 'The ten original classes, reworked: classic Warcraft, plus.' },
-  dawnrise: { color: '#5cc8ff', title: 'Free Pick', sub: 'Dawnrise', textKey: 'realms.dawnriseText', text: 'One class, the Hero: choose every spell and talent yourself, from every class.', experimental: true, noBots: true, since: '2.8.2' },
+  dawnrise: { color: '#5cc8ff', title: 'Free Pick', sub: 'Dawnrise', textKey: 'realms.dawnriseText', text: 'One class, the Hero: choose every spell and talent yourself, from every class. Bots play Heroes too, each with a preset build.', experimental: true, since: '2.8.2' },
   //By leewheel 20261115 第 5 个国度：Malfurion（鲜活世界服）——按官方新开服的样子开门，
   // 角色从零开始，机器人跟着玩家一起成长，公会/入侵/经济从第一天慢慢长起来。
   living: { color: '#7ddc8a', title: 'Malfurion', sub: 'Living World', textKey: 'realms.livingText', text: 'A new world opening like an official server: fresh characters, 1000 bots that level up with the players, guilds, invasions, and an auction house that fills up as the world grows.', since: '3.0' },

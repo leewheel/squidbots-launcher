@@ -1316,7 +1316,7 @@
   "modules.experimental": "Expérimental",
   "modules.raidWithBots": "Les raids aussi : lancez-le de la même façon dans un raid avec vos bots. Les PV des boss comptent un bot pour 0,3 joueur (Réglages > Difficulté des créatures).",
   "modules.raidBotsAlone": "Des raids de bots seuls, comme les groupes self-found en donjon.",
-  "realms.dawnriseText": "Une seule classe, le Héros : vous choisissez vous-même chaque sort et chaque talent, parmi toutes les classes.",
+  "realms.dawnriseText": "Une seule classe, le Héros : vous choisissez vous-même chaque sort et chaque talent, parmi toutes les classes. Les bots jouent aussi des Héros, chacun avec un archétype de build prévu.",
   "realms.botsSoon": "Sans bots pour l'instant : ils arrivent dans une prochaine version.",
   "realms.needSince": "Arrive avec CoA Bots {version} : son outil de mise à jour doit connaître les bases de ce royaume.",
   "conf.searchHint": "Rechercher un réglage : un mot, un nom, ou une clé des fichiers .conf",
