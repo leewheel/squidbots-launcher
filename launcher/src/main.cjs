@@ -941,6 +941,11 @@ async function serverInfo() {
     canPurgeBots: !!config.server.commands.purgeBots || builtInBots(folder),
     // The extra realms whose world runs or starts: the home page counts the server as running with them alone.
     realmsOn: folder ? (await realms.status(folder, { live: false }).catch(() => ({ realms: [] }))).realms.filter(realm => ['running', 'starting'].includes(realm.state)).map(realm => ({ key: realm.key, state: realm.state })) : [],
+    //By leewheel 2026年11月19日 首页把**每一个**国度都列出来（含未创建/已关闭/停止），点一下进国度页。
+    // 只读文件、不连库（live:false），不会拖慢首页。
+    realms: folder ? (await realms.status(folder, { live: false }).catch(() => ({ realms: [] }))).realms
+      .filter(realm => realm.state !== 'absent')
+      .map(realm => ({ key: realm.key, name: realm.name || '', state: realm.state, worldPort: realm.worldPort })) : [],
   };
 }
 

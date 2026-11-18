@@ -415,6 +415,7 @@ function homeView() {
         ${foreign ? `<div class="button-row port-owner-row"><button class="button danger small" data-action="port-kill" data-port="${esc(foreign.port)}">${icon('warning')}<span>${esc(t('home.forceKillPort', '强制关闭占用程序'))}</span></button><button class="button ghost small" data-action="port-rescan">${icon('refresh')}<span>${esc(t('home.recheckPorts', '重新检查端口'))}</span></button><small class="muted">${esc(foreign.other || '')}</small></div>` : ''}
         ${startupFailView()}
         <div class="mini-services">${lights}</div>
+        ${realmStrip(info)}
         <div class="play-row"><div class="split-button ${button[3]}">
           <button class="split-main" data-action="${button[2]}" ${button[2] ? '' : 'disabled'} title="${esc(info.bots?.installed || info.botsBuiltIn ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}">${icon(button[0])}<span><strong>${esc(button[1])}</strong><small>${esc(info.bots?.installed || info.botsBuiltIn ? t('home.withBots', 'Database, login, world and bots') : t('home.withoutBots', 'Database, login and world'))}</small></span></button>
           <button class="split-more" data-action="play-menu" aria-label="${esc(t('classic.more', 'More'))}">${icon('chevron')}</button>
@@ -849,6 +850,18 @@ App.actions['port-rescan'] = button => guard(async () => {
 //By leewheel 2026年11月5日 “机器人帮助”已挪到“检查”页的“机器人”标题旁（内容内嵌），这里不再放入口。
 function homeLinks() {
   return `<span class="news-links">${App.state.feed?.discord?.invite ? `<button class="link-button" data-action="feed-open" data-kind="discord">${icon('discord')}${esc(t('home.discordJoin', 'Join the Discord'))}</button>` : ''}</span>`;
+}
+
+//By leewheel 2026年11月19日 首页把**每一个已建的国度**都列成一行小卡片（含已停止/已关闭），
+// 一眼看出哪个在跑、哪个停了；点一下进国度页。少于两个国度时不显示（省地方）。
+function realmStrip(info) {
+  const list = (info.realms || []).filter(realm => realm.state !== 'absent');
+  if (list.length < 2) return '';
+  const stateText = state => ({
+    running: t('realms.running', '运行中'), starting: t('realms.starting', '启动中'), stopping: t('realms.stopping', '停止中'),
+    stopped: t('realms.stopped', '已停止'), disabled: t('realms.disabled', '已关闭'), foreign: t('realms.foreignShort', '端口被占'),
+  }[state] || state);
+  return `<div class="realm-strip">${list.map(realm => `<button class="realm-chip st-${esc(realm.state)}" data-tab="realms" title="${esc(`${realm.name || realmTitle(realm.key)} · ${t('realms.port', 'Port')} ${realm.worldPort}`)}"><i class="dot"></i><span>${esc(realmTitle(realm.key) || realm.name || realm.key)}</span><small>${esc(stateText(realm.state))}</small></button>`).join('')}</div>`;
 }
 
 function feedNewsRow(links = true) {

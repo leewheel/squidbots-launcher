@@ -513,6 +513,24 @@ dialog.release-dialog .check { opacity: .85; }
 .realm-links { flex-wrap: wrap; row-gap: 6px; }
 .realm-links .link-button { flex: 0 1 auto; }
 
+/*By leewheel 2026年11月19日 首页的国度条：每个已建国度一枚小卡片（状态点 + 名称 + 状态），点一下进国度页 */
+.realm-strip { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 2px; }
+.realm-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 5px 11px 5px 9px; border-radius: 999px;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, .04);
+  color: var(--muted); font-size: 12.5px; cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.realm-chip:hover { color: var(--text); border-color: var(--line-strong); background: rgba(255, 255, 255, .07); }
+.realm-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, .28); flex: 0 0 auto; }
+.realm-chip small { color: var(--faint, rgba(255,255,255,.45)); font-size: 11.5px; }
+.realm-chip.st-running { color: #9fe6ac; border-color: rgba(125, 220, 138, .45); }
+.realm-chip.st-running .dot { background: #7ddc8a; box-shadow: 0 0 8px rgba(125, 220, 138, .8); }
+.realm-chip.st-starting .dot, .realm-chip.st-stopping .dot { background: #ffcf7a; box-shadow: 0 0 8px rgba(255, 207, 122, .8); }
+.realm-chip.st-foreign { color: #ff9c8f; border-color: rgba(255, 156, 143, .4); }
+.realm-chip.st-foreign .dot { background: #ff7a68; }
+
 /* 版本行：当前版本 / 最新版本 各占一行，别粘成一串 */
 dialog.release-dialog .realm-badge > div { display: grid; gap: 3px; min-width: 0; }
 dialog.release-dialog .realm-badge strong { display: block; font-size: 13.5px; color: var(--text); }

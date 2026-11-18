@@ -554,5 +554,17 @@
         "Realm cards gained Backup / Restore a backup / Reset the world: a reset saves the whole realm first, asks for the realm name, then clears its characters and bots (the shared world database is untouched)."
       ]
     }
+  },
+  {
+    "version": "1.0.202611190700",
+    "items": {
+      "zh": [
+        "首页把五个国度都列出来了：每个一枚小标签，显示运行中/启动中/已停止/已关闭，点一下进国度页。",
+        "发布流程加门禁：没有「能启动、能画首页」的证明的 exe，不允许写发版清单。"
+      ],
+      "en": [
+        "Home lists every realm as a small chip with its state; one click opens the realms page."
+      ]
+    }
   }
 ]
