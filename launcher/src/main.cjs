@@ -44,6 +44,8 @@ const live = require('./live.cjs');
 const eco = require('./eco.cjs');
 const modules = require('./modules.cjs');
 const realms = require('./realms.cjs');
+//By leewheel 2026年11月19日 国度级维护（备份 / 恢复 / 重置世界）：只碰这个国度自己的角色库与机器人库，世界库共用不动
+const realmMaintenance = require('./realm-maintenance.cjs');
 //By leewheel 2026年11月16日 「By Me Some Token」打赏弹窗的二维码：现场生成，不读任何图片文件
 const payment = require('./payment.cjs');
 //End By leewheel
@@ -2312,6 +2314,34 @@ function registerIpc() {
   handle('realms:eco', async (key, on) => { await eco.setEnabled(serverPath(), text(key, 12), on === true); return realmsStatus(); });
   const onePurge = (name, work) => oneServerJob(`recreating the bots of ${name}`, () => withMysql(work));
   handle('realms:purge', async key => { await onePurge(realms.MODES[text(key, 12)]?.title || key, () => realms.purgeBots(serverPath(), text(key, 12))); return realmsStatus(); });
+  //By leewheel 2026年11月19日 国度备份 / 恢复 / 重置世界（移植上游 “Reset the world” 的做法）：
+  // 重置会清空这个国度的角色与机器人数据，所以必须先整包备份、并要求玩家输入国度名；世界库 acore_world 共用，绝不碰。
+  const realmStopped = async key => {
+    const list = (await realms.status(serverPath(), { live: false }).catch(() => ({ realms: [] }))).realms;
+    const realm = list.find(item => item.key === key);
+    return !realm || !['running', 'starting', 'stopping'].includes(realm.state);
+  };
+  handle('realms:backups', async key => ({ backups: await realmMaintenance.list(serverPath(), text(key, 12)) }));
+  handle('realms:backup', async key => {
+    await ensureMysql();
+    return realmMaintenance.backup(serverPath(), text(key, 12), { notify: line => send('realms:progress', line) });
+  });
+  handle('realms:reset', async (key, typedName) => {
+    const k = text(key, 12);
+    if (!(await realmStopped(k))) throw new Error('这个国度还在运行：请先停止它，再重置。');
+    const realm = (await realms.status(serverPath(), { live: false }).catch(() => ({ realms: [] }))).realms.find(item => item.key === k);
+    await ensureMysql();
+    return realmMaintenance.reset(serverPath(), k, {
+      typedName: text(typedName, 32), expectName: realm?.name || '', stopped: true,
+      notify: line => send('realms:progress', line),
+    });
+  });
+  handle('realms:restore', async (key, file) => {
+    const k = text(key, 12);
+    if (!(await realmStopped(k))) throw new Error('这个国度还在运行：请先停止它，再恢复备份。');
+    await ensureMysql();
+    return realmMaintenance.restore(serverPath(), k, file, { stopped: true, notify: line => send('realms:progress', line) });
+  });
   handle('realms:disable', async (key, off) => { await withMysql(() => realms.setDisabled(serverPath(), text(key, 12), off === true)); return realmsStatus(); });
   handle('realms:openLogs', async key => { const error = await shell.openPath(path.join(serverPath(), 'Royaumes', text(key, 12).replace(/[^a-z]/g, ''), 'Logs')); if (error) throw new Error(error); });
   // The world console only reads and writes a bare file name (PlayerDump.DisallowPaths = 1), in the worldserver's own

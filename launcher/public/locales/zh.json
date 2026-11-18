@@ -995,7 +995,7 @@
   "realms.players": "玩家",
   "realms.port": "端口",
   "realms.portHint": "游戏通过此端口连接此国度（国度列表会把它告诉客户端）。",
-  "realms.purge": "重新生成其机器人",
+  "realms.purge": "新机器人",
   "realms.purgeBody": "此国度的随机机器人将被删除（玩家不受影响）；下次启动时重新生成。其他国度的机器人保留。",
   "realms.purgeHint": "仅删除此国度的随机机器人；下次启动时重新生成。",
   "realms.purgeTitle": "重新生成 {name} 的机器人？",
@@ -1796,5 +1796,11 @@
   "register.badName": "账号名要 3–17 个字符，不能有空格。",
   "register.badPassword": "请填密码。",
   "register.startServer": "启动服务器",
-  "register.creating": "正在创建账号…"
+  "register.creating": "正在创建账号…",
+  "realms.backup": "备份",
+  "realms.backupHint": "把这个国度的角色与机器人数据库整包备份到 Backups\\，出错时可以恢复",
+  "realms.restore": "恢复备份",
+  "realms.restoreHint": "用这个国度的某一份备份覆盖现在的数据（会先给现在的状态再备份一份）",
+  "realms.reset": "重置世界",
+  "realms.resetHint": "把这个国度恢复成全新的世界：先整包备份，再清空它的角色与机器人数据（世界库共用，不受影响）"
 }

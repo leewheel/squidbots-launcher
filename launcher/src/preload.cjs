@@ -202,6 +202,11 @@ contextBridge.exposeInMainWorld('launcher', Object.freeze({
   realmsEco: (key, on) => call('realms:eco', key, on === true),
   realmsOpenLogs: key => call('realms:openLogs', key),
   realmsPurge: key => call('realms:purge', key),
+  //By leewheel 2026年11月19日 国度备份 / 恢复 / 重置世界
+  realmsBackups: key => call('realms:backups', key),
+  realmsBackup: key => call('realms:backup', key),
+  realmsReset: (key, typedName) => call('realms:reset', key, typedName),
+  realmsRestore: (key, file) => call('realms:restore', key, file),
   realmsDisable: (key, off) => call('realms:disable', key, off === true),
   realmsModules: key => call('realms:modules', key),
   realmsMemory: key => call('realms:memory', key),

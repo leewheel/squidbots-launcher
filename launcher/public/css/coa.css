@@ -508,6 +508,11 @@ dialog.release-dialog .dialog-content > h3 {
 dialog.release-dialog .dialog-content > p.muted.small { opacity: .7; line-height: 1.55; font-size: 12px; }
 dialog.release-dialog .check { opacity: .85; }
 
+/*By leewheel 2026年11月19日 国度卡底部链接从 3 个变 5 个（新机器人/备份/恢复备份/重置世界/关闭）：
+  允许换行，别被 ellipsis 逐条吃掉 */
+.realm-links { flex-wrap: wrap; row-gap: 6px; }
+.realm-links .link-button { flex: 0 1 auto; }
+
 /* 版本行：当前版本 / 最新版本 各占一行，别粘成一串 */
 dialog.release-dialog .realm-badge > div { display: grid; gap: 3px; min-width: 0; }
 dialog.release-dialog .realm-badge strong { display: block; font-size: 13.5px; color: var(--text); }

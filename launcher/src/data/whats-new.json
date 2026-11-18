@@ -542,5 +542,17 @@
         "保存国度卡片后只重启登录服：游戏的国度列表立刻生效，不用再把整个服重启一次。"
       ]
     }
+  },
+  {
+    "version": "1.0.202611190600",
+    "items": {
+      "zh": [
+        "国度卡新增「备份 / 恢复备份 / 重置世界」：重置会先把整个国度备份到 Backups\\，并要求输入国度名，再清空它的角色与机器人数据（世界库共用，不动）。",
+        "「重新生成其机器人」改成「新机器人」，备份/恢复/重置的按钮文案同步补齐中文。"
+      ],
+      "en": [
+        "Realm cards gained Backup / Restore a backup / Reset the world: a reset saves the whole realm first, asks for the realm name, then clears its characters and bots (the shared world database is untouched)."
+      ]
+    }
   }
 ]

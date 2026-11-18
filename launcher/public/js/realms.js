@@ -150,6 +150,9 @@ function realmCard(realm, busy) {
     : `<label class="realm-auto"><input type="checkbox" data-action="realm-auto" data-key="${realm.key}" ${realm.autostart ? 'checked' : ''}>${esc(t('realms.autostart', 'Start with the server'))}</label>${ecoSwitch(realm.key)}
        <span class="realm-links"><button class="link-button" data-action="realm-logs" data-key="${realm.key}">${icon('book')}${esc(t('realms.logs', 'Logs'))}</button>
        <button class="link-button" data-action="realm-purge" data-key="${realm.key}" ${on || busy ? 'disabled' : ''} title="${esc(t('realms.purgeHint', 'Deletes the random bots of this realm only; they are made again at its next start.'))}">${icon('refresh')}${esc(t('realms.purge', 'New bots'))}</button>
+       <button class="link-button" data-action="realm-backup" data-key="${realm.key}" ${on || busy ? 'disabled' : ''} title="${esc(t('realms.backupHint', '把这个国度的角色与机器人数据库整包备份到 Backups\\，出错时可以恢复'))}">${icon('database')}备份</button>
+       <button class="link-button" data-action="realm-restore" data-key="${realm.key}" ${on || busy ? 'disabled' : ''} title="${esc(t('realms.restoreHint', '用这个国度的某一份备份覆盖现在的数据（会先给现在的状态再备份一份）'))}">${icon('download')}恢复备份</button>
+       <button class="link-button danger" data-action="realm-reset" data-key="${realm.key}" ${on || busy ? 'disabled' : ''} title="${esc(t('realms.resetHint', '把这个国度恢复成全新的世界：先整包备份，再清空它的角色与机器人数据（世界库共用，不受影响）'))}">${icon('warning')}重置世界</button>
        <button class="link-button" data-action="realm-disable" data-key="${realm.key}" ${busy ? 'disabled' : ''} title="${esc(t('realms.disableHint', 'Stops it and takes it out of the realm list; nothing is deleted.'))}">${icon('close')}${esc(t('realms.disable', 'Switch off'))}</button></span>`;
   return `<article class="realm-card realm-${realm.key}${on ? ' on' : ''}">${head}${stats}
     <div class="realm-buttons">${startStop}<button class="button ghost small" data-action="realm-settings" data-key="${realm.key}">${icon('settings')}${esc(t('realms.settings', 'Settings'))}${realm.changed ? `<em class="count" title="${esc(t('realms.ownHint', '这个国度单独改过 {n} 项设置，点开设置可看明细', { n: realm.changed }))}">${realm.changed}</em>` : ''}</button><button class="button ghost small" data-action="realm-console" data-key="${realm.key}" ${realm.state === 'running' ? '' : 'disabled'}>${icon('terminal')}${esc(t('realms.console', 'Console'))}</button>${App.state.dashboard?.available ? `<button class="button ghost small" data-action="realm-dashboard" data-key="${realm.key}">${icon('chart')}${esc(t('realms.dashboard', 'Dashboard'))}</button>` : ''}</div>
@@ -239,6 +242,56 @@ Object.assign(App.actions, {
     toast(input.checked ? t('realms.ecoOn', 'Eco mode on: the bots sleep when nobody is in for a while.') : t('realms.ecoOff', 'Eco mode off: the bots stay on.'), 'success');
   }),
   'realm-logs': button => guard(() => App.api.realmsOpenLogs(button.dataset.key)),
+  //By leewheel 2026年11月19日 国度级备份 / 恢复 / 重置世界（危险动作：先备份 + 二次确认）
+  'realm-backup': button => guard(async () => {
+    const key = button.dataset.key;
+    const release = holdDialog('正在备份国度', `正在把这个国度的角色与机器人数据库打包到 Backups\\，可能要几分钟。请保持启动器开着。`);
+    try {
+      const result = await App.api.realmsBackup(key);
+      release();
+      toast(`备份完成：${result.name}（${(result.size / 1048576).toFixed(1)} MB）`, 'success');
+    } catch (error) { release(); throw error; }
+  }),
+  'realm-restore': button => guard(async () => {
+    const key = button.dataset.key;
+    const { backups } = await App.api.realmsBackups(key).catch(() => ({ backups: [] }));
+    if (!backups.length) { toast('这个国度还没有备份：先点「备份」做一份。', 'error'); return; }
+    const rows = backups.slice(0, 8).map(item => `<li><button class="link-button" data-pick="${esc(item.file)}">${esc(item.name)}</button> <small class="muted">${(item.size / 1048576).toFixed(1)} MB</small></li>`).join('');
+    const picked = await new Promise(resolve => {
+      dialog.open(`${dialog.header('恢复这个国度的备份', '选一份备份覆盖现在的数据（恢复前会先把现在的状态再备份一份）')}<div class="dialog-content"><ul class="plain-list">${rows}</ul></div><footer class="dialog-foot"><button class="button ghost" data-close="1">取消</button></footer>`, 'small');
+      const element = $('#dialog');
+      const done = value => { element.removeEventListener('click', onClick); dialog.close(); resolve(value); };
+      const onClick = event => {
+        const pick = event.target.closest('[data-pick]');
+        if (pick) done(pick.dataset.pick);
+        else if (event.target.closest('[data-close]')) done('');
+      };
+      element.addEventListener('click', onClick);
+    });
+    if (!picked) return;
+    const release = holdDialog('正在恢复备份', '先给现在的状态备份一份，再导入选中的备份，可能要几分钟。请保持启动器开着。');
+    try { const result = await App.api.realmsRestore(key, picked); release(); toast(`已恢复：${result.restored}${result.safety ? `（恢复前的状态已备份为 ${result.safety}）` : ''}`, 'success'); }
+    catch (error) { release(); throw error; }
+  }),
+  'realm-reset': button => guard(async () => {
+    const key = button.dataset.key;
+    const realm = (App.state.realms?.realms || []).find(item => item.key === key);
+    const name = realm?.name || realmTitle(key);
+    const typed = await new Promise(resolve => {
+      dialog.open(`${dialog.header('重置这个国度', '把这个国度恢复成全新的世界')}<div class="dialog-content"><p>要让 <strong>${esc(name)}</strong> 从零开始：先整包备份这个国度的角色与机器人数据库，再清空它们。世界数据（acore_world）五个国度共用，不会被清空。</p><p class="muted small">确认请把国度名原样输入下面（游戏国度列表里显示的那个名字）：</p><input class="text-input" id="reset-name" autocomplete="off" spellcheck="false" placeholder="${esc(name)}"></div><footer class="dialog-foot"><button class="button ghost" data-close="1">取消</button><button class="button danger" data-ok="1">重置世界</button></footer>`, 'small');
+      const element = $('#dialog');
+      const done = value => { element.removeEventListener('click', onClick); dialog.close(); resolve(value); };
+      const onClick = event => {
+        if (event.target.closest('[data-ok]')) done($('#reset-name')?.value || '');
+        else if (event.target.closest('[data-close]')) done('');
+      };
+      element.addEventListener('click', onClick);
+    });
+    if (!typed) return;
+    const release = holdDialog('正在重置世界', '先整包备份，再清空这个国度的角色与机器人数据（可能要几分钟）。请保持启动器开着。');
+    try { const result = await App.api.realmsReset(key, typed); release(); toast(`已重置：清空 ${result.tables} 张表，备份在 ${result.name}`, 'success'); }
+    catch (error) { release(); throw error; }
+  }),
   'realm-purge': button => guard(async () => {
     const key = button.dataset.key;
     if (!await confirmDialog({ title: t('realms.purgeTitle', 'Recreate the bots of {name}?', { name: realmTitle(key) }), body: esc(t('realms.purgeBody', 'The random bots of this realm are deleted (players are not touched); they are made again at its next start. The bots of the other realms stay.')), confirm: t('realms.purge', 'New bots'), danger: true })) return;
