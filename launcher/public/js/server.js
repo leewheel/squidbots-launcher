@@ -43,11 +43,17 @@ function servicesView(info) {
   // While something starts or stops, say so: "stopped" only when every service really is.
   const moving = info.services.find(service => service.state === 'starting' || service.state === 'stopping');
   const summary = moving
-    ? `<div class="summary busy"><span class="light busy"></span><div><strong>${esc(moving.state === 'starting' ? t('server.startingAll', 'Starting the server…') : t('server.stoppingAll', 'Stopping the server…'))}</strong><small>${esc(t('server.keepOpen', 'Keep the launcher open until it is done.'))}</small></div></div>`
+    ? `<div class="summary busy"><span class="light busy"></span><div><strong>${esc(moving.updating
+      ? t('server.updating', '正在应用数据库更新…')
+      : moving.state === 'starting' ? t('server.startingAll', 'Starting the server…') : t('server.stoppingAll', 'Stopping the server…'))}</strong><small>${esc(moving.updating
+      ? t('server.updatingHint', '装完或更新后的第一次启动要先导入数据库里的更新，可能要几分钟；日志还在动就是在干活，别关启动器。')
+      : t('server.keepOpen', 'Keep the launcher open until it is done.'))}</small></div></div>`
     : `<div class="summary ${all ? 'on' : running ? 'partial' : 'off'}"><span class="light ${all ? 'on' : running ? 'busy' : 'off'}"></span><div><strong>${esc(all ? t('server.allGood', 'Everything is running') : running ? t('server.partial', '{n} of {total} services running', { n: running, total: info.services.length }) : t('server.allStopped', 'The server is stopped'))}</strong><small>${esc(all ? t('server.allGoodHint', 'Set the server address to 127.0.0.1 and play.') : t('server.startHint', 'Start the services in order: database, login, world.'))}</small></div></div>`;
   const list = info.services.map(service => {
     const [kind, label] = SERVICE_STATE[service.state] || SERVICE_STATE.unknown;
-    return `<div class="service"><span class="light ${kind}"></span><div class="service-text"><strong>${esc(service.name)}${service.variant ? ` <span class="pill info">${icon('bot')}${esc(service.variant)}</span>` : ''}</strong><small>${esc(label())} · ${esc(t('server.port', 'port {port}', { port: service.port }))}${service.other ? ` · ${esc(service.other)}` : ''}</small></div>
+    //By leewheel 2026年11月19日 超时后仍在应用数据库更新：不要显示成“启动中”让人以为卡死，直接说明在更新
+    const text = service.updating ? t('server.updating', '正在应用数据库更新…') : label();
+    return `<div class="service"><span class="light ${kind}"></span><div class="service-text"><strong>${esc(service.name)}${service.variant ? ` <span class="pill info">${icon('bot')}${esc(service.variant)}</span>` : ''}</strong><small>${esc(text)} · ${esc(t('server.port', 'port {port}', { port: service.port }))}${service.other ? ` · ${esc(service.other)}` : ''}</small></div>
       <button class="button ghost small" data-action="service-log" data-id="${esc(service.id)}">${esc(t('server.log', 'Log'))}</button>
       ${service.state === 'running' ? `<button class="button ghost small" data-action="service-stop" data-id="${esc(service.id)}">${esc(t('server.stop', 'Stop'))}</button>` : `<button class="button ghost small" data-action="service-start" data-id="${esc(service.id)}" ${info.installed && service.state === 'stopped' ? '' : 'disabled'}>${esc(t('server.start', 'Start'))}</button>`}</div>`;
   }).join('');

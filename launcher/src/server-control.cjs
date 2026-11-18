@@ -16,6 +16,10 @@ const { processTable, exePaths } = require('./proc-table.cjs');
 const SERVICE_ID = /^[a-z][a-z0-9-]{1,20}$/;
 const ACCOUNT = /^[A-Za-z0-9]{3,17}$/;
 const PASSWORD = /^[\x21-\x7E]{6,16}$/;
+//By leewheel 2026年11月19日 首次启动 / 大版本更新后的第一次启动要应用数据库更新（上游实测 402 秒，我们更久）：
+// 自己的超时到了之后，只要日志还在增长就继续等，最长 20 分钟；日志连续 3 分钟不动才算卡住。
+const UPDATING_MAX = 20 * 60 * 1000;
+const LOGS_QUIET = 3 * 60 * 1000;
 
 //By leewheel 2026-11-05 启动世界服前自动修复远程控制台（RA）配置
 // 发布版主服 worldserver.conf 把 Ra.Enable 留成了 0，3443 端口根本没有监听：
@@ -150,6 +154,9 @@ class ServerControl {
     // 服务起不来时这比日志更早能说明问题：0xC0000135 = 缺运行库、0xC0000005 = 崩溃，
     // 玩家看到“程序闪一下就没了、日志是空的”时，只有退出码能解释。
     this.lastExits = new Map();
+    //By leewheel 2026年11月19日 正在「应用数据库更新」的服务（首次启动 / 大版本更新后）：
+    // status() 据此报 updating，界面显示「数据库更新中」而不是干巴巴的“启动中”。
+    this.late = new Set();
   }
 
   //By leewheel 2026年11月9日 把一个服务失败的原因翻成一句玩家能懂、能照着做的中文。
@@ -260,6 +267,34 @@ class ServerControl {
   //End By leewheel
 
   logFile(id) { return path.join(this.root, 'logs', `launcher-${id}.log`); }
+
+  //By leewheel 2026年11月19日 端口被「别的整合包」的程序占着吗？更新之前必须先问这一遍：
+  // 整合包的脚本是按 exe 路径认「自己的 MySQL」的。若某个副本的 .state 记着原始实例的进程，
+  // 它会拿别人的库当自己的，更新包里的 SQL 就灌进隔壁那个库（3395 开发服 / 3396 发布服就是同端口的一套）。
+  // 返回 [{ id, name, port, file, pid }]：只列**能证明**监听者在本文档目录之外的那些；
+  // 读不到路径时先用 .state\<id>.json 的 pid 认领（自家服务以脚本/服务身份跑时常读不到路径），
+  // 仍然认不出来的**不拦**——宁可漏报，也不要把自家正常启动拦成「外来占用」（2026-11-12 实弹）。
+  async foreignListeners() {
+    const found = [];
+    for (const service of this.services) {
+      if (!service.port) continue;
+      const owner = await this.portOwner(service.port, { fresh: true }).catch(() => null);
+      if (!owner?.pid) continue;
+      let inside = owner.inside;
+      if (inside !== true && inside !== false) {
+        // 路径读不到：看 .state 里记的是不是这个 pid（自家服务跑起来时脚本会写这份记录）
+        try {
+          const record = JSON.parse(fs.readFileSync(path.join(this.root, '.state', `${service.id}.json`), 'utf8'));
+          if (Number(record?.pid) === Number(owner.pid)) inside = true;
+        } catch { /* 没有记录就仍然是「认不出」 */ }
+      }
+      // 认不出（既不能证明是自己，也不能证明是外人）→ 不拦，交给后面的启动流程自己判
+      if (inside !== false) continue;
+      found.push({ id: service.id, name: service.name, port: service.port, file: owner.file || '', pid: owner.pid });
+    }
+    return found;
+  }
+  //End By leewheel
 
   // Who listens on a port: { pid, file, inside } (inside = a program of this repack). Several
   // repacks use the same ports, so an answering port is not proof that this server is running.
@@ -376,7 +411,7 @@ class ServerControl {
         const own = rows.find(row => this.ownsRow(service, row) && !others.has(row.pid));
         if (own) { pid = own.pid; memory = Number(own.memory) || 0; }
       }
-      return { id: service.id, name: service.name, port: service.port, state, other, pid, memory, variant: this.variant(service), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) };
+      return { id: service.id, name: service.name, port: service.port, state, other, pid, memory, variant: this.variant(service), updating: this.late.has(service.id), managed: this.children.has(service.id), console: service.console && this.children.has(service.id) };
     }));
     return results;
   }
@@ -489,9 +524,24 @@ class ServerControl {
       // The repack's own manager starts the service (and whatever it depends on) and waits for it.
       this.states.set(id, 'starting');
       await this.emit();
+      const began = Date.now();
+      let runError = null;
       try { await this.run({ ...start, timeout: Math.max(start.timeout, service.startTimeout) }, id); }
+      catch (error) { runError = error; }
       finally { this.states.delete(id); await this.emit(); }
-      if (!(await portOpen(service.port))) throw new Error(`${service.name} did not open port ${service.port}. Look at its log.`);
+      if (!(await portOpen(service.port))) {
+        //By leewheel 2026年11月19日 启动脚本按自己的超时放弃了，但世界服可能只是还在应用数据库更新：
+        // 进程还在 + logs\ 还在长，就继续等（最多 20 分钟）。这就是“装完第一次启动要等很久”的那一段。
+        if (id === 'world' && this.states.get(id) !== 'stopping') {
+          const alive = async () => (await this.processAlive('world')) || !!(await this.strayProcess(service));
+          if (await alive()) {
+            const late = await this.waitWhileUpdating(service, began, { alive });
+            if (late === 'open') { if (id === 'auth') await this.onAuthStarted?.().catch(() => {}); return; }
+          }
+        }
+        if (runError) throw runError;
+        throw new Error(`${service.name} did not open port ${service.port}. Look at its log.`);
+      }
       if (id === 'auth') await this.onAuthStarted?.().catch(() => {});
       return;
     }
@@ -560,11 +610,59 @@ class ServerControl {
     }
     //By leewheel 2026年11月11日 超时收尾同样要让位给「玩家点了停止」：这不算启动失败。
     if (this.states.get(id) === 'stopping') return;
+    //By leewheel 2026年11月19日 首次启动 / 大版本更新后的第一次启动要先应用数据库更新（上游实测 402 秒，
+    // 我们 500 机器人 + 慢盘更久）。自己的超时到了不代表失败：只要**日志还在增长**就说明它还在干活，
+    // 继续等最多 20 分钟；日志连续 3 分钟一个字节都不动，才算真的卡住，按原来的提示报失败。
+    // 只有世界服这样等：数据库/登录服没有“应用 SQL 更新”这一步，等下去只会把真故障藏起来。
+    if (id === 'world' && this.children.has(id)) {
+      const late = await this.waitWhileUpdating(service, deadline);
+      if (late === 'open') { this.states.delete(id); await this.emit(); return; }
+      if (this.states.get(id) === 'stopping') return;
+    }
     this.states.delete(id);
     await this.emit();
     {
       const why = await this.explainFailure(id);
       throw new Error(why ? `${service.name} 没能就绪：${why}` : `${service.name} 在 ${service.startTimeout} 秒内没有打开端口 ${service.port}。日志在 logs\\launcher-${id}.log`);
+    }
+  }
+
+  //By leewheel 2026年11月19日 超时之后的「还在干活」判定：看 logs\ 目录里的日志还在不在变长
+  // （世界服自己的 Server.log / Errors.log 与启动器接管的 launcher-world.log 都在这里，启动脚本与直接拉起两条路都覆盖）。
+  // 返回 'open'（端口开了）/ 'gone'（进程没了）/ 'quiet'（日志 3 分钟没动）/ 'timeout'（到 20 分钟上限）。
+  // 进入时把服务记进 this.late，status() 报 updating=true，界面就能显示「数据库更新中，请等它跑完」。
+  async waitWhileUpdating(service, began, { alive, open, quietMs = LOGS_QUIET, maxMs = UPDATING_MAX } = {}) {
+    const dirSize = () => {
+      try {
+        const dir = path.join(this.root, 'logs');
+        let total = 0;
+        for (const name of fs.readdirSync(dir)) {
+          try { const st = fs.statSync(path.join(dir, name)); if (st.isFile()) total += st.size; } catch { /* 正在被写 */ }
+        }
+        return total;
+      } catch { return 0; }
+    };
+    const aliveNow = alive || (() => this.children.has(service.id));
+    const openNow = open || (() => portOpen(service.port));
+    const limit = began + maxMs;
+    let lastSize = dirSize();
+    let lastGrow = Date.now();
+    this.late.add(service.id);
+    await this.emit();
+    try {
+      for (;;) {
+        if (this.states.get(service.id) === 'stopping') return 'quiet';
+        if (await openNow()) return 'open';
+        if (!(await aliveNow())) return 'gone';
+        const size = dirSize();
+        if (size > lastSize) { lastSize = size; lastGrow = Date.now(); }
+        if (Date.now() - lastGrow >= quietMs) return 'quiet';
+        if (Date.now() >= limit) return 'timeout';
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    } finally {
+      this.late.delete(service.id);
+      await this.emit().catch(() => {});
     }
   }
 

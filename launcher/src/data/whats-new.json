@@ -527,5 +527,20 @@
         "Консоль: экспорт или импорт персонажа, более безопасная SQL-консоль. Проверка: очистка логов. Кнопка «Отмена» во время загрузки обновления."
       ]
     }
+  },
+  {
+    "version": "1.0.202611190000",
+    "items": {
+      "en": [
+        "Updating refuses to start while another server's program holds this server's ports: its SQL would go to that other database.",
+        "First start after an update keeps waiting while the world's logs still move (up to 20 minutes) and says the database is being updated.",
+        "Saving a realm card restarts the login server alone, so the realm list shows it at once."
+      ],
+      "zh": [
+        "更新前先查端口：本服要用的端口被别的整合包（或它的副本）占着就不动手，避免更新包的数据库脚本灌进别人的库。",
+        "装完 / 更新后的第一次启动：只要日志还在动就继续等（最长 20 分钟），界面显示「正在应用数据库更新」。",
+        "保存国度卡片后只重启登录服：游戏的国度列表立刻生效，不用再把整个服重启一次。"
+      ]
+    }
   }
 ]

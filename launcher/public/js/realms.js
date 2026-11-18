@@ -380,7 +380,12 @@ Object.assign(App.actions, {
     const realms = { ...cards.realms, [key]: { mode: Number($('#card-mode').value), image: $('#card-image').value, description: Number($('#card-description').value), name: $('#card-name').value.trim(), subtitle: $('#card-subtitle').value.trim() } };
     const result = await App.api.cardsSave({ expansion: Number($('#card-expansion').value), realms });
     dialog.close();
-    toast(result.authRunning ? t('cards.savedRunning', 'Saved: the realm list shows it after the next start of the server.') : t('cards.saved', 'Saved: the realm list shows it at the next start of the server.'), 'success');
+    //By leewheel 2026年11月19日 保存后登录服会自动重启：shown==='now' 表示列表此刻就生效（重开列表看）
+    toast(result.shown === 'now'
+      ? t('cards.savedNow', '已保存：游戏的国度列表现在就显示（重新打开国度列表看）')
+      : result.authRunning
+        ? t('cards.savedRunning', '已保存：登录服不是本启动器起的，下次启动服务器时生效')
+        : t('cards.saved', '已保存：下次启动服务器时生效'), 'success');
     loadRealms();
   }, button),
 });

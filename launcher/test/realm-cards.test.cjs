@@ -21,12 +21,14 @@ const CONF = [
 test('the defaults: Vanilla, and the official look of the three realms', () => {
   const lines = cards.configLines(cards.clean(cards.DEFAULTS), { coa: 1, wildcard: 2, reborn: 3 }, { perRealm: true });
   assert.equal(lines['RealmCards.Expansion'], '0');
+  //By leewheel 2026年11月19日 20261118 bug139：所有国度的 GameMode 统一为 11（客户端只认 11 为免费模式），
+  // 测试里的旧期望值 6 / 12 已经作废，跟着实现改。
   assert.equal(lines['RealmCards.Realm.1.GameMode'], '11');
-  assert.equal(lines['RealmCards.Realm.2.GameMode'], '6');
-  assert.equal(lines['RealmCards.Realm.3.GameMode'], '12');
+  assert.equal(lines['RealmCards.Realm.2.GameMode'], '11');
+  assert.equal(lines['RealmCards.Realm.3.GameMode'], '11');
   assert.equal(lines['RealmCards.Realm.2.Image'], '"Darkmoon"');
   assert.equal(lines['RealmCards.Realm.3.DescriptionSpell'], '1397607');
-  assert.equal(cards.listName(cards.DEFAULTS.realms.reborn), 'Bronzebeard - Warcraft Reborn');
+  assert.equal(cards.listName(cards.DEFAULTS.realms.reborn), 'CoaReborn');
 });
 
 test('an older core gets only the game modes and the expansion', () => {
@@ -38,7 +40,7 @@ test('the config keeps its other lines; the per-realm lines are replaced, after 
   const lines = cards.configLines(cards.clean(cards.DEFAULTS), { coa: 1, wildcard: 2 }, { perRealm: false });
   const out = cards.rewrite(CONF, lines);
   assert.match(out, /RealmCards\.Expansion = 0\r\n/);
-  assert.match(out, /RealmCards\.Image = "Default"\r\nRealmCards\.Realm\.1\.GameMode = 11\r\nRealmCards\.Realm\.2\.GameMode = 6\r\n/);
+  assert.match(out, /RealmCards\.Image = "Default"\r\nRealmCards\.Realm\.1\.GameMode = 11\r\nRealmCards\.Realm\.2\.GameMode = 11\r\n/);
   assert.ok(!out.includes('GameMode = 9'));
   assert.match(out, /Updates\.EnableDatabases = 1/);
   assert.equal(cards.rewrite(out, lines), out);

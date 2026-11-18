@@ -704,6 +704,21 @@ function updateServerControl(serverRoot) {
   return control;
 }
 
+//By leewheel 2026年11月19日 更新前的端口守卫（移植自上游 acf9637 的做法）：
+// 更新会先停服再导库；整合包脚本按 exe 路径认「自己的 MySQL」，一旦本包要用的端口被**别的目录**的程序占着
+// （原包与它的副本、另一套同端口的服），更新包的 SQL 就可能灌进别人的库。
+// 所以在动手之前先问一遍：端口的主人是不是本包目录里的程序。不是就当场中止，一个文件都不改。
+async function assertUpdatePortsFree(serverRoot) {
+  const guard = updateServerControl(serverRoot);
+  if (!guard) return;
+  const foreign = await guard.foreignListeners().catch(() => []);
+  if (!foreign.length) return;
+  const list = foreign
+    .map(item => `端口 ${item.port}（${item.name}${item.file ? `，被 ${item.file} 占用` : ''}）`)
+    .join('；');
+  throw new Error(`这次更新没有开始：本服要用的${list}。那是本包目录以外的程序（常见情况是另一个整合包或它的副本还在跑）。请先把那个服正常关掉再更新，否则更新包的数据库脚本可能灌进它的库里。本次没有改动任何文件。`);
+}
+
 //By leewheel 2026年11月11日 安装目录完整性（老大要求）：玩家没按规定放文件时，启动器必须当场说清楚缺什么，
 // 而不是等他点「启动服务器」以后收到一句找不到 msyqld.exe 的谜语。
 // 判定规则在 dir-integrity.cjs：Server\ 必须有 authserver.exe、worldserver.exe 和完整的 mysql、configs；
@@ -2184,11 +2199,31 @@ function registerIpc() {
   };
   // A launcher that knows the cards meets this server for the first time: the official look, once; the player
   // changes it afterwards in the gear of each realm card.
+  //By leewheel 2026年11月19日 authserver 只在启动时读国度列表（realmlist / RealmCards）：卡片行一改，正在跑的登录服
+  // 仍旧发旧列表，玩家必须把整个服重启一次才看得到。这里改成「只重启登录服」——
+  // 登录服只管登录与列表，已经在游戏里的玩家不受影响。
+  // 返回 'now'（已重启，列表立刻生效）/ 'later'（登录服不是本包起的，下次启动生效）/ ''（没变或在没跑）。
+  const authIsRunning = async () => {
+    try { return (await requireControl().status()).some(service => service.id === 'auth' && service.state === 'running'); }
+    catch { return false; }
+  };
+  const restartAuthForCards = async () => {
+    try {
+      await requireControl().stop('auth');
+      await requireControl().start('auth');
+      await realmsOnline().catch(() => {});
+      return 'now';
+    } catch { return 'later'; }
+  };
   applyCards = async root => {
-    if (!root || !inspectRepack(root).repack) return;
+    if (!root || !inspectRepack(root).repack) return '';
     let cards = await realmCards.read(root);
     if (!cards.version) { cards = await realmCards.save(root, realmCards.DEFAULTS); await applyCardNames(root, cards); }
-    await realmCards.apply(root, await cardIds(root));
+    const changed = await realmCards.apply(root, await cardIds(root));
+    // 卡片行没变、或改的不是正在跑的这个服，就不用动登录服
+    const touched = changed.some(relative => /authserver\.conf$/i.test(relative));
+    if (!touched || !(await authIsRunning())) return '';
+    return restartAuthForCards();
   };
   handle('cards:get', async () => {
     if (!serverPath()) throw new Error('Choose the server folder first.');
@@ -2198,18 +2233,24 @@ function registerIpc() {
     if (!serverPath()) throw new Error('Choose the server folder first.');
     const cards = await realmCards.save(serverPath(), value);
     await applyCardNames(serverPath(), cards);
-    await realmCards.apply(serverPath(), await cardIds(serverPath()));
-    const auth = (await requireControl().status()).find(service => service.id === 'auth');
-    return { cards, authRunning: auth?.state === 'running' };
+    //By leewheel 2026年11月19日 走 applyCards：它会判断登录服是否在跑，并在卡片行变化后只重启登录服
+    const shown = await applyCards(serverPath()).catch(() => 'later');
+    return { cards, shown, authRunning: shown === 'later' };
   });
   handle('realms:create', async (key, options) => {
     if (options?.start === true) {
       await realmBase(false);
       await realms.create(serverPath(), text(key, 12), { bots: Number(options?.bots) || undefined, notify: line => send('realms:progress', line) });
+      //By leewheel 2026年11月19日 新国度的卡片行必须在登录服启动之前写进配置，否则登录服一起来就没有它
+      await applyCards(serverPath()).catch(() => {});
       await realms.start(serverPath(), text(key, 12));
       await requireControl().start('auth');
       await realmsOnline();
-    } else await withMysql(() => realms.create(serverPath(), text(key, 12), { bots: Number(options?.bots) || undefined, notify: line => send('realms:progress', line) }));
+    } else {
+      await withMysql(() => realms.create(serverPath(), text(key, 12), { bots: Number(options?.bots) || undefined, notify: line => send('realms:progress', line) }));
+      //By leewheel 2026年11月19日 不启动的国度同样要写卡片行；登录服正在跑时由 applyCards 单独重启它，列表立刻能看到
+      await applyCards(serverPath()).catch(() => {});
+    }
     // A server open to other PCs: the new realm's world port joins the firewall rules (Windows asks for the
     // administrator; refused, the realm stays created and Who can join > Open the firewall does it later).
     if ((await network.readNetwork(serverPath()).catch(() => ({}))).mode === 'open') {
@@ -3180,6 +3221,8 @@ function registerIpc() {
     if (!fs_exists(serverRoot) || !fs_exists(clientRoot)) throw new Error('先把目录整理成 Server 与 Client 两个目录（启动器会自动整理）。');
     //By leewheel 2026年11月11日 更新前先验目录完整性：缺件的目录更新到一半只会更乱，先中止说清楚缺什么。
     dirIntegrity.assertServerReady(serverRoot);
+    //By leewheel 2026年11月19日 端口守卫：本包要用的端口被别的目录的程序占着就不动手（防 SQL 灌进别人的库）
+    await assertUpdatePortsFree(serverRoot);
     releaseBusy = true;
     releaseAbort = new AbortController();
     Object.assign(releaseState, { busy: true, version, phase: 'download', message: '准备中', pct: 0, done: false, failed: false, error: '', errorLog: '', result: null, at: new Date().toISOString() });
@@ -3530,6 +3573,8 @@ function registerIpc() {
       const clientRoot = path.join(root, 'Client');
       //By leewheel 2026年11月11日 装包前先验目录完整性（缺件的中途失败会留下半新半旧的目录）
       dirIntegrity.assertServerReady(serverRoot);
+      //By leewheel 2026年11月19日 本地包更新同样先过端口守卫（同一个理由：别把 SQL 灌进别人在跑的库）
+      await assertUpdatePortsFree(serverRoot);
       //By leewheel 2026年11月8日 本地包更新原来缺了两件事（老大 2026-11-08 12:54 实弹）：
       // ① 没停服——世界服还占着 exe，覆盖会 EBUSY；② 没启动 MySQL，conns 写死 null，
       // 直接拿 admin-client.ini 去连 3396，15 秒后报“连不上数据库”。
