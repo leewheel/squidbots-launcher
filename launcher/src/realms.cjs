@@ -35,7 +35,9 @@ const MODES = {
     },
   },
   reborn: {
-    id: 3, name: 'Bronzebeard (Reborn)', prefix: 'rndwr', step: 2,
+    //By leewheel 20261118 bug136：名字不能含 Bronzebeard / Warcraft Reborn——Ascension 客户端把这两个词
+    // 认成官方付费国度，点"选择服务器"会打开 ascension.gg/shop，导致 Reborn 无法进入。
+    id: 3, name: 'CoaReborn', prefix: 'rndwr', step: 2,
     keys: {
       // Dungeon Clear stays on the CoA realm only (not made for these modes yet).
       'mod_dungeon_clear.conf': { 'DungeonClear.Enable': '0' },
@@ -222,8 +224,11 @@ const insideRoot = (root, file) => !!file && !!root
 
 // 一次问清“哪些端口被哪个进程监听”。复用 server-control 的 netstat 查询（3 秒缓存），
 // 状态页每 5 秒轮询全部国度时不会把 netstat 反复跑。
-function listenOwners() {
-  return listening().then(stdout => {
+//By leewheel 20261118 bug137：netstat 查询有 3 秒缓存，跟随服务器启动时状态轮询一直在填它，
+// start() 拿到的是启动前的旧快照（端口上还没有刚 spawn 的那个 worldserver），于是把自己判成“别人的程序”。
+// 判定“监听者是谁”的场合一律允许强制刷新（fresh=true），不吃轮询留下的旧缓存。
+function listenOwners(fresh = false) {
+  return listening(fresh).then(stdout => {
     const map = new Map();
     for (const line of String(stdout).split(/\r?\n/)) {
       const found = /^\s*TCP\s+\S*:(\d+)\s+\S+\s+LISTENING\s+(\d+)/i.exec(line);
@@ -242,8 +247,9 @@ function worldProcesses() {
 }
 
 // 这个端口上监听的是不是本整合包的世界服：是 → 它的 pid；不是（空着或别人的）→ 0
-async function ownWorldPid(root, port) {
-  const [owners, procs] = await Promise.all([listenOwners(), worldProcesses()]);
+//By leewheel 20261118 bug137：fresh=true 时强制刷新 netstat，用于启动过程的判定。
+async function ownWorldPid(root, port, fresh = false) {
+  const [owners, procs] = await Promise.all([listenOwners(fresh), worldProcesses()]);
   const pid = owners.get(Number(port));
   if (!pid) return 0;
   const row = procs.find(item => item.pid === pid);
@@ -255,11 +261,11 @@ async function ownWorldPid(root, port) {
 }
 
 // 端口被别人的程序占着 → { pid, file }；空着、或就是自己的世界服 → null
-async function portStranger(root, port) {
-  const owners = await listenOwners();
+async function portStranger(root, port, fresh = false) {
+  const owners = await listenOwners(fresh);
   const pid = owners.get(Number(port));
   if (!pid) return null;
-  if (await ownWorldPid(root, port)) return null;
+  if (await ownWorldPid(root, port, fresh)) return null;
   const row = (await worldProcesses()).find(item => item.pid === pid);
   return { pid, file: row?.file || row?.name || '' };
 }
@@ -892,9 +898,10 @@ async function start(root, key, { timeout = 1200 } = {}) {
   //By leewheel 2026年11月8日 端口开着先分清是谁：本国度的世界服 → 已在跑，直接返回；
   // 别人的程序占着 → 明确报错（原来这里直接 return，玩家点了“启动”像没反应）。
   if (await portOpen(saved.worldPort)) {
-    if (await ownWorldPid(root, saved.worldPort)) return;
+    //By leewheel 20261118 bug137：起手也强制刷新 netstat，别拿状态轮询留下的旧缓存误报“已被占用”
+    if (await ownWorldPid(root, saved.worldPort, true)) return;
     if (await processOf(root, key)) throw new Error(`${saved.name} is still starting or stopping.`);
-    const stranger = await portStranger(root, saved.worldPort);
+    const stranger = await portStranger(root, saved.worldPort, true);
     throw new Error(`Port ${saved.worldPort} is already used by another program${stranger?.file ? ` (${stranger.file})` : ''}. Stop it first.`);
   }
   //End By leewheel
@@ -909,14 +916,23 @@ async function start(root, key, { timeout = 1200 } = {}) {
   const child = launch(root, key, 'started by the launcher');
   const deadline = Date.now() + timeout * 1000;
   skipped.delete(key);
+  //By leewheel 20261118 bug137：判定的两次机会。跟随服务器启动时主服 worldserver 正在加载，
+  // netstat/进程表都是滞后的，一次判定失败就 kill 会误杀自己的实例（老大实弹：Reborn 跟随启动报 8285 被抢占，
+  // 单独点却能起）。现在连续两次（间隔 2 秒）都确认不了自己，才认定为被别的程序抢占。
+  let strangerTries = 0;
   while (Date.now() < deadline) {
     if (await portOpen(saved.worldPort)) {
       //By leewheel 2026年11月8日 端口开了还要核对监听者是不是我们刚拉起的那个世界服：
       // 别人的程序抢在中间占了端口，不能当成“起好了”。查询本身失败（一个 worldserver 都查不到）时
       // 退回“端口开了 + 子进程还活着”，免得 PowerShell 抽风把我们自己的实例判成没起来。
+      //By leewheel 20261118 bug137：判定用的 netstat 必须强制刷新（不吃 3 秒缓存），并加一条硬证据：
+      // 端口监听者就是这个 child 的 pid → 一定是自己的实例。
       const procs = await worldProcesses();
-      const mine = procs.length ? !!(await ownWorldPid(root, saved.worldPort)) : pidAlive(child.pid);
+      const ownerPid = (await listenOwners(true)).get(Number(saved.worldPort)) || 0;
+      const mine = ownerPid === child.pid
+        || (procs.length ? !!(await ownWorldPid(root, saved.worldPort, true)) : pidAlive(child.pid));
       if (mine) { await markStarted(root, key); return; }
+      if (++strangerTries < 2) { await new Promise(resolve => setTimeout(resolve, 2000)); continue; }
       try { child.kill(); } catch {}
       throw new Error(`Port ${saved.worldPort} was taken by another program while starting. Stop it and start again.`);
     }

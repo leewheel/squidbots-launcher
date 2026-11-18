@@ -31,12 +31,18 @@ const DESCRIPTIONS = [
   { id: 13977862, name: 'Area 52' }, { id: 13977866, name: 'Thrall (Season 8)' }, { id: 1397605, name: 'Elune (Season 9)' }, { id: 0, name: '' },
 ];
 const EXPANSIONS = [0, 1, 2];
+//By leewheel 20261118 bug136：Ascension 客户端把图名/文本名 "Bronzebeard"、"Warcraft Reborn" 认成官方付费的
+// Warcraft Reborn 国度——玩家点"选择服务器"会被引导去 ascension.gg/shop（Reborn 因此进不去）。
+// 默认值改为不含这两个词的 CoaReborn + Thrall1（Thrall1 有卡面、不覆盖文本名）。
+//By leewheel 20261118 bug138：真正触发商店的是 GameMode 12 —— 客户端把它当「需要购买的 Alpha 模式」
+// （GlueLocalization 的 ALPHA_PURCHASE_REQUIRED = "从 Ascension.gg/shop 商店购买"）
+// 默认改成 11（普通模式）；玩法仍由 Royaumes/reborn 的 worldserver.conf（CoA.ClassModel=wcr）决定。
 const DEFAULTS = {
   expansion: 0,
   realms: {
     coa: { mode: 11, image: 'Voljin', description: 13977864, name: '', subtitle: '' },
     wildcard: { mode: 6, image: 'Darkmoon', description: 13977904, name: 'Darkmoon', subtitle: '' },
-    reborn: { mode: 12, image: 'Bronzebeard', description: 1397607, name: 'Bronzebeard', subtitle: 'Warcraft Reborn' },
+    reborn: { mode: 11, image: 'Thrall1', description: 1397607, name: 'CoaReborn', subtitle: '' },
     dawnrise: { mode: 9, image: 'Dawnrise', description: 13977920, name: 'Dawnrise', subtitle: 'Free Pick' },
     //By leewheel 20261115 第 5 个国度：Malfurion（3.0 鲜活世界服），卡面用上游二版背景（不再是 Thrall1）
     living: { mode: 11, image: 'Malfurion', description: 13977864, name: '', subtitle: 'New server' },
@@ -60,11 +66,38 @@ function clean(value) {
   return out;
 }
 
+//By leewheel 20261118 bug136：老版本的默认卡片用了官方名（Bronzebeard / Warcraft Reborn），已装好的服务器
+// 其 Settings/realm-cards.json 里还是旧值，客户端仍会跳商店。这里读一次就把它迁到新默认并写回；
+// 玩家自己改成的其它图/名字不受影响（只迁移恰好等于旧默认的那三种取值）。
+const OFFICIAL_REBORN = { image: 'Bronzebeard', name: 'Bronzebeard', subtitle: 'Warcraft Reborn', mode: 12 };
+const SAFE_REBORN = { image: 'Thrall1', name: 'CoaReborn', subtitle: '', mode: 11 };
+async function migrateOfficialReborn(root, cards) {
+  const realm = cards?.realms?.reborn;
+  if (!realm) return cards;
+  // 逐个字段迁移：只动等于旧默认的那一个，玩家改过的其它字段原样保留。
+  const fixed = { ...realm };
+  if (fixed.image === OFFICIAL_REBORN.image) fixed.image = SAFE_REBORN.image;
+  if (fixed.name === OFFICIAL_REBORN.name) fixed.name = SAFE_REBORN.name;
+  if (fixed.subtitle === OFFICIAL_REBORN.subtitle) fixed.subtitle = SAFE_REBORN.subtitle;
+  //By leewheel 20261118 bug138：GameMode 12 会让客户端当成「需要购买的 Alpha 模式」而跳商店，迁回 11。
+  if (Number(fixed.mode) === OFFICIAL_REBORN.mode) fixed.mode = SAFE_REBORN.mode;
+  if (fixed.image === realm.image && fixed.name === realm.name && fixed.subtitle === realm.subtitle && Number(fixed.mode) === Number(realm.mode))
+    return cards;
+  const next = { ...cards, realms: { ...cards.realms, reborn: fixed } };
+  try {
+    await fsp.mkdir(path.join(root, 'Settings'), { recursive: true });
+    const file = path.join(root, FILE);
+    await fsp.writeFile(`${file}.tmp`, JSON.stringify({ version: VERSION, expansion: next.expansion, realms: next.realms }, null, 2));
+    await fsp.rename(`${file}.tmp`, file);
+  } catch { /* 数据库只读或路径不可写时保持内存里的迁移结果，不阻断启动 */ }
+  return next;
+}
+
 // The choice saved; none yet (first start of a launcher that knows the cards): the defaults, marked as new.
 async function read(root) {
   try {
     const saved = JSON.parse(await fsp.readFile(path.join(root, FILE), 'utf8'));
-    return { ...clean(saved), version: Number(saved.version) || 0 };
+    return await migrateOfficialReborn(root, { ...clean(saved), version: Number(saved.version) || 0 });
   } catch { return { ...clean(DEFAULTS), version: 0 }; }
 }
 
