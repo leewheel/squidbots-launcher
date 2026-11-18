@@ -44,6 +44,27 @@ const hash = crypto.createHash('sha256');
 }
 const sha256 = hash.digest('hex');
 
+//By leewheel 2026年11月19日 发布门禁：这份 exe 必须先有「能启动、能画出首页」的证明（prove-launcher.cjs 写的
+// <exe>.proof.json，里面记着 sha256）。没有证明、或证明不是这份 exe 的，一律拒绝写清单 —— 免得又出现
+// “exe 换了、跑的还是老代码 / 根本起不来”这种发出去才发现的事故。
+{
+  const proofFile = `${exePath}.proof.json`;
+  if (!fs.existsSync(proofFile)) {
+    console.error(`拒绝生成清单：${exeName} 没有发布证明。\n请先跑 node scripts\\prove-launcher.cjs（dist:obf 会自动跑）。`);
+    process.exit(1);
+  }
+  let proof = null;
+  try { proof = JSON.parse(fs.readFileSync(proofFile, 'utf8')); } catch { /* 坏文件按没有处理 */ }
+  if (!proof?.sha256) {
+    console.error(`拒绝生成清单：${path.basename(proofFile)} 读不出来（不是有效 JSON）。`);
+    process.exit(1);
+  }
+  if (proof.sha256 !== sha256) {
+    console.error(`拒绝生成清单：发布证明对应的是另一份 exe（证明 ${String(proof.sha256).slice(0, 16)}… ≠ 当前 ${sha256.slice(0, 16)}…）。\n请重新跑 node scripts\\prove-launcher.cjs。`);
+    process.exit(1);
+  }
+}
+
 // 发版说明：命令行 --notes "…" 优先，其次读 dist\release-notes.txt，最后用一句占位
 const notesArgIndex = process.argv.indexOf('--notes');
 const notesFile = path.join(launcherDir, 'dist', 'release-notes.txt');

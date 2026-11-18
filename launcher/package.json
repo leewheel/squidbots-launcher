@@ -11,7 +11,8 @@
     "test": "node --test \"test/*.test.cjs\"",
     "dist": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && electron-builder --win nsis --publish never",
     "stage": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs",
-    "dist:obf": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/write-launcher-release.cjs",
+    "dist:obf": "node scripts/copy-fonts.cjs && node scripts/bump-version.cjs && node scripts/stage-app.cjs && electron-builder --win portable --publish never && node scripts/prove-launcher.cjs && node scripts/write-launcher-release.cjs",
+    "prove": "node scripts/prove-launcher.cjs",
     "release:manifest": "node scripts/write-launcher-release.cjs",
     "release:prune": "node scripts/prune-releases.cjs"
   },
