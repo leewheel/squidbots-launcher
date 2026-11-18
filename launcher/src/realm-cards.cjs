@@ -9,11 +9,13 @@ const path = require('node:path');
 
 const FILE = 'Settings/realm-cards.json';
 const VERSION = 1;
-// Enum.RealmGameMode of the client (found on 24/10 on the LAPTOP, one value per card).
+//By leewheel 20261118 bug139：Ascension 客户端只把 GameMode 11（Conquest of Azeroth）当作「免费可进入」的模式，
+// 其余官方模式（6 Wildcard / 9 Free-Pick / 12 Warcraft Reborn / 4 Draft / 5 Resolute / 7 Felforged / 8 Nightmare /
+// 10 Build Draft）一律被判成「需要购买的官方模式」，点「选择服务器」会打开 ascension.gg/shop。
+// 实测对照：coa/living 用 11 正常；reborn 12→11 后恢复；wildcard 6、dawnrise 9 都跳商店。
+// 因此下拉里只保留 11 —— 卡片的模式名文字由 DescriptionSpell 的描述决定，跟这个数值无关，改了不掉内容。
 const GAME_MODES = [
-  { id: 11, name: 'Conquest of Azeroth' }, { id: 6, name: 'Wildcard' }, { id: 12, name: 'Warcraft Reborn' },
-  { id: 9, name: 'Free-Pick (Limited Qualities)' }, { id: 10, name: 'Build Draft' }, { id: 4, name: 'Draft' },
-  { id: 5, name: 'Resolute' }, { id: 7, name: 'Felforged' }, { id: 8, name: 'Nightmare' },
+  { id: 11, name: 'Conquest of Azeroth' },
 ];
 // Interface\Glues\RealmList\<image>.blp in the client (patch-A); title: the client draws RealmTitles\<image> as the
 // realm's name instead of the text name.
@@ -41,9 +43,11 @@ const DEFAULTS = {
   expansion: 0,
   realms: {
     coa: { mode: 11, image: 'Voljin', description: 13977864, name: '', subtitle: '' },
-    wildcard: { mode: 6, image: 'Darkmoon', description: 13977904, name: 'Darkmoon', subtitle: '' },
+    //By leewheel 20261118 bug139：wildcard 原来是 6（Wildcard 官方付费模式）→ 客户端跳商店，改 11
+    wildcard: { mode: 11, image: 'Darkmoon', description: 13977904, name: 'Darkmoon', subtitle: '' },
     reborn: { mode: 11, image: 'Thrall1', description: 1397607, name: 'CoaReborn', subtitle: '' },
-    dawnrise: { mode: 9, image: 'Dawnrise', description: 13977920, name: 'Dawnrise', subtitle: 'Free Pick' },
+    //By leewheel 20261118 bug139：dawnrise 原来是 9（Free-Pick 官方付费模式）→ 客户端跳商店，改 11
+    dawnrise: { mode: 11, image: 'Dawnrise', description: 13977920, name: 'Dawnrise', subtitle: 'Free Pick' },
     //By leewheel 20261115 第 5 个国度：Malfurion（3.0 鲜活世界服），卡面用上游二版背景（不再是 Thrall1）
     living: { mode: 11, image: 'Malfurion', description: 13977864, name: '', subtitle: 'New server' },
   },
@@ -69,27 +73,49 @@ function clean(value) {
 //By leewheel 20261118 bug136：老版本的默认卡片用了官方名（Bronzebeard / Warcraft Reborn），已装好的服务器
 // 其 Settings/realm-cards.json 里还是旧值，客户端仍会跳商店。这里读一次就把它迁到新默认并写回；
 // 玩家自己改成的其它图/名字不受影响（只迁移恰好等于旧默认的那三种取值）。
-const OFFICIAL_REBORN = { image: 'Bronzebeard', name: 'Bronzebeard', subtitle: 'Warcraft Reborn', mode: 12 };
-const SAFE_REBORN = { image: 'Thrall1', name: 'CoaReborn', subtitle: '', mode: 11 };
-async function migrateOfficialReborn(root, cards) {
-  const realm = cards?.realms?.reborn;
-  if (!realm) return cards;
-  // 逐个字段迁移：只动等于旧默认的那一个，玩家改过的其它字段原样保留。
-  const fixed = { ...realm };
-  if (fixed.image === OFFICIAL_REBORN.image) fixed.image = SAFE_REBORN.image;
-  if (fixed.name === OFFICIAL_REBORN.name) fixed.name = SAFE_REBORN.name;
-  if (fixed.subtitle === OFFICIAL_REBORN.subtitle) fixed.subtitle = SAFE_REBORN.subtitle;
-  //By leewheel 20261118 bug138：GameMode 12 会让客户端当成「需要购买的 Alpha 模式」而跳商店，迁回 11。
-  if (Number(fixed.mode) === OFFICIAL_REBORN.mode) fixed.mode = SAFE_REBORN.mode;
-  if (fixed.image === realm.image && fixed.name === realm.name && fixed.subtitle === realm.subtitle && Number(fixed.mode) === Number(realm.mode))
-    return cards;
-  const next = { ...cards, realms: { ...cards.realms, reborn: fixed } };
-  try {
+//By leewheel 20261118 bug139：同时把磁盘上残留的所有非 11 的 GameMode（6 百搭 / 9 自由拍卖 / 12 Reborn 等
+// 官方付费模式）统一改成 11 —— 否则玩家点「选择服务器」照样被引导到 ascension.gg/shop。
+const OFFICIAL_REBORN = { image: 'Bronzebeard', name: 'Bronzebeard', subtitle: 'Warcraft Reborn' };
+const SAFE_REBORN = { image: 'Thrall1', name: 'CoaReborn', subtitle: '' };
+const CLIENT_MODE = 11;
+async function migrateCards(root, saved, cards) {
+  const realms = { ...cards.realms };
+  let changed = false;
+  // 1) reborn 的官方名迁移：只动恰好等于旧默认的那几个字段，玩家改过的其它字段原样保留。
+  const reborn = realms.reborn;
+  if (reborn)
+  {
+    const fixed = { ...reborn };
+    if (fixed.image === OFFICIAL_REBORN.image) fixed.image = SAFE_REBORN.image;
+    if (fixed.name === OFFICIAL_REBORN.name) fixed.name = SAFE_REBORN.name;
+    if (fixed.subtitle === OFFICIAL_REBORN.subtitle) fixed.subtitle = SAFE_REBORN.subtitle;
+    if (fixed.image !== reborn.image || fixed.name !== reborn.name || fixed.subtitle !== reborn.subtitle)
+    {
+      realms.reborn = fixed;
+      changed = true;
+    }
+  }
+  // 2) GameMode 迁移：clean() 已把不认识的旧值清成 11，这里比对磁盘上的原始值判断要不要写回文件。
+  for (const key of Object.keys(realms))
+  {
+    const stored = saved?.realms?.[key]?.mode;
+    if (stored === undefined || stored === null) continue;
+    if (Number(stored) !== CLIENT_MODE)
+    {
+      realms[key] = { ...realms[key], mode: CLIENT_MODE };
+      changed = true;
+    }
+  }
+  if (!changed) return cards;
+  const next = { ...cards, realms };
+  try
+  {
     await fsp.mkdir(path.join(root, 'Settings'), { recursive: true });
     const file = path.join(root, FILE);
     await fsp.writeFile(`${file}.tmp`, JSON.stringify({ version: VERSION, expansion: next.expansion, realms: next.realms }, null, 2));
     await fsp.rename(`${file}.tmp`, file);
-  } catch { /* 数据库只读或路径不可写时保持内存里的迁移结果，不阻断启动 */ }
+  }
+  catch { /* 数据库只读或路径不可写时保持内存里的迁移结果，不阻断启动 */ }
   return next;
 }
 
@@ -97,7 +123,7 @@ async function migrateOfficialReborn(root, cards) {
 async function read(root) {
   try {
     const saved = JSON.parse(await fsp.readFile(path.join(root, FILE), 'utf8'));
-    return await migrateOfficialReborn(root, { ...clean(saved), version: Number(saved.version) || 0 });
+    return await migrateCards(root, saved, { ...clean(saved), version: Number(saved.version) || 0 });
   } catch { return { ...clean(DEFAULTS), version: 0 }; }
 }
 
