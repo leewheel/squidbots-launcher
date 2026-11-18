@@ -168,9 +168,19 @@ function realmsPage() {
   const r = App.state.realms;
   if (!r) return `<div class="page classic">${head}${skeleton(3)}</div>`;
   if (r.error) return `<div class="page classic">${head}${emptyState('warning', t('realms.error', 'The realms cannot be read'), r.error)}</div>`;
+  //By leewheel 2026年11月19日 国度页加一排筛选标签（移植上游 0.4.3 的「按国度分页」思路，但做成可选）：
+  // 默认还是「全部」平铺，五个国度一眼看全；人多卡挤时点某个国度只看它一张。选择记在 state 里，刷新不丢。
+  const list = realmList();
+  const view = App.state.realmView || '';
+  const shown = view ? list.filter(realm => realm.key === view) : list;
+  const tabs = `<nav class="realm-filter" role="tablist" aria-label="${esc(t('realms.which', '国度'))}">
+      <button class="realm-filter-btn${view ? '' : ' active'}" role="tab" aria-selected="${view ? 'false' : 'true'}" data-action="realm-view" data-key="">${esc(t('realms.all', '全部'))}<small>${list.length}</small></button>
+      ${list.map(realm => `<button class="realm-filter-btn${view === realm.key ? ' active' : ''}" role="tab" aria-selected="${view === realm.key}" data-action="realm-view" data-key="${esc(realm.key)}">${esc(realmTitle(realm.key))}${realm.state === 'running' ? '<i class="state-dot on"></i>' : realm.state === 'stopped' ? '' : `<small>${esc(realm.state === 'absent' ? t('realms.offShort', '未建') : realm.state === 'disabled' ? t('realms.offShort', '未建') : t('realms.startingShort', '启'))}</small>`}</button>`).join('')}
+    </nav>`;
   return `<div class="page classic realms-page">${head}
     <p class="realms-lead">${esc(t('realms.lead', 'One server, several ways to play. Each realm has its own characters, bots and settings; the game accounts are shared: log in once, then pick the realm in the realm list of the game.'))}</p>
-    <div class="realm-cards">${realmList().map(realm => realmCard(realm, App.state.realmBusy || '')).join('')}</div>
+    ${list.length > 2 ? tabs : ''}
+    <div class="realm-cards">${shown.map(realm => realmCard(realm, App.state.realmBusy || '')).join('')}</div>
   </div>`;
 }
 
@@ -294,10 +304,24 @@ Object.assign(App.actions, {
   }),
   'realm-purge': button => guard(async () => {
     const key = button.dataset.key;
-    if (!await confirmDialog({ title: t('realms.purgeTitle', 'Recreate the bots of {name}?', { name: realmTitle(key) }), body: esc(t('realms.purgeBody', 'The random bots of this realm are deleted (players are not touched); they are made again at its next start. The bots of the other realms stay.')), confirm: t('realms.purge', 'New bots'), danger: true })) return;
-    const release = holdDialog(t('server.purgingTitle', 'Recreating the bots'), t('realms.purgingLong', 'Recreating the bots of {name}: the realm starts, deletes them and stops by itself (a few minutes).', { name: realmTitle(key) }));
-    try { await realmAction(key, () => App.api.realmsPurge(key)); } finally { release(); }
-    toast(t('realms.purged', 'Done: the bots come back at the next start.'), 'success');
+    //By leewheel 2026年11月19日 清机器人会连它们的拍卖一起清（玩家的拍卖不动，出过价的按邮件退钱）；
+    // 拍卖行机器人（AHBOT）的拍卖给一个勾选，默认一起清（它们本来就是铺货用的）。
+    let house = true;
+    const onChange = event => { if (event.target?.id === 'purge-house') house = event.target.checked; };
+    document.addEventListener('change', onChange);
+    const body = `${esc(t('realms.purgeBody2', '这个国度的随机机器人会被删除，连同它们挂的拍卖（玩家的拍卖不动；给这些拍卖出过价的玩家，钱会按拍卖邮件退回）。下次启动服务器时会重新生成机器人，其它国度不受影响。'))}</p><p><label class="check-line"><input type="checkbox" id="purge-house" checked> ${esc(t('realms.purgeHouse', '连拍卖行机器人的拍卖也一起清空'))}</label>`;
+    let ok = false;
+    try {
+      ok = await confirmDialog({ title: t('realms.purgeTitle', '重新生成「{name}」的机器人？', { name: realmTitle(key) }), body, confirm: t('realms.purge', '新机器人'), danger: true });
+    } finally { document.removeEventListener('change', onChange); }
+    if (!ok) return;
+    const release = holdDialog(t('server.purgingTitle', '正在重建机器人'), t('realms.purgingLong', '正在重建「{name}」的机器人：它会自己启动、删除、再停下（几分钟）。', { name: realmTitle(key) }));
+    let purged = null;
+    try { await realmAction(key, async () => { const result = await App.api.realmsPurge(key, { house }); purged = result?.purged || null; return result; }); }
+    finally { release(); }
+    toast(purged
+      ? t('realms.purged2', '完成：机器人会在下次启动时重新生成。清掉 {auctions} 个拍卖，退回 {refunds} 笔竞价（{money} 铜）。', { auctions: purged.auctions || 0, refunds: purged.refunds || 0, money: purged.refunded || 0 })
+      : t('realms.purged', '完成：机器人会在下次启动时重新生成。'), 'success');
   }, button),
   'realm-disable': button => guard(async () => {
     const key = button.dataset.key;
@@ -417,6 +441,8 @@ async function realmCardDialog(key) {
 }
 const CARD_DEFAULTS = { coa: { mode: 11, image: 'Voljin', description: 13977864, subtitle: '' }, wildcard: { mode: 6, image: 'Darkmoon', description: 13977904, name: 'Darkmoon', subtitle: '' }, reborn: { mode: 12, image: 'Bronzebeard', description: 1397607, name: 'Bronzebeard', subtitle: 'Warcraft Reborn' }, dawnrise: { mode: 9, image: 'Dawnrise', description: 13977920, name: 'Dawnrise', subtitle: 'Free Pick' }, living: { mode: 11, image: 'Malfurion', description: 13977864, name: '', subtitle: 'New server' } };
 Object.assign(App.actions, {
+  //By leewheel 2026年11月19日 国度筛选标签：'' = 全部，其它 = 只看这个国度（只影响显示，不改任何数据）
+  'realm-view': button => { App.state.realmView = button.dataset.key || ''; App.refresh('realms'); },
   'realm-card': button => guard(() => realmCardDialog(button.dataset.key), button),
   'realm-card-default': button => {
     const base = CARD_DEFAULTS[button.dataset.key];

@@ -1075,12 +1075,54 @@ async function startMarked(root, { freeMb = () => os.freemem() / 1048576 } = {})
   return failed;
 }
 
+//By leewheel 2026年11月19日 清机器人之前先把它们的拍卖清掉（移植上游 3c3a191 的做法）：
+// 要清三类：① 本国度随机机器人的拍卖（按账号前缀认）；② 卖家已经不存在的拍卖（上次清机器人的残留，
+// 核心加载时会跳过但从不删，越攒越多）；③ house=true 时连拍卖行机器人（AHBOT 账号）的一起清。
+// **玩家的拍卖绝不动**；给被清掉的拍卖出过价的玩家，按“拍卖被取消”的格式发一封拍卖邮件把钱退回去
+// （subject = 物品:0:4:拍卖id:数量，body = 卖家 guid/lastbid/buyout/deposit，与核心一致）。
+// 全程一个事务；调用前国度必须已停止（拍卖行数据在世界服内存里，跑着改会被覆盖回去）。
+// 返回值结束于一行：清的拍卖数 \t 退款的笔数 \t 退回的铜币总数。
+function auctionPurgeSql(key, { house = true } = {}) {
+  // 主服（coa）没有自己的后缀库，用的是 acore_characters 与 RNDBOT 前缀；其它国度各带后缀
+  let chars;
+  let prefix;
+  if (key === 'coa') { chars = 'acore_characters'; prefix = 'RNDBOT'; }
+  else {
+    const m = mode(key);
+    chars = `acore_characters_${key}`;
+    prefix = String(m.prefix || '').toUpperCase();
+  }
+  if (!/^acore_characters(_[a-z]+)?$/.test(chars) || !/^[A-Z0-9]+$/.test(prefix)) throw new Error('国度的库名或机器人前缀不合法（已中止，什么都没改）。');
+  const seller = `o.guid IS NULL OR oa.id IS NULL OR oa.username LIKE '${prefix}%'${house ? " OR oa.username = 'AHBOT'" : ''}`;
+  return [
+    //By leewheel 2026年11月19日 临时表不能用库名限定，必须先选一个默认库，否则 MySQL 报 “No database selected”
+    //（在临时实例上实测抓到的：不选库时第 2 句 CREATE TEMPORARY TABLE 直接失败）
+    `USE ${chars}`,
+    'START TRANSACTION',
+    'DROP TEMPORARY TABLE IF EXISTS purge_ah',
+    `CREATE TEMPORARY TABLE purge_ah AS SELECT ah.id, ah.houseid, ah.itemguid, ah.itemowner, ah.buyguid, ah.lastbid, ah.buyoutprice, ah.deposit FROM ${chars}.auctionhouse ah LEFT JOIN ${chars}.characters o ON o.guid = ah.itemowner LEFT JOIN acore_auth.account oa ON oa.id = o.account WHERE ${seller}`,
+    'DROP TEMPORARY TABLE IF EXISTS purge_refund',
+    `CREATE TEMPORARY TABLE purge_refund AS SELECT p.id, p.houseid, p.itemowner, p.buyguid, p.lastbid, p.buyoutprice, p.deposit, ii.itemEntry, ii.randomPropertyId, ii.count FROM purge_ah p JOIN ${chars}.characters b ON b.guid = p.buyguid JOIN acore_auth.account ba ON ba.id = b.account LEFT JOIN ${chars}.item_instance ii ON ii.guid = p.itemguid WHERE p.buyguid <> 0 AND p.lastbid > 0 AND ba.username NOT LIKE '${prefix}%' AND ba.username <> 'AHBOT'`,
+    `SET @base = (SELECT COALESCE(MAX(id), 0) FROM ${chars}.mail)`,
+    `INSERT INTO ${chars}.mail (id, messageType, stationery, mailTemplateId, sender, receiver, subject, body, has_items, expire_time, deliver_time, money, cod, checked) SELECT @base + ROW_NUMBER() OVER (ORDER BY id), 2, 62, 0, houseid, buyguid, CONCAT(COALESCE(itemEntry, 0), ':', COALESCE(randomPropertyId, 0), ':4:', id, ':', COALESCE(count, 1)), CONCAT(LPAD(HEX(itemowner), 16, '0'), ':', lastbid, ':', buyoutprice, ':', deposit, ':0'), 0, UNIX_TIMESTAMP() + 2592000, UNIX_TIMESTAMP(), lastbid, 0, 4 FROM purge_refund`,
+    `DELETE ii FROM ${chars}.item_instance ii JOIN purge_ah p ON p.itemguid = ii.guid`,
+    `DELETE ah FROM ${chars}.auctionhouse ah JOIN purge_ah p ON p.id = ah.id`,
+    'COMMIT',
+    //By leewheel 2026年11月19日 临时表在**同一条语句**里只能被打开一次：原来写成两个子查询各查一遍 purge_refund，
+    // MySQL 直接报 “Can't reopen table”（临时实例实测）。改成一次扫描把两个数取出来。
+    'SELECT (SELECT COUNT(*) FROM purge_ah) AS auctions, COUNT(*) AS refunds, COALESCE(SUM(lastbid), 0) AS refunded FROM purge_refund',
+  ].join(';\n') + ';';
+}
+
 // The random bots of this realm only (its own account prefix), the way CoA Bots purges those of CoA: the realm's
 // worldserver runs once with the module's delete option given through the environment, deletes and stops.
-async function purgeBots(root, key) {
+async function purgeBots(root, key, { house = true, runSql = sql } = {}) {
   const saved = await realmFile(root, key);
   if (!saved) throw new Error('Create the realm first.');
   if (await ownWorldPid(root, saved.worldPort) || await processOf(root, key)) throw new Error('Stop this realm first.');
+  //By leewheel 2026年11月19日 先清拍卖（此时机器人的账号还在，才能按前缀认出“这是谁的拍卖”）：
+  // 顺序不能反 —— 账号先被删掉的话，它们的拍卖就成了“卖家不存在”，只能靠第二条规则兜底。
+  const [auctions = 0, refunds = 0, refunded = 0] = String(await runSql(root, auctionPurgeSql(key, { house }))).trim().split(/\s+/).map(Number);
   await refreshBotConfigs(root);
   await writeConfigs(root, key, saved);
   const child = launch(root, key, 'deleting the random bots of this realm', { AC_AI_PLAYERBOT_DELETE_RANDOM_BOT_ACCOUNTS: '1' });
@@ -1088,7 +1130,7 @@ async function purgeBots(root, key) {
   await fsp.rm(path.join(dirOf(root, key), '.state.json'), { force: true });
   const left = Number(await sql(root, `SELECT COUNT(*) FROM acore_auth.account WHERE username LIKE '${mode(key).prefix.toUpperCase()}%'`).catch(() => '-1'));
   if (left > 0) throw new Error(`${left} bot account(s) of this realm are still there (exit ${code}); see Royaumes\\${key}\\Logs.`);
-  return { deleted: true };
+  return { deleted: true, auctions, refunds, refunded };
 }
 
 async function setOptions(root, key, { autostart } = {}) {
@@ -1123,4 +1165,4 @@ async function clearOffline(root, { coa = false } = {}) {
   return ids;
 }
 //By leewheel 2026年11月8日 导出端口归属判定，供回归测试直接验证（别人的程序占着端口时必须判成 foreign）
-module.exports = { clearOffline, setRealmName, ahbotSettingsOf, setAhbotSettingsOf, onlineRunning, shippedTables, syncShippedTables, MODES, queueMarked, memoryFor, neededMb, botsOnline, setDisabled, versionReady, modulesOf, setModule, coaAutostart, setCoaAutostart, skipCoaAtStart, anotherStarting, refreshBotConfigs, status, create, start, stop, stopAll, startMarked, setOptions, settingsOf, saveSettings, purgeBots, writeConfigs, setKey, ownWorldPid, portStranger };
+module.exports = { auctionPurgeSql, clearOffline, setRealmName, ahbotSettingsOf, setAhbotSettingsOf, onlineRunning, shippedTables, syncShippedTables, MODES, queueMarked, memoryFor, neededMb, botsOnline, setDisabled, versionReady, modulesOf, setModule, coaAutostart, setCoaAutostart, skipCoaAtStart, anotherStarting, refreshBotConfigs, status, create, start, stop, stopAll, startMarked, setOptions, settingsOf, saveSettings, purgeBots, writeConfigs, setKey, ownWorldPid, portStranger };

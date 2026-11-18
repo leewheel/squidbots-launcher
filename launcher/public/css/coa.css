@@ -531,6 +531,24 @@ dialog.release-dialog .check { opacity: .85; }
 .realm-chip.st-foreign { color: #ff9c8f; border-color: rgba(255, 156, 143, .4); }
 .realm-chip.st-foreign .dot { background: #ff7a68; }
 
+/*By leewheel 2026年11月19日 确认框里的勾选项（如「连拍卖行机器人的拍卖一起清空」）：一行对齐，不挤成两截 */
+.check-line { display: flex; gap: 8px; align-items: center; margin-top: 6px; line-height: 1.5; }
+
+/*By leewheel 2026年11月19日 国度页筛选标签：「全部」+ 每个国度，点一下只看那一个（默认全部，不改任何数据） */
+.realm-filter { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.realm-filter-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 13px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, .035);
+  color: var(--muted); font-size: 12.5px;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.realm-filter-btn small { color: var(--faint, rgba(255,255,255,.42)); font-size: 11px; }
+.realm-filter-btn:hover { color: var(--text); border-color: var(--line-strong); }
+.realm-filter-btn.active { color: #1a1206; background: var(--gold, #e0a850); border-color: transparent; font-weight: 700; }
+.realm-filter-btn.active small, .realm-filter-btn.active .state-dot.on { color: #1a1206; }
+.realm-filter-btn .state-dot.on { width: 7px; height: 7px; border-radius: 50%; background: #7ddc8a; box-shadow: 0 0 6px rgba(125,220,138,.8); }
+
 /* 版本行：当前版本 / 最新版本 各占一行，别粘成一串 */
 dialog.release-dialog .realm-badge > div { display: grid; gap: 3px; min-width: 0; }
 dialog.release-dialog .realm-badge strong { display: block; font-size: 13.5px; color: var(--text); }

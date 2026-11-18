@@ -2318,7 +2318,15 @@ function registerIpc() {
   //By leewheel 2026年11月9日 省电模式开关：写 Settings\repack.json（主服）或 Royaumes\<国度>\realm.json，关掉时立刻还原原值
   handle('realms:eco', async (key, on) => { await eco.setEnabled(serverPath(), text(key, 12), on === true); return realmsStatus(); });
   const onePurge = (name, work) => oneServerJob(`recreating the bots of ${name}`, () => withMysql(work));
-  handle('realms:purge', async key => { await onePurge(realms.MODES[text(key, 12)]?.title || key, () => realms.purgeBots(serverPath(), text(key, 12))); return realmsStatus(); });
+  //By leewheel 2026年11月19日 清机器人带上它们的拍卖：house=false 时保留拍卖行机器人（AHBOT）的拍卖，
+  // 结果里回传清了多少拍卖、退了多少笔竞价，界面上如实显示。
+  handle('realms:purge', async (key, options) => {
+    const k = text(key, 12);
+    const house = options?.house !== false;
+    let purged = null;
+    await onePurge(realms.MODES[k]?.title || k, async () => { purged = await realms.purgeBots(serverPath(), k, { house }); });
+    return { ...(await realmsStatus()), purged };
+  });
   //By leewheel 2026年11月19日 国度备份 / 恢复 / 重置世界（移植上游 “Reset the world” 的做法）：
   // 重置会清空这个国度的角色与机器人数据，所以必须先整包备份、并要求玩家输入国度名；世界库 acore_world 共用，绝不碰。
   const realmStopped = async key => {

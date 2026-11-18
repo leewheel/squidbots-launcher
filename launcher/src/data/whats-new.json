@@ -566,5 +566,18 @@
         "Home lists every realm as a small chip with its state; one click opens the realms page."
       ]
     }
+  },
+  {
+    "version": "1.0.202611190800",
+    "items": {
+      "zh": [
+        "「新机器人」现在会把机器人的拍卖一起清掉（玩家的拍卖不动；给这些拍卖出过价的玩家，钱按拍卖邮件退回），可选是否连拍卖行机器人的一起清。",
+        "国度页加了筛选标签：默认「全部」，点某个国度只看它一张。"
+      ],
+      "en": [
+        "New bots now removes the bots' auctions too (players' auctions stay; a player's bid is refunded by auction mail).",
+        "Realms page gained a filter: All, or one realm."
+      ]
+    }
   }
 ]
