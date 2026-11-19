@@ -195,16 +195,40 @@ function coverageOf(release) {
   return 0;
 }
 
+//By leewheel 2026年11月20日 历史记录的「已装」判定：版本字符串或日期任一命中即算装过。
+// 实弹（玩家反馈）：用本地包 CoA-Update-2026.11.19-full.zip 更新后仍提示有更新。
+// 根因：本地包从文件名提取版本记成 2026.11.19，GitHub release 的 version 是 COA-UPDATE-20261119，
+// 两套命名字符串对不上，done.has() 永远不中 → 刚装过的包又回到待装队列，横幅一直挂着。
+// dateOf() 对两者都返回 20261119，用日期做等价桥梁即可；判定口径三处（队列/覆盖补记/强制队列）统一。
+function historyDone(history = []) {
+  const versions = new Set();
+  const dates = new Set();
+  for (const item of (Array.isArray(history) ? history : [])) {
+    const version = String(item?.version || '');
+    if (!version) continue;
+    versions.add(version);
+    const date = dateOf(version);
+    if (date) dates.add(date);
+  }
+  return {
+    has(version, date) {
+      if (version && versions.has(String(version))) return true;
+      return Boolean(date && dates.has(date));
+    }
+  };
+}
+//End By leewheel
 function pendingReleases({ releases = [], history = [], current = '', baseline = '', limit = 30, respectCoverage = true } = {}) {
-  const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
+  const done = historyDone(history);
   const baseDate = dateOf(baseline);
   const ordered = releases
     .map((release, index) => ({ ...release, index }))
     .filter(release => {
       const version = String(release?.version || '');
-      if (!version || done.has(version) || !pickAsset(release)) return false;
       // 日期优先取发布时间（一定有），取不到再退版本号里的 20YYMMDD
       const patchDate = dateOf(release.publishedAt) || dateOf(version);
+      //By leewheel 2026年11月20日 版本字符串或日期任一命中都算装过（兼容本地包 2026.11.19 vs GitHub COA-UPDATE-20261119）
+      if (!version || done.has(version, patchDate) || !pickAsset(release)) return false;
       if (baseDate && patchDate && patchDate < baseDate) return false;
       //By leewheel 2026年11月8日 完全没有基线可比时（RELEASE.json 被删、也没跑过一次更新），
       // 才退回和“已安装版本/整合包版本”比。同样只在**严格更旧**时跳过：
@@ -282,14 +306,15 @@ function coverageMap({ releases = [] } = {}) {
 // 为什么要记：基线的来源（RELEASE.json）会随下一个整合包变，历史记录才是稳定档；
 // 记过之后 done 命中，永远不用再算，界面的“更新记录”也能看见“这一版整合包已自带”。
 function baselineCovered({ releases = [], history = [], baseline = '' } = {}) {
-  const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
+  const done = historyDone(history);
   const baseDate = dateOf(baseline);
   if (!baseDate) return [];
   return releases
     .filter(release => {
       const version = String(release?.version || '');
-      if (!version || done.has(version) || !pickAsset(release)) return false;
       const patchDate = dateOf(release.publishedAt) || dateOf(version);
+      //By leewheel 2026年11月20日 与 pendingReleases 同一口径：本地包日期写法也算装过，不重复补记
+      if (!version || done.has(version, patchDate) || !pickAsset(release)) return false;
       return Boolean(patchDate && patchDate < baseDate);
     })
     .map(release => ({ version: String(release.version || ''), asset: pickAsset(release) }));
@@ -304,7 +329,7 @@ function baselineCovered({ releases = [], history = [], baseline = '' } = {}) {
 // 返回的 queue 顺序始终是【旧 → 新】，绝不出现“只装中间某一个”的情况。
 // targetVersion 为空 = 取最新一版。
 function queueUpTo({ releases = [], history = [], targetVersion = '', limit = 30 } = {}) {
-  const done = new Set((Array.isArray(history) ? history : []).map(item => String(item?.version || '')).filter(Boolean));
+  const done = historyDone(history);
   //By leewheel 2026年11月10日 「装最新」时要认累积包（只装最后一个）；只有玩家**明确点名**某个旧版本时
   // 才退回老语义（把它的前置也补上）—— 强制装旧版是修坏文件用的，不能被覆盖率吞掉。
   const all = pendingReleases({ releases, history: [], current: '', baseline: '', limit, respectCoverage: !targetVersion })
@@ -316,7 +341,8 @@ function queueUpTo({ releases = [], history = [], targetVersion = '', limit = 30
   const queue = all.filter(item => {
     if (target.date && item.date && item.date > target.date) return false;
     if (item.version === target.version) return true;
-    return !done.has(item.version);
+    //By leewheel 2026年11月20日 目标之前的补丁用版本+日期双键判定，本地包日期写法也算装过
+    return !done.has(item.version, item.date);
   });
   return { queue, target, isFull, reason: '' };
 }

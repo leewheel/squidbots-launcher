@@ -72,3 +72,30 @@ test('已经装过同一个带日期的版本仍然算最新（不能反过来�
   const history = [{ version: 'COA-UPDATE-20261110', at: '2026-11-10T03:00:00Z' }];
   assert.deepEqual(pendingReleases({ releases, history, current: 'COA-UPDATE-20261110', baseline: 'COA-UPDATE-20261110' }), []);
 });
+
+//By leewheel 2026年11月20日 实弹（玩家反馈）：用本地包 CoA-Update-2026.11.19-full.zip 更新后仍提示有更新。
+// 本地包从文件名提取版本记成 2026.11.19；GitHub release 的 version 是 COA-UPDATE-20261119。
+// 字符串精确匹配永远不中 → 刚装过的包回到待装队列，横幅一直挂着。(dateOf 两者都返回 20261119)
+test('本地包日期写法（2026.11.19）与 GitHub 版本写法（COA-UPDATE-20261119）视为同一版', () => {
+  const releases = [{
+    version: 'COA-UPDATE-20261119', tag: 'COA-UPDATE-20261119', publishedAt: '2026-11-19T06:00:00Z',
+    notes: '累计基线: 20261119',
+    assets: [{ name: 'CoA-Update-2026.11.19-full.zip', size: 1, url: 'https://x/a.zip' }],
+  }];
+  for (const written of ['2026.11.19', '20261119', 'COA-UPDATE-20261119']) {
+    const history = [{ version: written, origin: 'local', at: '2026-11-19T08:00:00Z' }];
+    assert.deepEqual(
+      pendingReleases({ releases, history, current: written, baseline: '2026.11.19' }),
+      [], `history 记成 ${written} 时不应再提示 11.19 待装`,
+    );
+  }
+  // 没装过的机器照样能看到这一版，不能被日期匹配误杀成「已装」
+  assert.equal(pendingReleases({ releases, history: [], current: '', baseline: '' }).length, 1);
+  // 只装过更早版本时必须提示新的
+  assert.equal(pendingReleases({
+    releases,
+    history: [{ version: '2026.11.18', origin: 'local' }],
+    current: '2026.11.18', baseline: '2026.11.18',
+  }).length, 1);
+});
+//End By leewheel
