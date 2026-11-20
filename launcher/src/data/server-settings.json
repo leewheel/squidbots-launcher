@@ -190,6 +190,16 @@
         "ru": "Чат ботов (ИИ)",
         "zh": "机器人聊天（LLM）"
       }
+    },
+    {
+      "id": "weather",
+      "icon": "cloud",
+      "label": {
+        "en": "Weather system",
+        "fr": "Système météo",
+        "ru": "Погодная система",
+        "zh": "天气系统"
+      }
     }
   ],
   "when": {
@@ -3814,6 +3824,329 @@
         "ru": "Дополнительная угроза ботов-танков в процентах: 0 = без изменений, 100 = ×2, 200 = ×3.",
         "zh": "机器人坦克额外威胁的百分比：0 = 不变，100 = ×2，200 = ×3。"
       }
+    },
+    {
+      "key": "WeatherVibe.Enable",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "bool",
+      "when": "restart",
+      "label": {
+        "en": "Weather system",
+        "fr": "Système météo",
+        "ru": "Погодная система",
+        "zh": "天气系统"
+      },
+      "help": {
+        "en": "On, the server works out its own weather for each region from the season, the time of day and the region: snow on a winter night, fog in the morning, thunderstorms in a summer afternoon. Off, the sky never changes by itself (an admin can still push weather with the .wvibe command).",
+        "fr": "Activé, le serveur calcule sa propre météo pour chaque région selon la saison, l'heure et la région : neige les nuits d'hiver, brouillard le matin, orages les après-midi d'été. Désactivé, le ciel ne change plus tout seul (un MJ peut toujours pousser la météo avec la commande .wvibe).",
+        "ru": "Включено: сервер сам рассчитывает погоду для каждого региона по сезону, времени суток и региону — снег зимней ночью, туман утром, грозы летним днём. Выключено: небо само не меняется (админ может выставить погоду командой .wvibe).",
+        "zh": "开启后，服务器会按季节、时段和地区自己算天气：冬夜下雪、清晨起雾、夏日午后转雷暴，每个地区都不一样。关掉后天色不会自己变化（管理员仍可用 .wvibe 命令手动推送）。"
+      }
+    },
+    {
+      "key": "WeatherVibe.Profile.Enable",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "bool",
+      "when": "restart",
+      "label": {
+        "en": "Automatic weather",
+        "fr": "Météo automatique",
+        "ru": "Автоматическая погода",
+        "zh": "自动天气"
+      },
+      "help": {
+        "en": "The engine that keeps changing the weather on its own, region by region. Off, the weather stays as it is and only an admin command can change it.",
+        "fr": "Le moteur qui fait évoluer la météo tout seul, région par région. Désactivé, la météo reste telle quelle et seule une commande MJ peut la changer.",
+        "ru": "Движок, который сам меняет погоду по регионам. Выключено: погода остаётся как есть, менять её может только команда админа.",
+        "zh": "让天气自己不断演化的引擎，按地区逐个计算。关掉后天气就定住不动，只有管理员命令能改。"
+      }
+    },
+    {
+      "key": "WeatherVibe.Announce",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "bool",
+      "when": "restart",
+      "label": {
+        "en": "Tell players on login",
+        "fr": "Prévenir les joueurs à la connexion",
+        "ru": "Сообщать игрокам при входе",
+        "zh": "登录时提示已开启天气"
+      },
+      "help": {
+        "en": "A one-line notice when a player logs in, saying the weather system is on. Turn it off if you find it noisy.",
+        "fr": "Une ligne à la connexion pour dire que la météo est active. Désactivez-la si c'est trop bavard.",
+        "ru": "Одна строка при входе: погодная система включена. Отключите, если мешает.",
+        "zh": "玩家登录时提示一句「本服务器已启用天气」。嫌刷屏就关掉。"
+      }
+    },
+    {
+      "key": "WeatherVibe.Season",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "choice",
+      "when": "restart",
+      "choices": [
+        {
+          "value": "auto",
+          "label": {
+            "en": "Follow the real date",
+            "fr": "Suivre la date réelle",
+            "ru": "По реальной дате",
+            "zh": "跟随真实日期（自动）"
+          }
+        },
+        {
+          "value": "spring",
+          "label": {
+            "en": "Spring",
+            "fr": "Printemps",
+            "ru": "Весна",
+            "zh": "春天"
+          }
+        },
+        {
+          "value": "summer",
+          "label": {
+            "en": "Summer",
+            "fr": "Été",
+            "ru": "Лето",
+            "zh": "夏天"
+          }
+        },
+        {
+          "value": "autumn",
+          "label": {
+            "en": "Autumn",
+            "fr": "Automne",
+            "ru": "Осень",
+            "zh": "秋天"
+          }
+        },
+        {
+          "value": "winter",
+          "label": {
+            "en": "Winter",
+            "fr": "Hiver",
+            "ru": "Зима",
+            "zh": "冬天"
+          }
+        }
+      ],
+      "label": {
+        "en": "Season",
+        "fr": "Saison",
+        "ru": "Сезон",
+        "zh": "季节"
+      },
+      "help": {
+        "en": "Which season every region uses for its weather. On auto, the season follows the real date, so the world changes through the year. Pin one season to keep the same mood all the time (winter for snow, summer for thunderstorms).",
+        "fr": "La saison que chaque région utilise pour sa météo. En auto, elle suit la date réelle : le monde évolue au fil de l'année. Fixez-en une pour garder la même ambiance (hiver pour la neige, été pour les orages).",
+        "ru": "Какой сезон регионы используют для погоды. В режиме «авто» сезон идёт по реальной дате. Зафиксируйте сезон, чтобы сохранить одну атмосферу (зима — снег, лето — грозы).",
+        "zh": "所有地区按哪个季节算天气。选「跟随真实日期」时，现实里过了季节游戏里也会换，一年四季都在变；固定某个季节就能一直保持同一种氛围（想看雪选冬天，想看雷暴选夏天）。"
+      }
+    },
+    {
+      "key": "WeatherVibe.DayPart.Mode",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "choice",
+      "when": "restart",
+      "choices": [
+        {
+          "value": "auto",
+          "label": {
+            "en": "Follow the server time",
+            "fr": "Suivre l'heure du serveur",
+            "ru": "По времени сервера",
+            "zh": "跟随游戏时间（自动）"
+          }
+        },
+        {
+          "value": "morning",
+          "label": {
+            "en": "Always morning",
+            "fr": "Toujours le matin",
+            "ru": "Всегда утро",
+            "zh": "固定早晨"
+          }
+        },
+        {
+          "value": "afternoon",
+          "label": {
+            "en": "Always afternoon",
+            "fr": "Toujours l'après-midi",
+            "ru": "Всегда день",
+            "zh": "固定下午"
+          }
+        },
+        {
+          "value": "evening",
+          "label": {
+            "en": "Always evening",
+            "fr": "Toujours le soir",
+            "ru": "Всегда вечер",
+            "zh": "固定傍晚"
+          }
+        },
+        {
+          "value": "night",
+          "label": {
+            "en": "Always night",
+            "fr": "Toujours la nuit",
+            "ru": "Всегда ночь",
+            "zh": "固定夜间"
+          }
+        }
+      ],
+      "label": {
+        "en": "Time of day",
+        "fr": "Moment de la journée",
+        "ru": "Время суток",
+        "zh": "时段"
+      },
+      "help": {
+        "en": "The time of day sets the base of the weather: mornings bring fog, summer afternoons thunderstorms, nights the heaviest snow. On auto it follows the in-game clock. Pin one part to keep a mood (night for a dark, foggy world).",
+        "fr": "Le moment de la journée donne la base de la météo : brouillard le matin, orages les après-midi d'été, neige la plus forte la nuit. En auto, il suit l'heure du jeu. Fixez-en un pour garder une ambiance (la nuit pour un monde sombre et brumeux).",
+        "ru": "Время суток задаёт основу погоды: утром туман, летом днём грозы, ночью самый сильный снег. В режиме «авто» идёт по игровым часам. Зафиксируйте, чтобы сохранить атмосферу (ночь — мир тёмный и туманный).",
+        "zh": "时段决定天气的基准：早晨容易起雾、夏日午后容易转雷暴、夜里雪最大。选「跟随游戏时间」会按游戏内时钟自动切；固定某个时段就能一直保持那种氛围（比如固定夜间 = 常在夜色与雾里）。"
+      }
+    },
+    {
+      "key": "WeatherVibe.Profile.ReApply.PerSec",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "int",
+      "when": "restart",
+      "label": {
+        "en": "Weather recalculated every (seconds)",
+        "fr": "Météo recalculée toutes les (secondes)",
+        "ru": "Пересчёт погоды каждые (секунд)",
+        "zh": "天气重算间隔（秒）"
+      },
+      "help": {
+        "en": "How often the engine recomputes the weather of every region. 30 is the default. Lower makes the sky change more often (and costs a little more), higher keeps it calm.",
+        "fr": "Fréquence de recalcul de la météo de chaque région. 30 par défaut. Plus bas : le ciel change plus souvent (un peu plus coûteux) ; plus haut : plus calme.",
+        "ru": "Как часто движок пересчитывает погоду всех регионов. По умолчанию 30. Меньше — небо меняется чаще (чуть дороже), больше — спокойнее.",
+        "zh": "引擎每隔多少秒重新算一遍各地区的天气。默认 30 秒。调小天气变化更频繁（会多花一点性能），调大更安静。"
+      }
+    },
+    {
+      "key": "WeatherVibe.DayPart.MORNING.Start",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "time",
+      "when": "restart",
+      "label": {
+        "en": "Morning starts at",
+        "fr": "Le matin commence à",
+        "ru": "Утро начинается в",
+        "zh": "早晨开始时间"
+      },
+      "help": {
+        "en": "24-hour clock, HH:MM (06:00 by default).",
+        "fr": "Format 24 h, HH:MM (06:00 par défaut).",
+        "ru": "24-часовой формат, ЧЧ:ММ (по умолчанию 06:00).",
+        "zh": "24 小时制，格式 HH:MM（默认 06:00）。"
+      }
+    },
+    {
+      "key": "WeatherVibe.DayPart.AFTERNOON.Start",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "time",
+      "when": "restart",
+      "label": {
+        "en": "Afternoon starts at",
+        "fr": "L'après-midi commence à",
+        "ru": "День начинается в",
+        "zh": "下午开始时间"
+      },
+      "help": {
+        "en": "24-hour clock, HH:MM (12:00 by default).",
+        "fr": "Format 24 h, HH:MM (12:00 par défaut).",
+        "ru": "24-часовой формат, ЧЧ:ММ (по умолчанию 12:00).",
+        "zh": "24 小时制，格式 HH:MM（默认 12:00）。"
+      }
+    },
+    {
+      "key": "WeatherVibe.DayPart.EVENING.Start",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "time",
+      "when": "restart",
+      "label": {
+        "en": "Evening starts at",
+        "fr": "Le soir commence à",
+        "ru": "Вечер начинается в",
+        "zh": "傍晚开始时间"
+      },
+      "help": {
+        "en": "24-hour clock, HH:MM (18:00 by default).",
+        "fr": "Format 24 h, HH:MM (18:00 par défaut).",
+        "ru": "24-часовой формат, ЧЧ:ММ (по умолчанию 18:00).",
+        "zh": "24 小时制，格式 HH:MM（默认 18:00）。"
+      }
+    },
+    {
+      "key": "WeatherVibe.DayPart.NIGHT.Start",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "time",
+      "when": "restart",
+      "label": {
+        "en": "Night starts at",
+        "fr": "La nuit commence à",
+        "ru": "Ночь начинается в",
+        "zh": "夜间开始时间"
+      },
+      "help": {
+        "en": "24-hour clock, HH:MM (22:00 by default).",
+        "fr": "Format 24 h, HH:MM (22:00 par défaut).",
+        "ru": "24-часовой формат, ЧЧ:ММ (по умолчанию 22:00).",
+        "zh": "24 小时制，格式 HH:MM（默认 22:00）。"
+      }
+    },
+    {
+      "key": "WeatherVibeCommand",
+      "file": "mod_weather_vibe.conf",
+      "group": "weather",
+      "kind": "choice",
+      "when": "restart",
+      "choices": [
+        {
+          "value": "0",
+          "label": {
+            "en": "Game masters only",
+            "fr": "Maîtres de jeu seulement",
+            "ru": "Только ГМ",
+            "zh": "仅管理员"
+          }
+        },
+        {
+          "value": "1",
+          "label": {
+            "en": "Every player",
+            "fr": "Tous les joueurs",
+            "ru": "Все игроки",
+            "zh": "所有玩家"
+          }
+        }
+      ],
+      "label": {
+        "en": "Who can use the weather command",
+        "fr": "Qui peut utiliser la commande météo",
+        "ru": "Кто может использовать команду погоды",
+        "zh": "谁能用天气命令"
+      },
+      "help": {
+        "en": "The .wvibe command pushes weather to a region by hand. Keep it on game masters: opened to everyone, players can change the sky of a whole zone.",
+        "fr": "La commande .wvibe pousse la météo dans une région à la main. Laissez-la aux MJ : ouverte à tous, les joueurs changent le ciel de toute une zone.",
+        "ru": "Команда .wvibe вручную выставляет погоду в регионе. Оставьте её ГМ: если открыть всем, игроки смогут менять небо целой зоны.",
+        "zh": "用 .wvibe 命令可以手动给某个地区推送天气。保持「仅管理员」：如果放开给所有玩家，谁都能把一整片区域的天色改掉。"
+      }
     }
   ],
   "overrides": [
@@ -4284,7 +4617,8 @@
         "realm",
         "rates",
         "xp",
-        "difficulty"
+        "difficulty",
+        "weather"
       ]
     },
     {

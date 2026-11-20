@@ -299,6 +299,16 @@ function control(setting) {
     return `<select ${attrs}>${setting.choices.map(choice => `<option value="${esc(choice.value)}" ${same(choice) ? 'selected' : ''}>${esc(loc(choice.label))}</option>`).join('')}${extra}</select>`;
   }
   if (setting.kind === 'int' || setting.kind === 'float') return `<input class="num-input" type="number" ${setting.kind === 'float' ? 'step="any"' : 'step="1"'} value="${esc(value)}" ${attrs}>`;
+  //By leewheel 20261120 时段起点（HH:MM）：合法值用原生时间选择器，玩家不用记格式；
+  // 值不规范时退回文本框（否则 type=time 遇到非法字符串会显示成空白，看不出原值）
+  if (setting.kind === 'time') {
+    const clock = String(value).trim();
+    const match = /^(\d{1,2}):(\d{2})$/.exec(clock);
+    if (match && Number(match[1]) < 24 && Number(match[2]) < 60) {
+      return `<input class="text-input" type="time" ${attrs} value="${esc(match[1].padStart(2, '0'))}:${esc(match[2])}">`;
+    }
+    return `<input class="text-input" type="text" maxlength="5" placeholder="06:00" value="${esc(clock)}" ${attrs}>`;
+  }
   return `<input class="text-input" type="text" maxlength="400" value="${esc(value)}" ${attrs}>`;
 }
 

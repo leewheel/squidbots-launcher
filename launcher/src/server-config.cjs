@@ -39,12 +39,14 @@ function stamp() {
 const STAMP = /^\d{8}-\d{6}-\d{3}$/;
 
 //By leewheel 2026-11-03 全角数字/标点归一化：中文输入法下 "１．２６"、"－１"、"１，２" 都能当正常值保存
+//By leewheel 20261120 追加全角冒号："０５：３０" 也要能存成 05:30（天气时段起点用）
 function normalizeNumber(value) {
   return String(value ?? '')
     .replace(/[\uFF10-\uFF19]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
     .replace(/[\uFF0E\u3002]/g, '.')
     .replace(/[\uFF0D\u2013\u2014\u2212]/g, '-')
     .replace(/[\uFF0C\u3001]/g, ',')
+    .replace(/\uFF1A/g, ':')
     .trim();
 }
 
@@ -59,7 +61,8 @@ function inferKind(value) {
 
 //By leewheel 2026-11-03 数值类型的值先做全角→半角归一化（中文输入法常打出"１．２６"），
 // 文本类型保持原样（不能把玩家的中文句号/顿号改掉）。
-const NUMERIC_KINDS = ['bool', 'int', 'float', 'ids'];
+//By leewheel 20261120 time 也算数值类：时段起点只有 HH:MM 一种写法，全角冒号要能归一
+const NUMERIC_KINDS = ['bool', 'int', 'float', 'ids', 'time'];
 function validate(kind, value, choices) {
   const text = NUMERIC_KINDS.includes(kind) ? normalizeNumber(value) : String(value ?? '').trim();
   if (/[\r\n]/.test(text)) return '一个值不能跨多行。';
@@ -71,6 +74,8 @@ function validate(kind, value, choices) {
     // Rate.XP.Kill.WotLK = 0.90909094 这种 8 位的值，旧上限会把合法的原值也判成"不是数字"。
     case 'float': return /^-?\d{1,12}(\.\d{1,10})?$/.test(text) ? null : '应为一个数字。';
     case 'ids': return /^(\d+(\s*,\s*\d+)*)?$/.test(text) ? null : '应为逗号分隔的数字。';
+    //By leewheel 20261120 时段起点：只收 24 小时制 HH:MM（"6:00" 也放行），避免玩家填"5点半"后以为设好了
+    case 'time': return /^([01]?\d|2[0-3]):[0-5]\d$/.test(text) ? null : '应为 24 小时制时间，例如 06:00。';
     case 'quoted': return text.includes('"') ? '引号会自动加上：只填内容即可。' : null;
     case 'choice': return (choices || []).some(choice => String(choice.value) === text) ? null : '请从列出的值里选一个。';
     default: return text.includes('"') && !/^".*"$/.test(text) ? '引号不配对。' : null;
@@ -299,7 +304,8 @@ class ServerConfig {
       const raw = String(change.value ?? '').trim();
       const kind = curated?.kind || change.kind || inferKind(raw);
       const text = NUMERIC_KINDS.includes(kind) ? normalizeNumber(change.value) : raw;
-      const problem = validate(['bool', 'int', 'float', 'ids', 'quoted', 'choice', 'text'].includes(kind) ? kind : 'text', text, curated?.choices);
+      //By leewheel 20261120 time 加入白名单：天气时段起点要按 HH:MM 校验，不能落到 text 的宽松分支
+      const problem = validate(['bool', 'int', 'float', 'ids', 'time', 'quoted', 'choice', 'text'].includes(kind) ? kind : 'text', text, curated?.choices);
       if (problem) { errors[change.key] = problem; continue; }
       if (!byFile.has(file.id)) byFile.set(file.id, { file, pairs: new Map() });
       byFile.get(file.id).pairs.set(change.key, kind === 'quoted' ? `"${text}"` : text);

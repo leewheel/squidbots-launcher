@@ -15,6 +15,8 @@ const ICONS = {
   database: '<ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/>',
   book: '<path d="M12 6c-2-1.5-5-2-8-1v14c3-1 6-.5 8 1 2-1.5 5-2 8-1V5c-3-1-6-.5-8 1Z"/><path d="M12 6v14"/>',
   globe: '<circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.5 2.2 3.5 5 3.5 8s-1 5.8-3.5 8c-2.5-2.2-3.5-5-3.5-8s1-5.8 3.5-8Z"/>',
+  //By leewheel 20261120 天气系统页签：云朵 + 三滴雨，与其它线条图标同风格（24x24，stroke=currentColor）
+  cloud: '<path d="M7 17h9.5a3.5 3.5 0 0 0 .4-7 5 5 0 0 0-9.7-1.2A3.6 3.6 0 0 0 7 17Z"/><path d="M8 20v1M12 20v1M16 20v1"/>',
   map: '<path d="m4 6 5-2 6 2 5-2v14l-5 2-6-2-5 2Z"/><path d="M9 4v14M15 6v14"/>',
   shield: '<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6Z"/><path d="m9 12 2 2 4-4"/>',
   swords: '<path d="m4 4 9 9M4 4h4l9 9M4 4v4l9 9M14 17l3 3M17 14l3 3M15 19l4-4"/>',
