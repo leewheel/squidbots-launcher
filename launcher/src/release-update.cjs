@@ -789,7 +789,11 @@ async function injectDbc(clientRoot, dbcFile, { map = null, onLine = () => {} } 
       check = mpq.injectFile(archive, arcName, payload, { dryRun: true });
     } catch { continue; }
     if (!check.ok) continue;
-    const result = mpq.injectFile(archive, arcName, payload);
+    //By leewheel 20261121 注入必须压缩：MPQ 只追加不回收，Spell.dbc 这种表未压缩一次就吃掉 248 MB，
+    // 累积几次会把补丁档顶到 4 GB（MPQ 的偏移字段是 32 位）→ 客户端整档读不了。
+    // 实测 248 MB 压到 17.6 MB，注入约 14 秒，读回记录数与中文都正常。
+    const result = mpq.injectFile(archive, arcName, payload, { compress: true });
+    //End By leewheel
     onLine(`已注入 ${table} → ${path.basename(archive)}（${(payload.length / 1024).toFixed(0)} KB）`);
     return { table, archive: path.basename(archive), size: payload.length, ok: result.ok };
   }
@@ -806,7 +810,9 @@ async function injectIntoArchive(clientRoot, archive, dbcFile, { map = null, onL
     let check = null;
     try { check = mpq.injectFile(archive, arcName, payload, { dryRun: true }); } catch (error) { warnings.push(`${path.basename(archive)} 读取失败：${error.message}`); }
     if (check?.ok) {
-      const result = mpq.injectFile(archive, arcName, payload);
+      //By leewheel 20261121 同上：按更新包指定档注入时也要压缩，否则补丁档会被未压缩的大表顶爆 4 GB。
+      const result = mpq.injectFile(archive, arcName, payload, { compress: true });
+      //End By leewheel
       onLine(`已注入 ${table} → ${path.basename(archive)}（按更新包指定）`);
       return { table, archive: path.basename(archive), size: payload.length, ok: result.ok };
     }

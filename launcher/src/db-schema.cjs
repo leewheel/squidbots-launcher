@@ -45,27 +45,48 @@ async function readManifest(folder) {
   return null;
 }
 
-// 本包 SQL 里声明要建的表：按 server\SQL\<库名>\*.sql 统计，用来区分“该建没建”和“本来就不归本包管”
-// 返回 Map<库名, Set<表名>>，另外用 "<库名>#columns" 存 Map<表名, Set<字段名>>（ALTER TABLE ... ADD COLUMN）
+// 本包 SQL 里声明要建的表 / 按设计删除的表：按 server\SQL\<库名>\**\*.sql 统计。
+//By leewheel 2026年11月25日 两处修正：
+//  ① 以前只读 <库名> 目录第一层，zzzz_2026_11_25 这类子目录里的 SQL 根本没看到；
+//  ② 以前只看 CREATE TABLE，不认 DROP TABLE，PR #12775 按设计删掉的客户端表被误判成“脚本没生效”。
+// 现在按导入顺序（自然排序）逐条记最后一次动作：最终是 CREATE 才算本包负责建，
+// 最终是 DROP 就记到 <库名>#dropped，核对时只提示、不中止。
+// 返回 Map<库名, Set<表名>>，另外用 "<库名>#columns" 存 Map<表名, Set<字段名>>（ALTER TABLE ... ADD COLUMN），
+// "<库名>#dropped" 存 Set<表名>。
+function naturalCompare(a, b) {
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
+async function collectSqlFiles(dir, base = dir, out = []) {
+  const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) await collectSqlFiles(full, base, out);
+    else if (entry.isFile() && /\.sql$/i.test(entry.name)) out.push({ full, rel: path.relative(base, full).split(path.sep).join('/') });
+  }
+  return out;
+}
+
 async function createdTables(sqlRoot) {
   const out = new Map();
   if (!sqlRoot) return out;
   const entries = await fsp.readdir(sqlRoot, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || !DATABASE.test(entry.name)) continue;
-    const tables = new Set();
+    const state = new Map();
     const columns = new Map();
     const dir = path.join(sqlRoot, entry.name);
-    const files = (await fsp.readdir(dir).catch(() => [])).filter(file => /\.sql$/i.test(file));
-    for (const file of files) {
-      const full = path.join(dir, file);
+    const files = await collectSqlFiles(dir);
+    files.sort((a, b) => naturalCompare(a.rel, b.rel));
+    for (const { full } of files) {
       // 单个 SQL 脚本正常都在几 MB 以内，超大的（几百 MB 的备份）不读，避免把内存吃满
       const stat = await fsp.stat(full).catch(() => null);
       if (!stat || stat.size > 64 * 1024 * 1024) continue;
       const text = await fsp.readFile(full, 'utf8').catch(() => '');
       if (!text) continue;
-      // CREATE TABLE [IF NOT EXISTS] `name` / ALTER TABLE `name` ADD [COLUMN] `col`
-      for (const match of text.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([A-Za-z0-9_]+)`?/gi)) tables.add(match[1].toLowerCase());
+      // CREATE TABLE [IF NOT EXISTS] `name` / DROP TABLE [IF EXISTS] `name` / ALTER TABLE `name` ADD [COLUMN] `col`
+      for (const match of text.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?([A-Za-z0-9_]+)`?/gi)) state.set(match[1].toLowerCase(), 'create');
+      for (const match of text.matchAll(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?`?([A-Za-z0-9_]+)`?/gi)) state.set(match[1].toLowerCase(), 'drop');
       for (const match of text.matchAll(/ALTER\s+TABLE\s+`?([A-Za-z0-9_]+)`?\s+ADD\s+(?:COLUMN\s+)?`?([A-Za-z0-9_]+)`?/gi)) {
         const table = match[1].toLowerCase();
         const set = columns.get(table) || new Set();
@@ -73,11 +94,19 @@ async function createdTables(sqlRoot) {
         columns.set(table, set);
       }
     }
+    const tables = new Set();
+    const dropped = new Set();
+    for (const [name, action] of state) {
+      if (action === 'create') tables.add(name);
+      else dropped.add(name);
+    }
     out.set(entry.name, tables);
     out.set(`${entry.name}#columns`, columns);
+    out.set(`${entry.name}#dropped`, dropped);
   }
   return out;
 }
+//End By leewheel 2026年11月25日
 
 // information_schema 查询结果按“一行一条”返回（--skip-column-names + --batch，多列用 Tab 分隔）
 function rows(text) {
@@ -123,6 +152,7 @@ async function checkSchema({ query, manifest, sqlRoot, onLine = () => {} }) {
     }
     const createdTablesForDb = created.get(database) || new Set();
     const createdColumnsForDb = created.get(`${database}#columns`) || new Map();
+    const droppedTablesForDb = created.get(`${database}#dropped`) || new Set();
     if (!actual) {
       // 整个库都不存在：本包给它建过表才算硬失败，否则只是提示
       const hard = names.some(name => createdTablesForDb.has(name.toLowerCase()));
@@ -144,7 +174,9 @@ async function checkSchema({ query, manifest, sqlRoot, onLine = () => {} }) {
         if (optional) continue;
         result.missingTables++;
         const byPackage = createdTablesForDb.has(name.toLowerCase());
-        const message = `${database}.${name}：表不存在${byPackage ? '（本包 SQL 里就有 CREATE TABLE，说明脚本没生效）' : ''}`;
+        //By leewheel 2026年11月25日 最终动作是 DROP 的表只是按设计移除，不能再判成“脚本没生效”
+        const dropped = droppedTablesForDb.has(name.toLowerCase());
+        const message = `${database}.${name}：表不存在${byPackage ? '（本包 SQL 里就有 CREATE TABLE，说明脚本没生效）' : dropped ? '（本包 SQL 按设计 DROP TABLE，不是漏导）' : ''}`;
         if (byPackage) result.problems.push(message);
         else result.warnings.push(message);
         result.details.push({ database, table: name, kind: 'table', problem: byPackage, message });
