@@ -863,8 +863,11 @@ async function applyDbcTree({ clientRoot, serverRoot, dbcRoot, map = null, onLin
     const archiveName = mpqAt >= 0 ? parts[mpqAt] : '';
     const archive = archiveName ? path.join(clientRoot, 'Data', ...sub, archiveName) : '';
 
-    // ② 服务端（双发布的后半边）：按客户端的子目录镜像落地，不冲掉基础表；拷贝失败即中止。
-    const serverTarget = path.join(dbcDir, ...sub, table);
+    // ② 服务端（双发布的后半边）：拷贝失败即中止。
+    //By leewheel 2026年11月26日 服务端副本必须**平铺**到 <DataDir>\dbc\ 下：
+    // 服务端只按 `dbc\<表名>.dbc` 直读，不递归子目录。原来按客户端的 MPQ 档名镜像落地
+    // （拷成 dbc\patch-ZZN.mpq\Spell.dbc），玩家服务端拿到新表却一张都读不到。
+    const serverTarget = path.join(dbcDir, table);
     let copied = null;
     try {
       await fsp.mkdir(path.dirname(serverTarget), { recursive: true });
@@ -1269,11 +1272,10 @@ async function verifyInstalled({ folder, root, serverRoot, clientRoot }) {
     const dbcLayout = serverLayout(serverRoot);
     const serverDbcDir = path.join(serverRoot, ...String(dbcLayout.data || 'ClientData').split('/'), 'dbc');
     for (const [name, entry] of dbcPayload) {
-      const parts = entry.rel.split(path.sep);
-      const table = parts[parts.length - 1];
-      const mpqAt = parts.findIndex(part => /\.mpq$/i.test(part));
-      const sub = mpqAt >= 0 ? parts.slice(0, mpqAt) : [];
-      const target = path.join(serverDbcDir, ...sub, table);
+      const table = path.basename(entry.rel);
+      //By leewheel 2026年11月26日 与 applyDbcTree 同步：服务端落点是平铺的 dbc\<表名>.dbc，
+      // 不带 MPQ 档名子目录，否则核对会在子目录里找到副本、却和服务端真正读的位置不是一处。
+      const target = path.join(serverDbcDir, table);
       const label = path.relative(serverRoot, target);
       const src = await fsp.stat(entry.file).catch(() => null);
       const dst = await fsp.stat(target).catch(() => null);
