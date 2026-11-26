@@ -774,25 +774,33 @@ async function readDbcMap(world) {
 }
 
 // 把 dbc 注入客户端补丁档：先按映射，找不到就扫描所有档里含该表的那个
+//By leewheel 2026年11月26日 规则变更（老大定案）：改过的 DBC 一律进 patch-ZZN.mpq。
+// ZZN 是最后加载的补丁档，放这里必然盖掉 patch-M / patch-S / patch-ZG 里的旧版本，
+// 不会出现“两个版本哪个生效”的问题。只有包里显式写了语言档（enUS\speech-enUS.MPQ 等，
+// 加载比 ZZN 更晚）才按包指定的档走。
+// 另外：档里原本没有这张表时必须能新建条目（allowCreate），否则“这次新加的表”
+// 在客户端永远注不进去 —— 以前只替换已有条目，新表直接被跳过。
 async function injectDbc(clientRoot, dbcFile, { map = null, onLine = () => {} } = {}) {
   const table = path.basename(dbcFile);
   const arcName = `DBFilesClient\\${table}`;
   const wantArchive = map && (map[table] || map['*'] || map[table.toLowerCase()]);
   const archives = await clientMpqs(clientRoot);
-  const ordered = wantArchive
-    ? archives.filter(file => path.basename(file).toLowerCase() === String(wantArchive).toLowerCase()).concat(archives.filter(file => path.basename(file).toLowerCase() !== String(wantArchive).toLowerCase()))
-    : archives;
+  const zzn = archives.find(file => /^patch-ZZN\.mpq$/i.test(path.basename(file)));
+  const preferred = wantArchive
+    ? archives.filter(file => path.basename(file).toLowerCase() === String(wantArchive).toLowerCase())
+    : (zzn ? [zzn] : []);
+  const ordered = preferred.concat(archives.filter(file => !preferred.includes(file)));
   const payload = await fsp.readFile(dbcFile);
   for (const archive of ordered) {
     let check;
     try {
-      check = mpq.injectFile(archive, arcName, payload, { dryRun: true });
+      check = mpq.injectFile(archive, arcName, payload, { dryRun: true, allowCreate: true });
     } catch { continue; }
     if (!check.ok) continue;
     //By leewheel 20261121 注入必须压缩：MPQ 只追加不回收，Spell.dbc 这种表未压缩一次就吃掉 248 MB，
     // 累积几次会把补丁档顶到 4 GB（MPQ 的偏移字段是 32 位）→ 客户端整档读不了。
     // 实测 248 MB 压到 17.6 MB，注入约 14 秒，读回记录数与中文都正常。
-    const result = mpq.injectFile(archive, arcName, payload, { compress: true });
+    const result = mpq.injectFile(archive, arcName, payload, { compress: true, allowCreate: true });
     //End By leewheel
     onLine(`已注入 ${table} → ${path.basename(archive)}（${(payload.length / 1024).toFixed(0)} KB）`);
     return { table, archive: path.basename(archive), size: payload.length, ok: result.ok };
@@ -800,18 +808,19 @@ async function injectDbc(clientRoot, dbcFile, { map = null, onLine = () => {} } 
   return { table, archive: '', size: payload.length, ok: false, reason: '归档里没有这张表' };
 }
 
-//By leewheel 2026年11月4日 按【更新包给的档】注入：client\data\dbc\patch-ZZN.mpq\X.dbc → Client\Data\patch-ZZN.mpq
-// 档里没有这张表时记警告，再退回“全档扫描”的老办法，保证更新不会因为一张表停住。
+//By leewheel 2026年11月26日 按【更新包给的档】注入：client\data\dbc\patch-ZZN.mpq\X.dbc → Client\Data\patch-ZZN.mpq
+// 档里原本没有这张表时按 MPQ 规则新建条目（allowCreate），否则新增的表永远落不了地。
+// 只有指定档不存在时，才退回“找含该表的档”的老办法。
 async function injectIntoArchive(clientRoot, archive, dbcFile, { map = null, onLine = () => {}, warnings = [] } = {}) {
   const table = path.basename(dbcFile);
   const arcName = `DBFilesClient\\${table}`;
   const payload = await fsp.readFile(dbcFile);
   if (archive && fs.existsSync(archive)) {
     let check = null;
-    try { check = mpq.injectFile(archive, arcName, payload, { dryRun: true }); } catch (error) { warnings.push(`${path.basename(archive)} 读取失败：${error.message}`); }
+    try { check = mpq.injectFile(archive, arcName, payload, { dryRun: true, allowCreate: true }); } catch (error) { warnings.push(`${path.basename(archive)} 读取失败：${error.message}`); }
     if (check?.ok) {
       //By leewheel 20261121 同上：按更新包指定档注入时也要压缩，否则补丁档会被未压缩的大表顶爆 4 GB。
-      const result = mpq.injectFile(archive, arcName, payload, { compress: true });
+      const result = mpq.injectFile(archive, arcName, payload, { compress: true, allowCreate: true });
       //End By leewheel
       onLine(`已注入 ${table} → ${path.basename(archive)}（按更新包指定）`);
       return { table, archive: path.basename(archive), size: payload.length, ok: result.ok };
@@ -823,11 +832,23 @@ async function injectIntoArchive(clientRoot, archive, dbcFile, { map = null, onL
   return injectDbc(clientRoot, dbcFile, { map, onLine });
 }
 
-//By leewheel 2026年11月4日 DBC 目录归位：
-//   client\data\dbc\patch-ZZN.mpq\*.dbc        → 注入 Client\Data\patch-ZZN.mpq
-//   client\data\dbc\enUS\speech-enUS.MPQ\*.dbc → 注入 Client\Data\enUS\speech-enUS.MPQ
-//   client\data\dbc\*.dbc（平铺）              → 老格式，按映射/自动找档
-// 同时在 Server 的 ClientData\dbc（含子目录）留一份，保证服务端与客户端一致。
+//By leewheel 2026年11月26日 【DBC 双发布规则】（老大 2026-11-26 定案。改这个函数前先读完这段）
+//
+// 规则约定目录：更新包里的 client\data\dbc\**\*.dbc，四种写法都算：
+//   client\data\dbc\patch-ZZN.mpq\Spell.dbc        （按档名子目录）
+//   client\data\dbc\enUS\speech-enUS.MPQ\X.dbc     （带语言子目录）
+//   client\data\dbc\*.dbc                          （平铺，老格式，自动找档）
+//   Client\Data\dbc\... / <包>\dbc\ / <包>\chsspell\（老包的等价目录）
+//
+// 落位规则 —— 这张表必须【同时】发到两边，任何一侧没到位都算更新失败，不许降级成警告：
+//   ① 客户端：注入 Client\Data\<对应补丁档>\DBFilesClient\<表名>.dbc（zip 压缩注入，防 4 GB 上限）
+//   ② 服务端：拷进 <Server>\<DataDir>\dbc\<子目录镜像>\<表名>.dbc，拷完回读字节数必须与源一致
+//
+// 为什么必须双发：服务端 DBC 是技能/物品/地图校验的权威来源，只发客户端会出现
+//   “客户端能看、服务端不认”，或服务端旧表把客户端新表又盖回去。
+// 实弹：2026-11-21 那轮 20 张表只放进了更新包、没真正落地，服务端与客户端双双停在旧表，
+//   客户端 Spell.dbc 少 3943 条技能 → 玩家端技能书空图标、描述全错，被当成“汉化没做完”。
+// 核对阶段 checkUpdate 按同一规则，用“客户端负载”去比服务端副本，两边必须字节一致。
 async function applyDbcTree({ clientRoot, serverRoot, dbcRoot, map = null, onLine = () => {}, warnings = [] } = {}) {
   const layout = serverLayout(serverRoot);
   const serverDbcDir = path.join(serverRoot, ...String(layout.data || 'ClientData').split('/'));
@@ -841,18 +862,27 @@ async function applyDbcTree({ clientRoot, serverRoot, dbcRoot, map = null, onLin
     const sub = mpqAt >= 0 ? parts.slice(0, mpqAt) : [];
     const archiveName = mpqAt >= 0 ? parts[mpqAt] : '';
     const archive = archiveName ? path.join(clientRoot, 'Data', ...sub, archiveName) : '';
-    // 服务端留一份：按客户端的子目录镜像（enUS\X.dbc → ClientData\dbc\enUS\X.dbc），不冲掉基础表
+
+    // ② 服务端（双发布的后半边）：按客户端的子目录镜像落地，不冲掉基础表；拷贝失败即中止。
+    const serverTarget = path.join(dbcDir, ...sub, table);
+    let copied = null;
     try {
-      const target = path.join(dbcDir, ...sub, table);
-      await fsp.mkdir(path.dirname(target), { recursive: true });
-      await fsp.copyFile(item.file, target);
+      await fsp.mkdir(path.dirname(serverTarget), { recursive: true });
+      await fsp.copyFile(item.file, serverTarget);
+      copied = await fsp.stat(serverTarget);
     } catch (error) {
-      warnings.push(`服务端 ClientData 拷贝失败：${table}（${error.message}）`);
+      throw new Error(`DBC ${table} 拷贝到服务端 ${path.relative(serverRoot, serverTarget)} 失败：${error.message}。更新中止`);
     }
+    const source = await fsp.stat(item.file);
+    if (!copied || copied.size !== source.size)
+      throw new Error(`DBC ${table} 服务端副本不完整（源 ${source.size} 字节 ≠ 目标 ${copied ? `${copied.size} 字节` : '缺失'}）。更新中止`);
+
+    // ① 客户端：注入补丁档
     const result = await injectIntoArchive(clientRoot, archive, item.file, { map, onLine, warnings });
-    injected.push({ ...result, file: item.rel });
     //By leewheel 2026年11月7日 注入失败就是文件没到位，必须中止更新，不能只记警告放过。
     if (!result.ok) throw new Error(`DBC ${table} 没能注入任何补丁档（${result.reason || '归档里没有这张表'}）。更新中止`);
+    onLine(`↳ 服务端同步 ${table} → ${path.relative(serverRoot, serverTarget)}（${copied.size} 字节）`);
+    injected.push({ ...result, file: item.rel, serverPath: serverTarget, serverSize: copied.size });
   }
   return injected;
 }
@@ -1226,7 +1256,36 @@ async function verifyInstalled({ folder, root, serverRoot, clientRoot }) {
   if (clientFrom) {
     for (const entry of await walkFiles(path.join(clientFrom, 'data', 'dbc'))) {
       const name = path.basename(entry.rel).toLowerCase();
-      if (name.endsWith('.dbc') && !dbcPayload.has(name)) dbcPayload.set(name, entry.file);
+      if (name.endsWith('.dbc') && !dbcPayload.has(name)) dbcPayload.set(name, { file: entry.file, rel: entry.rel });
+    }
+  }
+
+  //By leewheel 2026年11月26日 DBC 双发布核对（规则见 applyDbcTree 上方注释）：
+  // 包内 client\data\dbc 里的每一张表，服务端 <DataDir>\dbc\ 下都必须有字节一致的副本。
+  // 以前只在包内带 server\clientdata\dbc 副本时才核到服务端；包里不带那份副本（2026-11-26 起按
+  // 21 号包的做法只放 client 侧），这条规则就等于根本没核 —— 只发客户端、服务端留旧表的包能一路装完
+  // 还报成功。这里改成“按客户端负载逐表核服务端落点”，与 applyDbcTree 完全同一套路径算法。
+  if (clientFrom) {
+    const dbcLayout = serverLayout(serverRoot);
+    const serverDbcDir = path.join(serverRoot, ...String(dbcLayout.data || 'ClientData').split('/'), 'dbc');
+    for (const [name, entry] of dbcPayload) {
+      const parts = entry.rel.split(path.sep);
+      const table = parts[parts.length - 1];
+      const mpqAt = parts.findIndex(part => /\.mpq$/i.test(part));
+      const sub = mpqAt >= 0 ? parts.slice(0, mpqAt) : [];
+      const target = path.join(serverDbcDir, ...sub, table);
+      const label = path.relative(serverRoot, target);
+      const src = await fsp.stat(entry.file).catch(() => null);
+      const dst = await fsp.stat(target).catch(() => null);
+      checked++;
+      if (!src) { problems.push(`DBC 双发布：包里的 ${table} 读不到`); continue; }
+      if (!dst) { problems.push(`DBC 双发布缺服务端副本：${table} 应落在 ${label}，实际不存在`); continue; }
+      if (src.size !== dst.size) { problems.push(`DBC 双发布：${table} 服务端副本大小不一致（客户端负载 ${src.size} ≠ ${label} ${dst.size}）`); continue; }
+      try {
+        if (await fileMd5(entry.file) !== await fileMd5(target)) problems.push(`DBC 双发布：${table} 服务端副本 md5 不一致（${label}）`);
+      } catch (error) {
+        problems.push(`DBC 双发布：${table} md5 计算失败（${error.message}）`);
+      }
     }
   }
 
@@ -1237,9 +1296,10 @@ async function verifyInstalled({ folder, root, serverRoot, clientRoot }) {
       if (area.only && !area.only.test(path.basename(item.file))) continue;
       const target = path.join(area.to, item.rel);
       // 同名的客户端 DBC 就是最终会落在服务端的那一份
-      const payload = area.label === 'Server' && /^clientdata\/dbc\//i.test(rel)
+      const payloadEntry = area.label === 'Server' && /^clientdata\/dbc\//i.test(rel)
         ? dbcPayload.get(path.basename(item.file).toLowerCase())
-        : '';
+        : null;
+      const payload = payloadEntry ? payloadEntry.file : '';
       const source = payload || item.file;
       const sourceLabel = payload ? '客户端负载' : '包内';
       const src = await fsp.stat(source).catch(() => null);
