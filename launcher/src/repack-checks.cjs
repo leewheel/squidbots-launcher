@@ -191,23 +191,12 @@ async function repackChecks({ root, add, mysqlQuery, services }) {
 
   // ---- what runs
   const running = await processes();
-  //By leewheel 2026年11月26日 老大实弹（启动器截图）：机器上只要开着**任意**一份 MySQL（开发服 3395、
-  // 系统装的 3306），这里就把本包报成「别的目录的 MySQL 在运行」，自检不合格、启动按钮跟着变灰 ——
-  // 可那两个端口根本不是本包要用的那个。判据改成「占着**本包配置的 MySQL 端口**的那份进程是谁」：
-  // 端口主人是本包目录里的 mysqld 就算自己人（哪怕是在外面手动起的）；端口被别处占着才报；
-  // 别处另开的一份 MySQL 在别的端口上跑，与本包无关，一律不管、绝不拦启动。
-  const repackPorts = JSON.parse(((await read(path.join(root, 'Settings/repack.json'))) || '{}').replace(/^﻿/, ''));
-  const mysqlPort = Number(repackPorts.mysqlPort) || 0;
-  let mysqlOwnerPid = 0;
-  if (mysqlPort) {
-    const net = await require('./server-control.cjs').listening().catch(() => '');
-    const line = String(net).split(/\r?\n/).find(row => new RegExp(`:${mysqlPort}\\s+\\S+\\s+LISTENING\\s+\\d+`).test(row));
-    mysqlOwnerPid = Number(line?.trim().split(/\s+/).pop()) || 0;
-  }
-  const foreignMysql = mysqlOwnerPid
-    ? running.find(item => Number(item.pid) === mysqlOwnerPid && item.name.toLowerCase() === 'mysqld.exe' && item.file && !inside(item.file))
-    : null;
-  if (foreignMysql) add('services', 'mysql.foreign', 'warn', { file: foreignMysql.file, port: mysqlPort });
+  //By leewheel 2026年11月26日 老大定案：**别在进程层面判「外来 MySQL」**。
+  // 机器上另开一份 MySQL（开发服 3395、系统装的 3306）跟本包毫无关系，只要它没占本包的端口就不该提一个字。
+  // 端口冲突只认一件事：本包配的那个端口现在被谁占着 —— 由 server-control 的 status() 判
+  // （service.state === 'foreign'，verify 里落成 service.foreign 这一条），首页出红字 + 「强制关闭占用程序」，
+  // 开机时 boot.js 也会弹一条「端口 X 被其他程序占用」。这里不再重复判定，免得同一件事两套口径。
+  //End By leewheel
   const world = running.find(item => item.name.toLowerCase() === 'worldserver.exe' && inside(item.file));
   if (world && standard && fs.existsSync(path.join(root, 'CoA-Bots/Core/worldserver.exe'))) {
     const withBots = world.file.toLowerCase().includes('\\coa-bots\\core\\');

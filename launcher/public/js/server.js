@@ -959,8 +959,11 @@ Object.assign(App.actions, {
     // Starting the server takes a while (with realms: MySQL, their worlds, then the login): the home page says so meanwhile.
     App.state.startingAll = true;
     App.render();
+    //By leewheel 2026年11月26日 启动超过 4 分钟还没回来时给一句话：老大实弹（11-26）界面一直停在
+    // 「正在启动服…」、又没有日志，只能干等。现在至少告诉他去看 logs\launcher-start.log 的哪一步。
+    const slow = setTimeout(() => toast('启动超过 4 分钟还没结束：先看一眼 Server\\logs\\launcher-start.log，最后一行就是现在停在的步骤。', 'warning'), 240000);
     try { App.state.server = await App.api.startService('all'); }
-    finally { App.state.startingAll = false; App.render(); if (typeof loadRealms === 'function') loadRealms(); }
+    finally { clearTimeout(slow); App.state.startingAll = false; App.render(); if (typeof loadRealms === 'function') loadRealms(); }
     App.refresh('server');
     if (typeof runVerify === 'function') runVerify(false).catch(() => {});
     toast(t('server.allGood', 'Everything is running'), 'success');

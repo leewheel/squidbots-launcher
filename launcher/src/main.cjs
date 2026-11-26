@@ -2078,15 +2078,20 @@ function registerIpc() {
   const startEverything = async () => {
     baseByRealm = false;
     realmsAuto.armed = false; // 这个流程自己会调 startMarked，别让轮询再起一次
+    const mark = line => startTrace(serverPath(), `[all]     ${line}`);
+    mark('准备启动：省电唤醒 / 配置 / 网络 / 日志');
     await prepareStart();
+    mark('准备完成');
     // CoA left out of "Start all" when the player chose so and a realm starts with the server: MySQL and the authserver only.
     const skipCoa = await realms.skipCoaAtStart(serverPath()).catch(() => false);
     await realms.queueMarked(serverPath()).catch(() => {});
+    mark(`起服务（skipCoa=${skipCoa}）`);
     // The authserver after a worldserver: the world applies the updates of the auth database.
     // A realm that did not start says why on the page (not enough memory, an error of its world).
     const startRealms = () => realms.startMarked(serverPath()).then(failed => { if (failed.length) send('realms:failed', failed); }).catch(error => send('realms:failed', [{ key: '', error: error.message }]));
     if (skipCoa) { await requireControl().start('mysql'); await startRealms(); await requireControl().start('auth'); await realmsOnline(); }
     else { try { await requireControl().startAll(); await realmsOnline(); } finally { startRealms(); } }
+    mark('主服与国度都已处理');
     // MySQL runs now: the names of the cards reach the realm list, stopped realms included.
     await applyCardNames(serverPath(), await realmCards.read(serverPath())).catch(() => {});
   };
@@ -2097,26 +2102,48 @@ function registerIpc() {
     return serverInfo();
   });
   handle('repack:start', async id => {
-    assertServerFree();
-    //By leewheel 2026年11月11日 启动之前先查目录完整性：缺 authserver.exe / worldserver.exe / mysql 就直接报中文清单，
-    // 不再等到 mysqld 拉不起来才给一句“找不到文件”（玩家根本不知道该补什么）。
-    assertServerIntegrity();
-    //By leewheel 2026年11月8日 数据库和游戏数据没关系：缺 mmaps / dbc 也允许先把库起来，
-    // 否则玩家点"启动数据库"只会收到一句"先准备游戏数据"，看起来就是按钮没用。
-    if (text(id, 30) !== 'mysql' && assembler.state(serverPath()).needed) throw new Error('Prepare the game data from your client first (home page).');
-    //By leewheel 2026年11月9日 启动失败要立刻让首页出现「为什么起不来」按钮：
-    // 失败时先推一条事件（带一句人话原因），界面不用等玩家自己去找日志。
+    //By leewheel 2026年11月26日 启动失败/卡住必须留痕：老大实弹（11-26 17:03）点了「启动服务器」，
+    // 界面一直停在「正在启动服…」，可 Server\logs 里一条新日志都没有，事后无法判断断在哪一步。
+    // 这里把启动的每一步（含耗时与失败原因）追加到 logs\launcher-start.log，下一次一定查得到。
+    const began = Date.now();
+    const say = line => startTrace(serverPath(), `[${text(id, 30)}] ${line}（+${Date.now() - began}ms）`);
+    say('收到启动请求');
     try {
-      return await startServiceNow(id);
+      assertServerFree();
+      say('通过：没有别的服务作业在跑');
+      //By leewheel 2026年11月11日 启动之前先查目录完整性：缺 authserver.exe / worldserver.exe / mysql 就直接报中文清单，
+      // 不再等到 mysqld 拉不起来才给一句“找不到文件”（玩家根本不知道该补什么）。
+      assertServerIntegrity();
+      say('通过：目录完整性');
+      //By leewheel 2026年11月8日 数据库和游戏数据没关系：缺 mmaps / dbc 也允许先把库起来，
+      // 否则玩家点"启动数据库"只会收到一句"先准备游戏数据"，看起来就是按钮没用。
+      if (text(id, 30) !== 'mysql' && assembler.state(serverPath()).needed) { say('中止：游戏数据没准备好'); throw new Error('Prepare the game data from your client first (home page).'); }
+      //By leewheel 2026年11月9日 启动失败要立刻让首页出现「为什么起不来」按钮：
+      // 失败时先推一条事件（带一句人话原因），界面不用等玩家自己去找日志。
+      const info = await startServiceNow(id);
+      say('完成');
+      return info;
     } catch (error) {
+      say(`失败：${String(error?.message || error)}`);
       const serviceId = text(id, 30) === 'all' ? 'all' : text(id, 30);
       send('server:failed', { id: serviceId, message: String(error?.message || error), at: Date.now() });
       throw error;
     }
   });
+  // 启动轨迹：写不进去也绝不能影响启动本身。
+  function startTrace(root, line) {
+    try {
+      const dir = path.join(root, 'logs');
+      require('node:fs').mkdirSync(dir, { recursive: true });
+      require('node:fs').appendFileSync(path.join(dir, 'launcher-start.log'), `${new Date().toISOString()} ${line}\n`);
+    } catch { /* 日志只是辅助 */ }
+  }
   //By leewheel 2026年11月9日 原来的启动主体原样搬进这个函数，只为外面能包一层 try/catch
   async function startServiceNow(id) {
+    const began = Date.now();
+    const say = line => startTrace(serverPath(), `[${id}]   ${line}（+${Date.now() - began}ms）`);
     //By leewheel 2026年11月5日 点“启动服务器 / 启动数据库”前先关掉数据库自动更新，否则服务端起不来
+    say('关掉数据库自动更新');
     await enforceDbUpdatesOff(serverPath(), { notify: true }).catch(() => {});
     //By leewheel 2026年11月5日 启动服务器时先把“待办的数据库脚本”补导（上次更新时库没起来过），
     // 导完再拉起服务，避免玩家带着没导的 SQL 进游戏。
@@ -2128,9 +2155,10 @@ function registerIpc() {
       await modules.keepRotationOff(serverPath()).catch(() => {});
       await requireControl().start('mysql');
     } else {
+      say('检查待办 SQL');
       await retryPendingSql().catch(() => {});
-      if (id === 'all') await startEverything();
-      else { await prepareStart(); await requireControl().start(serviceId); if (serviceId === 'auth') await realmsOnline(); }
+      if (id === 'all') { say('开始启动全部服务'); await startEverything(); }
+      else { say(`启动 ${serviceId}`); await prepareStart(); await requireControl().start(serviceId); if (serviceId === 'auth') await realmsOnline(); }
     }
     return serverInfo();
   }

@@ -224,20 +224,16 @@ class ServerControl {
     return target.startsWith(this.root.toLowerCase() + path.sep);
   }
 
-  //By leewheel 2026年11月15日 tasklist 只给映像名（不给完整路径），这里按“映像名 == 本服务 exe 的文件名”
-  // 判断归属。比路径判定宽松一点，但配合端口、children、.state 三条证据已经足够，
-  // 而且原来读不到路径时（mysqld 以服务身份跑）本来也是这么兜底的。
-  ownsName(service, name) {
-    if (!name) return false;
-    const lower = String(name).toLowerCase();
-    return this.serviceExes(service).some(exe => path.basename(exe) === lower);
-  }
-
-  /** 进程表里的一行是否属于本服务：有完整路径就严格按路径，读不到路径（跨权限）才退回按映像名 */
+  //By leewheel 2026年11月26日 老大定案（第二次纠正）：**归属只认完整 exe 路径**。
+  // 原来这里有个 ownsName：tasklist 只给映像名时按「名字同名」认领本服务，读不到路径也走它。
+  // 后果是机器上任何一份 mysqld.exe（开发服 3395 的那两个、系统装的 3306）只要跨权限读不到 Path，
+  // 就被当成本包的 MySQL 在「加载中」，首页 moving 成立、按钮变成灰的「正在启动…」，点不动 —— 老大原话：
+  // 「只要有 MySQL 在运行，启动服务器的按钮就不可用」。那个函数已整条删除：
+  // 宁可把加载中的自家进程少认一次，也不认领别人的进程。
   ownsRow(service, row) {
     if (!row) return false;
-    if (row.file) return this.ownsExe(service, row.file);
-    return this.ownsName(service, row.name);
+    if (!row.file) return false;
+    return this.ownsExe(service, row.file);
   }
   //By leewheel 2026年11月12日 「这个端口后面是不是自己人」的唯一判据，三个证据按可靠度排序：
   // 1) children 里记着这个 PID —— 就是本启动器这一秒拉起来的；
@@ -254,13 +250,11 @@ class ServerControl {
       const record = JSON.parse(fs.readFileSync(path.join(this.root, '.state', `${service.id}.json`), 'utf8'));
       if (Number(record?.pid) === Number(owner.pid) && this.ownsExe(service, record.exe)) return true;
     } catch { /* 没有 .state 记录，继续往下兜底 */ }
-    //By leewheel 2026年11月12日 老大实弹 + 明确要求：本目录 Server\mysql\bin 的 mysqld 在运行，
-    // 却被报成「端口被其他程序占用 PID xxx」。原因：mysqld 以管理员/Windows 服务身份跑时，
-    // PowerShell 跨权限读不到它的 Path，三条证据全部落空。兜底判据：进程名与本服务的 exe 同名
-    // （mysqld.exe）即算自己人——这个端口本来就是本包 MySQL 独占的，能监听它的 mysqld
-    // 只可能是本包目录下的那份（系统另装的 MySQL 不会恰好占这个端口）。
-    const exeName = path.basename(String(service.exe || '')).toLowerCase();
-    if (!owner.file && owner.name && exeName && String(owner.name).toLowerCase() === exeName) return true;
+    //By leewheel 2026年11月26日 老大定案：读不到路径的进程**不再按映像名认领**（原来这里把任何
+    // mysqld.exe 都算自己人）。按老大的说法：「真的同端口，就直接显示端口冲突，可以强制关掉即可」——
+    // 认不出来就当外来占用，首页出红字 + 「强制关闭占用程序」，玩家一眼能处理；
+    // 认成自己人反而会把「别人的库占着我的端口」藏起来，界面显示运行中、游戏连不上，最难查。
+    // 前面三条（children 的 PID、路径严格比对、.state 记录）仍然是可靠证据；都认不出来就判「外来」。
     return false;
   }
   //End By leewheel
