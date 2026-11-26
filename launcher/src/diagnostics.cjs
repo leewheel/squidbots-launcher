@@ -88,12 +88,12 @@ const WORLD_RULES = [
   { match: /(Could not connect to MySQL|Can't connect to MySQL server|Lost connection to MySQL server at .* while connecting|Failed to connect to database)/i, reason: '世界服连不上数据库（多半是 MySQL 还没起来，或端口/地址不对）', hint: '先单独启动「数据库」，等它的灯变绿；看首页数据库那一行的状态。' },
   { match: /Access denied for user .* \(using password/i, reason: '数据库账号或密码不对（configs\\worldserver.conf 里的 WorldDatabaseInfo）', hint: '把 WorldDatabaseInfo / LoginDatabaseInfo 的账号密码改回 acore / acore。' },
   { match: /Unknown database '([^']+)'/i, reason: '数据库里没有这个名字的库', hint: '先用备份恢复数据库，或者重新安装整合包的服务端部分。' },
-  { match: /(Table '[^']+' doesn't exist|Could not prepare statements of the (World|Playerbots|Character|Login) database|Table '([^']+)' doesn't exist)/i, reason: '数据库缺少这张表（核心版本比库新，或建库脚本没跑完）', hint: '点首页「体检」里的「补齐数据库表」，或装一次最新的更新包。' },
+  { match: /(Table '[^']+' doesn't exist|Could not prepare statements of the (World|Playerbots|Character|Login) database|Table '([^']+)' doesn't exist)/i, reason: '数据库缺少这张表（核心版本比库新，或建库脚本没跑完）', hint: '打开「检查」页，点数据库那一项的「修复」，或装一次最新的更新包。' },
   { match: /(Map file .* does not exist|VMap file .* does not exist|MMAP.*(does not exist|not found)|Could not open .*\.map)/i, reason: '服务端缺地图数据（ClientData\\maps、vmaps、mmaps 不全）', hint: '用「更新数据」重新从游戏客户端生成，或者重装服务端的数据部分。' },
   { match: /(Wrong passphrase|DataDir .* (is|does) not|Cannot find DataDir|Unable to open .*dbc)/i, reason: '数据目录（ClientData）路径不对或内容不全', hint: '检查 configs\\worldserver.conf 里的 DataDir，确认 ClientData\\dbc、maps、vmaps 都在。' },
   { match: /(WorldServerPort|port .* is already in use|Address already in use)/i, reason: '世界服端口被占用（多半是上一次的服务端还没退干净）', hint: '用首页的「强制关闭占用程序」，然后重新启动。' },
-  { match: /(Can't find .*\.conf|Could not find configuration file|Missing property)/i, reason: '服务端配置文件缺失或不全', hint: '点首页「体检」里的修复，或装一次最新更新包（会补齐 configs）。' },
-  { match: /(Unknown column|Field '[^']+' doesn't have a default value)/i, reason: '数据库表结构比核心旧（缺字段）', hint: '点「体检 → 补齐数据库表」，或装最新更新包。' },
+  { match: /(Can't find .*\.conf|Could not find configuration file|Missing property)/i, reason: '服务端配置文件缺失或不全', hint: '打开「检查」页，点设置那一项的「修复」，或装一次最新更新包（会补齐 configs）。' },
+  { match: /(Unknown column|Field '[^']+' doesn't have a default value)/i, reason: '数据库表结构比核心旧（缺字段）', hint: '打开「检查」页，点数据库那一项的「修复」，或装最新更新包。' },
 ];
 
 const AUTH_RULES = [
@@ -108,7 +108,7 @@ function rulesOf(id) {
   return WORLD_RULES;
 }
 
-// 从日志尾部找第一条命中的规则；顺便把命中的那一行原文带出来（玩家发给老大时最有用）
+// 从日志尾部找第一条命中的规则；顺便把命中的那一行原文带出来（玩家提交 BUG 时最有用）
 function matchRule(lines, rules) {
   for (const rule of rules) {
     for (const line of lines) {
@@ -148,7 +148,7 @@ async function diagnoseAll(control, { lastExits = new Map(), now = Date.now() } 
       globalBlock = '整合包放在中文路径下，MySQL 与世界服都可能读不到文件。请把整个文件夹移到纯英文路径（例如 D:\\Games\\COA）。';
       tips.push(globalBlock);
     }
-  } catch { /* 体检模块不可用时跳过 */ }
+  } catch { /* 检查模块不可用时跳过 */ }
   const free = root ? freeSpace(root) : -1;
   if (free >= 0 && free < 2 * 1024 ** 3) {
     tips.push(`启动器所在磁盘只剩 ${(free / 1024 ** 3).toFixed(1)} GB：数据库要写日志和存档，空间不足会直接起不来。`);
@@ -183,7 +183,7 @@ async function diagnoseAll(control, { lastExits = new Map(), now = Date.now() } 
         entry.severity = 'critical';
         entry.headline = `${entry.name} 起不来：程序文件不见了`;
         entry.reason = `找不到 ${exeRel}（应该在这个位置：${exeAbs}）`;
-        entry.hint = '整合包不完整：重新解压一次服务端部分，或者用「体检 → 修复」补回文件。';
+        entry.hint = '整合包不完整：重新解压一次服务端部分，或者用「检查 → 修复」补回文件。';
         out.push(entry);
         continue;
       }
@@ -208,7 +208,7 @@ async function diagnoseAll(control, { lastExits = new Map(), now = Date.now() } 
         entry.severity = 'critical';
         entry.headline = `${entry.name} 起不来：缺少 my.ini`;
         entry.reason = '服务端根目录下没有 my.ini（MySQL 的端口与数据目录都写在这个文件里）';
-        entry.hint = '用「体检 → 修复」生成一份，或者从备份/更新包里拷回来。';
+        entry.hint = '用「检查 → 修复」生成一份，或者从备份/更新包里拷回来。';
         out.push(entry);
         continue;
       }
@@ -262,15 +262,15 @@ async function diagnoseAll(control, { lastExits = new Map(), now = Date.now() } 
       entry.hint = /缺少运行库/.test(text)
         ? '装一遍微软 VC++ 2015-2022 x64 运行库（vc_redist.x64.exe），然后重启启动器。'
         : /崩溃/.test(text)
-          ? '这是程序崩溃：把下面的日志最后几行发给老大，同时先试一次「体检 → 修复」。'
-          : '看下面的日志。如果日志是空的，说明程序在打印任何东西之前就退出了（多半是缺运行库或文件损坏）。';
+          ? '这是程序崩溃：用顶部的「BUG提交」（瓢虫图标）提交，勾上「附带日志尾部」就会自动带上，不必自己复制；同时先试一次「检查 → 修复」。'
+          : '看下面的日志。如果日志是空的，说明程序在打印任何东西之前就退出了（多半是缺运行库或文件损坏）：用顶部「BUG提交」提交，勾上「附带日志尾部」。';
     }
     // 7) 超时仍未开端口
     if (!entry.reason && ['starting', 'stopped'].includes(status.state) && entry.log.lines.length) {
       entry.severity = 'warning';
       entry.headline = `${entry.name} 一直没有就绪`;
       entry.reason = `等了很久，端口 ${status.port} 还没打开，日志也没有明确的错误。`;
-      entry.hint = '第一次启动要加载地图和机器人，慢机器可能要 5~10 分钟。若超过 15 分钟还是这样，点「体检 → 修复」。';
+      entry.hint = '第一次启动要加载地图和机器人，慢机器可能要 5~10 分钟。若超过 15 分钟还是这样，点「检查 → 修复」。';
     }
     if (!entry.reason) {
       // 没毛病就是没毛病：运行中给 ok（弹窗里是绿的），没运行给 info（不算错）

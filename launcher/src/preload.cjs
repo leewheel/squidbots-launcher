@@ -23,7 +23,7 @@ function on(channel) {
 
 contextBridge.exposeInMainWorld('launcher', Object.freeze({
   bootstrap: () => call('bootstrap'),
-  //By leewheel 2026年11月7日 端口体检：启动时扫所有服务端口，被别的程序占着就报错并给「强制关闭」按钮
+  //By leewheel 2026年11月7日 端口检查：启动时扫所有服务端口，被别的程序占着就报错并给「强制关闭」按钮
   portsScan: () => call('ports:scan'),
   portsKill: port => call('ports:kill', Number(port)),
   //By leewheel 2026年11月16日 「By Me Some Token」弹窗的二维码（主进程实时生成，返回 PNG data URL）

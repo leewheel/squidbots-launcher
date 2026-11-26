@@ -1,5 +1,5 @@
 'use strict';
-//By leewheel 2026年11月6日 服务端配置体检（启动前 / 更新后 / 每次启动世界服前都跑一遍）：
+//By leewheel 2026年11月6日 服务端配置检查（启动前 / 更新后 / 每次启动世界服前都跑一遍）：
 //  1) 数据库端口对齐：worldserver.conf 的 Login/World/CharacterDatabaseInfo、authserver.conf 的 LoginDatabaseInfo
 //     一律改成整合包自带 MySQL 实际监听的端口（Settings/repack.json 的 mysqlPort 或 my.ini 的 port），
 //     老整合包里写死 3395、新包是 3396，不改就是“世界服连不上库”；
@@ -133,7 +133,7 @@ async function alignFile(file, port, updateKeys) {
   return changed;
 }
 
-/** 体检并修复；返回改了什么（空数组表示本来就对） */
+/** 检查并修复；返回改了什么（空数组表示本来就对） */
 async function ensureDatabaseConfig(root) {
   if (!root) return [];
   const port = mysqlPortOf(root);

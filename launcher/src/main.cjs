@@ -15,7 +15,7 @@ const { AddonManager } = require('./addons.cjs');
 const { requireGameClosed, configureRealmlist, realmlistStatus, launch } = require('./game.cjs');
 const { ServerControl, portOpen, normalizeServerRoot, serverDirIn } = require('./server-control.cjs');
 const dirIntegrity = require('./dir-integrity.cjs');
-//By leewheel 2026-11-05 启动时的目录布局体检（中文路径 / Client、Server 缺失或空目录）
+//By leewheel 2026-11-05 启动时的目录布局检查（中文路径 / Client、Server 缺失或空目录）
 const { checkLayout } = require('./layout-check.cjs');
 //End By leewheel
 const { ServerConfig } = require('./server-config.cjs');
@@ -468,7 +468,7 @@ async function coreVersionLabel(folder) {
   }
   return folder && repackUpdater ? repackUpdater.installedVersion(folder) : '';
 }
-//By leewheel 2026-11-05 启动时的目录体检，结果缓存一次，随 bootstrap 交给主页显示
+//By leewheel 2026-11-05 启动时的目录检查，结果缓存一次，随 bootstrap 交给主页显示
 // 便携版只认 PORTABLE_EXECUTABLE_DIR 给出的真实目录：Electron 会把 exe 解压到 %TEMP% 下运行，
 // 用那个临时路径判断中文（用户目录常带中文）会误报，也会把 Client/Server 误判成缺失。
 let layoutCheck = null;
@@ -534,7 +534,7 @@ async function writeClock(serverRoot, options) {
   return { mode, hour, minute, configured: true };
 }
 
-//By leewheel 2026年11月6日 配置体检统一走 db-config.cjs：
+//By leewheel 2026年11月6日 配置检查统一走 db-config.cjs：
 // 数据库端口对齐整合包自带 MySQL + 关掉三处数据库自动更新 + 去 BOM（老整合包写死 3395 的坑就出在这）。
 async function enforceDbUpdatesOff(serverRoot, { notify = true } = {}) {
   let changed = [];
@@ -1078,7 +1078,7 @@ function registerIpc() {
   //By leewheel 2026-11-05 smoke 测试跑在临时英文目录、也没有 Client/Server，不能让启动告警干扰截图测试
   handle('bootstrap', async () => ({ config: publicConfig(), settings, client: await clientInfo(), version: appVersion(), launcherUpdate: launcherUpdates.status, smoke: !!smokeDir, whatsNew: whatsNew(), layout: smokeDir ? { chinesePath: false, badFolders: [] } : startupLayout() }));
   //End By leewheel
-  //By leewheel 2026年11月7日 端口体检与强制关闭（启动器启动时自动扫一次，界面给按钮）
+  //By leewheel 2026年11月7日 端口检查与强制关闭（启动器启动时自动扫一次，界面给按钮）
   handle('ports:scan', async () => (serverControl() ? serverControl().scanPorts() : []));
   handle('ports:kill', async port => (serverControl() ? serverControl().killPortOwner(Number(port)) : null));
   //By leewheel 2026年11月16日 「By Me Some Token」：每次调用都现画一张二维码（PNG data URL），
@@ -4622,7 +4622,7 @@ async function main() {
   // The server watched every 20 seconds, window shown or not: ready, crash (and restart).
   //By leewheel 2026年11月7日 自动每日备份已移除，这里只剩状态跟踪与崩溃重启。
   if (!smokeDir) setInterval(() => serverWatch?.().catch(() => {}), 20000).unref();
-  //By leewheel 2026年11月11日 启动器打开 4 秒后做一次安装目录体检：不完整就弹中文提示（缺什么、该放哪），
+  //By leewheel 2026年11月11日 启动器打开 4 秒后做一次安装目录检查：不完整就弹中文提示（缺什么、该放哪），
   // 不等到玩家点「启动服务器」才撞墙。只在缺失时提示，完整时不打扰。
   if (!smokeDir) setTimeout(() => {
     try {
@@ -4634,7 +4634,7 @@ async function main() {
       const head = lacks.slice(0, 4).join('、');
       const more = lacks.length > 4 ? ` 等 ${lacks.length} 项` : '';
       send('repack:notice', { key: 'integrity.bad', text: `安装目录不完整：缺 ${head}${more}。Server\\ 与 Client\\ 要和启动器并排放在同一个目录里（详见「检查」页）。` });
-    } catch { /* 体检失败绝不能挡住启动器 */ }
+    } catch { /* 检查失败绝不能挡住启动器 */ }
   }, 4000).unref();
   // Scripts/manage.py fixed at once: a realm task can start MySQL before any server start.
   if (!smokeDir) fixManage(serverPath()).catch(() => {});

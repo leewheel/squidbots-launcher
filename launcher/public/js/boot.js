@@ -63,7 +63,7 @@ function showLayoutAlert(layout) {
 }
 //End By leewheel
 
-//By leewheel 2026年11月11日 端口体检：原来只在启动那一刻扫一次，之后 8085 才被别的程序占上
+//By leewheel 2026年11月11日 端口检查：原来只在启动那一刻扫一次，之后 8085 才被别的程序占上
 // 就再也不会出现「强制关闭」按钮；而且失败被 .catch(() => {}) 静默吞掉，看不见任何线索。
 // 现在启动时、服务状态变化时、每 30 秒都复查；横幅与首页各有一个常驻按钮，
 // 弹窗只在第一次发现占用时提示一次，不反复打扰。
@@ -107,7 +107,7 @@ async function checkPorts({ announce = true } = {}) {
   let list;
   try { list = await App.api.portsScan(); }
   catch (error) {
-    console.warn('[启动器] 端口体检失败：', error && error.message ? error.message : error);
+    console.warn('[启动器] 端口检查失败：', error && error.message ? error.message : error);
     return null;
   }
   showPortAlert(list, { announce });
@@ -381,7 +381,7 @@ App.actions['whats-new-ok'] = () => dialog.close();
   //By leewheel 2026-11-05 布局告警最后弹出，避免被"新版本"等启动弹窗覆盖；横幅之后一直常驻
   if (data.layout && (data.layout.chinesePath || data.layout.badFolders?.length)) showLayoutAlert(data.layout);
   //End By leewheel
-  //By leewheel 2026年11月11日 启动即体检端口，此后每 30 秒复查一次：
+  //By leewheel 2026年11月11日 启动即检查端口，此后每 30 秒复查一次：
   // 占用常常是启动器开着时才出现的，只在开机扫一次就永远等不到那个「强制关闭」按钮。
   // 复查只更新常驻横幅与首页按钮，不重复弹窗打扰玩家。
   if (data.config.server) {

@@ -168,7 +168,9 @@ const CHECK_TEXT = {
     info: ['{count} setting(s) not in the files, no effect', '{keys}…: the server uses its defaults, the same as in the modules. Only the logs mention it.'],
     warn: ['{count} missing setting(s) fill the log', '{keys}…: one of them is asked for up to {repeats} times, so Server.log keeps growing. Module settings files are not where the server reads them: "Fix" (when shown) copies the ones this repack has; the others come with the next update. Nothing changes in game: the defaults already apply.'],
   },
-  'mysql.foreign': { warn: ['MySQL of another folder running', '{file}: it may hold the port or the database files. Stop that server before starting, updating or moving players.'] },
+  //By leewheel 2026年11月26日 只有「占着本包 MySQL 端口」的外来 mysqld 才会走到这条；
+  // 文案必须点明端口，别让玩家以为机器上另开的 MySQL（别的端口）也碍事。
+  'mysql.foreign': { warn: ['MySQL 端口被别的程序占着：{port}', '端口 {port} 上的 mysqld 是 {file}，不在本包目录里。先把那份 MySQL 关掉，再启动、更新或转移玩家。'] },
   'realm.address': { info: ['Realm address: {address}', 'Players on another PC need the LAN or public address (and the firewall open on 3724 and 8085).'] },
 };
 
@@ -1949,7 +1951,7 @@ Object.assign(App.actions, {
   'diag-copy': button => guard(async () => {
     const text = decodeURIComponent(button.dataset.payload || '');
     if (!text) { toast('没有可复制的诊断内容。'); return; }
-    try { await navigator.clipboard.writeText(text); toast('诊断内容已复制，可以直接发给老大。', 'success'); }
+    try { await navigator.clipboard.writeText(text); toast('诊断内容已复制：粘到顶部「BUG提交」的描述里即可。', 'success'); }
     catch { toast('复制失败：请手动选中文本复制。', 'error'); }
   }, button),
   'launcher-cancel': button => guard(async () => {

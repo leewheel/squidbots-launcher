@@ -491,7 +491,7 @@ class ServerControl {
   async startOnce(id) {
     const service = this.services.find(item => item.id === id);
     if (!service) throw new Error('Unknown service.');
-    //By leewheel 2026年11月7日 中文路径硬拦截：布局体检不通过就一律不启动服务端。
+    //By leewheel 2026年11月7日 中文路径硬拦截：布局检查不通过就一律不启动服务端。
     // 中文路径下 MySQL/世界服会读不到文件或乱码，老大明确要求「有中文就报错」，不能只弹个提示还让他继续点。
     if (require('./layout-check.cjs').checkLayout({ paths: [this.root] }).chinesePath) {
       throw new Error('运行目录包含中文，服务端无法正常工作：请把整个整合包移动到纯英文路径（例如 D:/Games/COA）后重新打开启动器。');
@@ -504,7 +504,7 @@ class ServerControl {
     if (/world|auth/i.test(id)) {
       await require('./db-config.cjs').ensureDatabaseConfig(this.root)
         .then(changed => { if (changed.length) console.warn(`[启动器] 已修正服务端配置：${changed.join('；')}`); })
-        .catch(error => console.warn(`[启动器] 服务端配置体检失败：${error.message}`));
+        .catch(error => console.warn(`[启动器] 服务端配置检查失败：${error.message}`));
     }
     //By leewheel 2026年11月6日 关掉数据库自动更新后，新版本的核心会用到新表：缺表时世界服
     // 在 mysql_stmt_prepare 阶段直接退出（老大实测 account_bazaar_token_hourly_cap）。启世界服前先补齐。

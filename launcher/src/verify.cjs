@@ -121,7 +121,7 @@ async function runChecks({ root, inspect, control, backup, repack, botsPackage, 
     const listOf = side => (side?.problems || []).filter(item => item.severity === 'bad').map(item => item.rel).join('、');
     add('setup', 'layout.server', report.server.ok ? 'ok' : 'bad', { list: listOf(report.server) || '—' });
     add('setup', 'layout.client', report.client.ok ? 'ok' : 'bad', { list: listOf(report.client) || '—' });
-  } catch { /* 目录体检失败不影响其它自检项 */ }
+  } catch { /* 目录检查失败不影响其它自检项 */ }
 
   // ---- core
   if (!info.repack) {
