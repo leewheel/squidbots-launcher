@@ -35,5 +35,10 @@ for (const [family, pkg, prefix, subsets, weights, italics] of FAMILIES) {
     }
   }
 }
-fs.writeFileSync(path.join(root, 'public/css/fonts.css'), css.join('\n') + '\n');
+//By leewheel 2026年11月26日 先写临时文件再整体重命名：本机安全策略会拦截「直接覆盖已有 fonts.css」
+// （writeFileSync 报 EPERM，而同目录新建文件、重命名覆盖都正常），atomic write 两种环境都能过。
+const cssFile = path.join(root, 'public/css/fonts.css');
+const cssTemp = path.join(root, 'public/css/fonts.css.tmp');
+fs.writeFileSync(cssTemp, css.join('\n') + '\n');
+fs.renameSync(cssTemp, cssFile);
 console.log(`${count} font files copied, public/css/fonts.css written`);
